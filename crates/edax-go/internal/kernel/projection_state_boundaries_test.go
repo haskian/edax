@@ -20,7 +20,7 @@ func TestProjectionStateBoundariesGolden(t *testing.T) {
 			Envelope json.RawMessage
 			Event    json.RawMessage
 			Tenant   *string
-			Subject  string
+			Subject  *string
 		}](t, fixture) {
 			t.Run(fixture+"/"+row.Name, func(t *testing.T) {
 				var got any

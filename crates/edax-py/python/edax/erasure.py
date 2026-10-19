@@ -26,6 +26,7 @@ __all__ = [
     "ErasureStage",
     "ErasureStore",
     "MemoryErasureStore",
+    "ScopeCleanup",
     "StoredErasure",
 ]
 
@@ -126,6 +127,7 @@ class ErasureStore(Protocol):
         self, previous: StoredErasure, action: ErasureAction, participant: str | None = None
     ) -> StoredErasure: ...
     async def pending(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]: ...
+    async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]: ...
     async def unpublished(self, limit: int = 100) -> list[ErasureNotification]: ...
     async def mark_published(self, operation_id: str) -> None: ...
 
@@ -203,6 +205,15 @@ class MemoryErasureStore:
                 if row.operation.stage != "complete" and (after is None or key > after)
             ][:limit]
 
+    async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+        limit = wiring_u64(limit, "limit")
+        async with self._lock:
+            return [
+                row
+                for key, row in sorted(self._operations.items())
+                if row.operation.stage != "persisted" and (after is None or key > after)
+            ][:limit]
+
     async def unpublished(self, limit: int = 100) -> list[ErasureNotification]:
         limit = wiring_u64(limit, "limit")
         async with self._lock:
@@ -211,6 +222,33 @@ class MemoryErasureStore:
     async def mark_published(self, operation_id: str) -> None:
         async with self._lock:
             self._notifications.pop(operation_id, None)
+
+
+class ScopeCleanup:
+    """An erasure participant that deletes a scope's plaintext rows from one store: what a sink or store's
+    ``cleanup()`` returns for a target kept ``at_rest="plaintext"``. Register it with the
+    :class:`ErasureCoordinator`; edax does not check that you did.
+
+    :meth:`resweep` deletes again for every scope the erasure store has revoked and returns how many
+    rows it found. A count above zero means a participant was missing, or a restore brought rows back:
+    run it on a schedule or as a deploy check, and alert on it. It covers a restore only when the
+    erasure store outlives the restored database. The coordinator can report ``complete`` before the
+    next sweep runs."""
+
+    def __init__(self, delete: Callable[[KeyScope], Awaitable[int]]) -> None:
+        self._delete = delete
+
+    async def __call__(self, scope: KeyScope) -> None:
+        await self._delete(scope)
+
+    async def resweep(self, store: ErasureStore, *, limit: int = 100) -> int:
+        deleted = 0
+        after: str | None = None
+        while page := await store.revoked(limit, after=after):
+            for stored in page:
+                deleted += await self._delete(stored.operation.scope)
+            after = page[-1].operation.operation_id
+        return deleted
 
 
 class _StaleOperation(Exception):

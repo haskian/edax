@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, TypeVar, cast
 
 from .. import _json, _native
+from ..erasure import ScopeCleanup
 from ..errors import BadHandle, StoreError
 from ..outbox import check_page
 from ..projection import (
@@ -14,7 +15,8 @@ from ..projection import (
     ProjectionStateStore,
     ProjectionTarget,
 )
-from ..sealing import Sealing
+from ..sealing import KeyScope, Sealing
+from .erasure_postgres import PgErasureConnection, PostgresErasureStore
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
 T = TypeVar("T")
@@ -151,6 +153,25 @@ class PostgresProjectionStateStore(ProjectionStateStore):
             )
 
         await self._owned(delete)
+
+    def cleanup(self, erasure: PostgresErasureStore | None = None) -> ScopeCleanup:
+        """The erasure participant that deletes a scope's state: a subject's, or a whole tenant's. A
+        ``plaintext`` target needs it; sealed state is erased by destroying the key. With ``erasure``,
+        the store of a ``write_fence="transaction"`` provider on this database, one transaction revokes
+        the scope, draining fenced writers, and then deletes. Receipts stay: they hold keyed
+        fingerprints, which the destroyed key leaves untestable."""
+
+        async def delete(scope: KeyScope) -> int:
+            start, end = self.target.state_scope_range(scope)
+
+            async def run(conn: PgConnection) -> int:
+                if erasure is not None:
+                    await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
+                return cast(int, await self._call(conn.fetchval(self._sql["delete_scope"], start, end)))
+
+            return await self._owned(run)
+
+        return ScopeCleanup(delete)
 
     async def prune(self, limit: int = 1000) -> int:
         check_page(limit)

@@ -10,10 +10,12 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any, TypeVar, cast
 
 from .. import _json, _native
+from ..erasure import ScopeCleanup
 from ..errors import BadHandle
 from ..ingestion import BatchInput, BatchResult, IngestionTarget, open_private, seal_private
 from ..outbox import check_page
-from ..sealing import Sealing
+from ..sealing import KeyScope, Sealing
+from .erasure_postgres import PgErasureConnection, PostgresErasureStore
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
 __all__ = ["PostgresIngestionSink", "reference_ingestion_ddl"]
@@ -149,6 +151,29 @@ class PostgresIngestionSink:
             return BatchResult.from_json(plan_text)
 
         return await self._own(apply)
+
+    def cleanup(self, erasure: PostgresErasureStore | None = None) -> ScopeCleanup:
+        """The erasure participant that deletes a scope's rows: a subject's, or a whole tenant's. A
+        ``plaintext`` target needs it; a sealed one is erased by destroying the key. With ``erasure``,
+        the store of a ``write_fence="transaction"`` provider on this database, one transaction revokes
+        the scope, draining fenced writers, and then deletes, so no writer lands after the delete.
+        Rejections stay: they hold the raw record, which a sealed source keeps sealed."""
+
+        async def delete(scope: KeyScope) -> int:
+            start, end = _json.decode(
+                _native.ingest_scope_range(self.target.manifest, scope.subject, scope.tenant)
+            )
+
+            async def run(conn: PgConnection) -> int:
+                if erasure is not None:
+                    await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
+                return cast(
+                    int, await self._call(conn.fetchval(self._sql[f"delete_scope_{self._role}"], start, end))
+                )
+
+            return await self._typed(run)
+
+        return ScopeCleanup(delete)
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]:
         """Committed unpublished rejections. Publication is at least once."""

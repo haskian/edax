@@ -1,9 +1,10 @@
 # Crypto-shredding
 
-Edax can encrypt whole event and command payloads, aggregate snapshots, saga state, and cached
-command results under keys belonging to an erasure subject. Revoking that subject blocks new work;
-destroying its keys makes retained ciphertext unreadable through the provider. Plaintext copies in
-projections, caches, exports, and backups require their own cleanup participants.
+Edax can encrypt whole event and command payloads, aggregate snapshots, saga state, cached command
+results, ingestion rows and projection state under keys belonging to an erasure subject. Revoking that
+subject blocks new work; destroying its keys makes retained ciphertext unreadable through the provider.
+Plaintext copies, such as a target kept `at_rest="plaintext"`, caches and exports, require their own
+cleanup participants.
 
 Encryption is an optional edax capability with typed `subject` and `encryption` envelope fields.
 The [seal kernel](../kernels/seal.md) owns cryptography;
@@ -361,6 +362,31 @@ later operations behind an offline participant.
 a separately authorized control path, then call `mark_published` after broker acceptance.
 Deduplicate by operation ID. The control path must work after subject or tenant payload-key
 revocation; do not encrypt it under the keys being erased.
+
+### Ingestion and projection stores
+
+Ingestion sinks and projection state stores keep a subject's `private` part sealed by default, so
+destroying the key erases it, backups included. A target built with `at_rest="plaintext"` keeps it
+readable instead, and needs a cleanup participant. The sink's or store's `cleanup()` returns one, a
+`ScopeCleanup`:
+
+```python
+cleanup = sink.cleanup(erasure_store)  # Postgres: revoke and delete in one transaction
+eraser = ErasureCoordinator(keys, operations, {"orders-ingestion": cleanup})
+```
+
+A subject scope deletes that subject's rows; a tenant scope deletes every row of the tenant,
+unsealed rows included. Rejections and projection receipts stay: they hold no plaintext of the
+subject. Given the `PostgresErasureStore` of a `write_fence="transaction"` provider, the Postgres
+cleanup revokes the scope in its own transaction before the delete. A fenced writer therefore either
+committed before it or is refused after it. Memory cleanup only deletes. The provider's revoke
+already drained the guarded writers.
+
+Edax does not check that a plaintext target's cleanup is registered. `cleanup.resweep(operations)`
+deletes again for every scope the erasure store has revoked, and returns how many rows it found. Run
+it on a schedule or as a deploy check, and alert when it reports more than zero. That count means a
+missing participant, or a restore that brought rows back. It covers a restore only when the erasure
+store outlives the restored database. The coordinator can report `complete` before the next sweep.
 
 Completion describes the frozen participant set and the provider's confirmations. It is not proof
 that an unregistered export, old backup, compromised key copy, or unfenced service has disappeared.

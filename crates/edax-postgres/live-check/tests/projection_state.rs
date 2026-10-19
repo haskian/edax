@@ -149,8 +149,9 @@ impl Stores {
     }
 }
 
-/// Delete one subject's state records on both stores; both must delete the same number.
-fn delete_scope(stores: &mut Stores, subject: &str) -> i64 {
+/// Delete one subject's state records on both stores, or the whole tenant's without a subject; both
+/// must delete the same number.
+fn delete_scope(stores: &mut Stores, subject: Option<&str>) -> i64 {
     let (start, end) = contract().state_scope_range(&Some("bank-eu".into()), subject).unwrap();
     let memory = stores.memory.delete_scope(&start, &end);
     let postgres: i64 = stores
@@ -197,17 +198,20 @@ fn postgres_and_memory_delete_the_same_subject_scope() {
     );
     let lease = stores.credit_of(&lease, Some("person-7"), "account-1", &[0]);
     let lease = stores.credit_of(&lease, Some("person-7"), "account-2", &[1]);
-    stores.credit_of(&lease, Some("person-70"), "account-3", &[2]);
-    assert_eq!(delete_scope(&mut stores, "person-7"), 2);
+    let lease = stores.credit_of(&lease, Some("person-70"), "account-3", &[2]);
+    stores.credit_of(&lease, None, "account-4", &[3]);
+    assert_eq!(delete_scope(&mut stores, Some("person-7")), 2);
     assert_eq!(
-        delete_scope(&mut stores, "person-7"),
+        delete_scope(&mut stores, Some("person-7")),
         0,
         "a repeated cleanup deletes nothing"
     );
-    let get =
-        |subject: &str, aggregate: &str| json!({"op":"get","tenant":"bank-eu","subject":subject,"aggregate":aggregate});
-    assert_eq!(stores.run(get("person-7", "account-1"), 30), Value::Null);
-    assert_eq!(stores.run(get("person-70", "account-3"), 30)["sequence"], 1);
+    let get = |subject: Option<&str>, aggregate: &str| json!({"op":"get","tenant":"bank-eu","subject":subject,"aggregate":aggregate});
+    assert_eq!(stores.run(get(Some("person-7"), "account-1"), 30), Value::Null);
+    assert_eq!(stores.run(get(Some("person-70"), "account-3"), 30)["sequence"], 1);
+    // A tenant erasure takes every remaining state of the tenant, the unsealed one included.
+    assert_eq!(delete_scope(&mut stores, None), 2);
+    assert_eq!(stores.run(get(None, "account-4"), 30), Value::Null);
 }
 
 fn positions(intents: &[Value]) -> Vec<(i64, i64)> {

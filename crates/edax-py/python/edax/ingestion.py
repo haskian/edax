@@ -16,8 +16,9 @@ from . import _native
 from ._json import decode, encode
 from ._owned import ThreadBound
 from ._units import own_write
+from .erasure import ScopeCleanup
 from .errors import BadHandle, CodecError
-from .sealing import Sealing
+from .sealing import KeyScope, Sealing
 
 __all__ = [
     "BatchInput",
@@ -261,6 +262,17 @@ class MemoryIngestionSink:
     @property
     def target(self) -> IngestionTarget:
         return self._target
+
+    def cleanup(self) -> ScopeCleanup:
+        """The erasure participant that deletes a scope's rows: a subject's, or a whole tenant's. A
+        ``plaintext`` target needs it; a sealed one is erased by destroying the key. Rejections stay:
+        they hold the raw record, which a sealed source keeps sealed."""
+
+        async def delete(scope: KeyScope) -> int:
+            start, end = decode(_native.ingest_scope_range(self.target.manifest, scope.subject, scope.tenant))
+            return self._database.get().delete_scope(start, end)
+
+        return ScopeCleanup(delete)
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         originals = await seal_private(self.target, self.sealing, inputs)

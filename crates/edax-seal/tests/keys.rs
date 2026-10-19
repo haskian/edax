@@ -276,7 +276,10 @@ fn reserve_many_charges_one_generation_or_rotates() {
     let rotated = keys.reserve_many(&owner, Cipher::Aes256Gcm, 1).unwrap();
     assert_ne!(rotated.key_id, batch.key_id, "an exhausted generation rotates");
     let short = keys.reserve_many(&owner, Cipher::Aes256Gcm, 5).unwrap();
-    assert_ne!(short.key_id, rotated.key_id, "a generation with too few uses left rotates");
+    assert_ne!(
+        short.key_id, rotated.key_id,
+        "a generation with too few uses left rotates"
+    );
     for count in [0, 6] {
         assert_eq!(
             keys.reserve_many(&owner, Cipher::Aes256Gcm, count).unwrap_err().code,
@@ -284,5 +287,10 @@ fn reserve_many_charges_one_generation_or_rotates() {
         );
     }
     let unlimited = keys.reserve_many(&owner, Cipher::XChaCha20Poly1305, u64::MAX).unwrap();
-    assert_eq!(keys.resolve(&owner, Cipher::XChaCha20Poly1305, &unlimited.key_id).unwrap().as_bytes(), unlimited.key.as_bytes());
+    assert_eq!(
+        keys.resolve(&owner, Cipher::XChaCha20Poly1305, &unlimited.key_id)
+            .unwrap()
+            .as_bytes(),
+        unlimited.key.as_bytes()
+    );
 }

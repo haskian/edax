@@ -449,16 +449,27 @@ impl Contract {
         ]))
     }
     /// The storage key of one aggregate's state: what sealing its private part binds.
-    pub fn state_key(&self, tenant: &Option<String>, subject: &Option<String>, aggregate: &str) -> Result<String, Error> {
+    pub fn state_key(
+        &self,
+        tenant: &Option<String>,
+        subject: &Option<String>,
+        aggregate: &str,
+    ) -> Result<String, Error> {
         required(aggregate)?;
         subject.as_deref().map(namespace::check_subject).transpose()?;
         self.key(json!(["projection", "state", tenant, subject, aggregate]))
     }
     /// The half-open key range `[start, end)` holding every state record of one tenant and subject:
-    /// what an erasure cleanup of a plaintext generation deletes.
-    pub fn state_scope_range(&self, tenant: &Option<String>, subject: &str) -> Result<(String, String), Error> {
-        namespace::check_subject(subject)?;
-        namespace::range(&self.generation, &json!(["projection", "state", tenant, subject]))
+    /// what an erasure cleanup of a plaintext generation deletes. Without a subject, every state record
+    /// of the tenant, unsealed ones included.
+    pub fn state_scope_range(&self, tenant: &Option<String>, subject: Option<&str>) -> Result<(String, String), Error> {
+        match subject {
+            Some(subject) => {
+                namespace::check_subject(subject)?;
+                namespace::range(&self.generation, &json!(["projection", "state", tenant, subject]))
+            }
+            None => namespace::prefix_range(&self.generation, &json!(["projection", "state", tenant])),
+        }
     }
     fn event_keys(&self, event: &Event) -> Result<[String; 3], Error> {
         required(&event.event_id)?;

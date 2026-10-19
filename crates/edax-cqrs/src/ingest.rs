@@ -66,11 +66,22 @@ pub fn row_key(
 }
 
 /// The half-open key range `[start, end)` holding every row of one tenant and subject in a target:
-/// what an erasure cleanup deletes.
-pub fn scope_range(target: &str, mode: &str, tenant: Option<&str>, subject: &str) -> Result<(String, String), Error> {
+/// what an erasure cleanup deletes. Without a subject, every row of the tenant, unsealed rows included,
+/// as a tenant erasure deletes them.
+pub fn scope_range(
+    target: &str,
+    mode: &str,
+    tenant: Option<&str>,
+    subject: Option<&str>,
+) -> Result<(String, String), Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
-    namespace::check_subject(subject)?;
-    namespace::range(target, &serde_json::json!([mode.as_str(), tenant, subject]))
+    match subject {
+        Some(subject) => {
+            namespace::check_subject(subject)?;
+            namespace::range(target, &serde_json::json!([mode.as_str(), tenant, subject]))
+        }
+        None => namespace::prefix_range(target, &serde_json::json!([mode.as_str(), tenant])),
+    }
 }
 
 /// Immutable interpretation of one target generation.

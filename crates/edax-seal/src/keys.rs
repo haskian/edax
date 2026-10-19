@@ -127,7 +127,9 @@ impl MemoryKeyProvider {
             Cipher::XChaCha20Poly1305 => u64::MAX,
         };
         if count == 0 || count > limit {
-            return Err(Error::bad_handle("key reservation count must be within the cipher's limit"));
+            return Err(Error::bad_handle(
+                "key reservation count must be within the cipher's limit",
+            ));
         }
         let identity = (scope.clone(), purpose);
         let current_id = self.current.get(&identity).cloned();

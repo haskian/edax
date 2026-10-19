@@ -502,7 +502,12 @@ fn ordered_projection_fences_and_cutovers() {
         ("plaintext_intent_payload_of_a_subject_refused", plaintext_payload),
         ("private_sealed_for_another_subject_refused", foreign_private),
     ] {
-        m.call(name, apply(&fresh, vec![next_input.clone()], vec![reduced]), 2025, false);
+        m.call(
+            name,
+            apply(&fresh, vec![next_input.clone()], vec![reduced]),
+            2025,
+            false,
+        );
         m.expect_error("bad_handle");
     }
     for (name, subject) in [

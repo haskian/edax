@@ -183,7 +183,7 @@ func TestIngestionGolden(t *testing.T) {
 					t.Fatal(err)
 				}
 				var got json.RawMessage
-				text, err := IngestScopeRange(string(manifest), *row.Subject, row.Tenant)
+				text, err := IngestScopeRange(string(manifest), row.Subject, row.Tenant)
 				if err == nil {
 					got = json.RawMessage(text)
 				}

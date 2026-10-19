@@ -1121,6 +1121,32 @@
       },
       "topic": "account-events"
     },
+    "error": null,
+    "name": "state_scope_range_of_a_whole_tenant",
+    "op": "state_scope_range",
+    "subject": null,
+    "tenant": "bank-eu",
+    "want": [
+      "11:balances-v1:[\"projection\",\"state\",\"bank-eu\",",
+      "11:balances-v1:[\"projection\",\"state\",\"bank-eu\"-"
+    ]
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "effect_namespace": "receipt-v1",
+      "envelope_id": "event-v1",
+      "generation": "balances-v1",
+      "keying_id": "account-v1",
+      "reducer_id": "balance-v1",
+      "source_history": "no-rollback-v1",
+      "source_identity": "cluster-42/topic-81",
+      "starts": {
+        "0": 0,
+        "1": 10
+      },
+      "topic": "account-events"
+    },
     "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
     "name": "state_scope_range_empty_subject_refused",
     "op": "state_scope_range",

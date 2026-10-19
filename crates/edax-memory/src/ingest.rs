@@ -162,7 +162,7 @@ mod tests {
             input(3, "person-7", "order-4", Some("codec: refused")),
         ];
         database.commit(&contract, &inputs).unwrap();
-        let (start, end) = ingest::scope_range("people-v1", "upsert", Some("acme"), "person-7").unwrap();
+        let (start, end) = ingest::scope_range("people-v1", "upsert", Some("acme"), Some("person-7")).unwrap();
         assert_eq!(database.delete_scope(&start, &end), 2);
         assert_eq!(database.delete_scope(&start, &end), 0);
         assert!(database.get(&inputs[0].key).is_none());

@@ -2668,10 +2668,16 @@ fn ingest_cases() -> Vec<Value> {
         rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"subject":subject,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
     for (name, mode, tenant, subject) in [
-        ("scope_range_of_a_subject", "upsert", Some("acme"), "person-42"),
-        ("scope_range_without_tenant", "append", None, "person-42"),
-        ("scope_range_empty_subject_refused", "upsert", Some("acme"), ""),
-        ("scope_range_invalid_mode_refused", "fold", Some("acme"), "person-42"),
+        ("scope_range_of_a_subject", "upsert", Some("acme"), Some("person-42")),
+        ("scope_range_without_tenant", "append", None, Some("person-42")),
+        ("scope_range_of_a_whole_tenant", "upsert", Some("acme"), None),
+        ("scope_range_empty_subject_refused", "upsert", Some("acme"), Some("")),
+        (
+            "scope_range_invalid_mode_refused",
+            "fold",
+            Some("acme"),
+            Some("person-42"),
+        ),
     ] {
         let result = ingest::scope_range("orders-v1", mode, tenant, subject);
         rows.push(json!({"name":name,"op":"scope_range","target":"orders-v1","mode":mode,"tenant":tenant,"subject":subject,"want":result.as_ref().ok(),"error":refusal(&result)}));

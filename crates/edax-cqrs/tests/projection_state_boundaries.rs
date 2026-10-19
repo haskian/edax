@@ -207,9 +207,10 @@ fn projection_state_boundary_golden() {
     }
     let c: Contract = serde_json::from_value(contract()).unwrap();
     for (name, tenant, subject) in [
-        ("state_scope_range_of_a_subject", Some("bank-eu"), "person-7"),
-        ("state_scope_range_without_tenant", None, "person-7"),
-        ("state_scope_range_empty_subject_refused", Some("bank-eu"), ""),
+        ("state_scope_range_of_a_subject", Some("bank-eu"), Some("person-7")),
+        ("state_scope_range_without_tenant", None, Some("person-7")),
+        ("state_scope_range_of_a_whole_tenant", Some("bank-eu"), None),
+        ("state_scope_range_empty_subject_refused", Some("bank-eu"), Some("")),
     ] {
         let result = c.state_scope_range(&tenant.map(str::to_owned), subject);
         cases.push(case(

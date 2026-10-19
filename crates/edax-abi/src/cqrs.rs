@@ -445,11 +445,17 @@ pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> 
     .map_err(crate::to_wire)
 }
 
-/// The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair.
-pub fn ingest_scope_range(manifest: &str, subject: &str, tenant: Option<String>) -> Result<String, String> {
+/// The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair; without
+/// a subject, of the whole tenant.
+pub fn ingest_scope_range(manifest: &str, subject: Option<String>, tenant: Option<String>) -> Result<String, String> {
     let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
-    let range = edax_cqrs::ingest::scope_range(&contract.generation, &contract.mode, tenant.as_deref(), subject)
-        .map_err(crate::to_wire)?;
+    let range = edax_cqrs::ingest::scope_range(
+        &contract.generation,
+        &contract.mode,
+        tenant.as_deref(),
+        subject.as_deref(),
+    )
+    .map_err(crate::to_wire)?;
     crate::write_json(&range)
 }
 
@@ -527,17 +533,22 @@ pub fn projection_intent_id(contract_json: &str, event_json: &str, intent_json: 
     edax_cqrs::projection::intent_id(&contract, &event, &intent).map_err(to_wire)
 }
 
-/// The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
+/// The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair;
+/// without a subject, of the whole tenant.
 pub fn projection_state_scope_range(
     contract_json: &str,
-    subject: &str,
+    subject: Option<String>,
     tenant: Option<String>,
 ) -> Result<String, String> {
     let contract: edax_cqrs::projection::Contract = projection_value(contract_json)
         .map_err(edax_core::Error::codec)
         .map_err(to_wire)?;
     contract.validate().map_err(to_wire)?;
-    crate::write_json(&contract.state_scope_range(&tenant, subject).map_err(to_wire)?)
+    crate::write_json(
+        &contract
+            .state_scope_range(&tenant, subject.as_deref())
+            .map_err(to_wire)?,
+    )
 }
 
 /// The batch input of a sealed record: `event_json`, the host's decoding of the opened record, checked

@@ -163,6 +163,13 @@ class PostgresErasureStore:
             )
             return [self._decode(row[0]) for row in rows]
 
+    async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+        async with self._transaction() as connection:
+            rows = await self._await(
+                connection.fetch(self._sql["revoked_operations"], str(wiring_u64(limit, "limit")), after)
+            )
+            return [self._decode(row[0]) for row in rows]
+
     async def unpublished(self, limit: int = 100) -> list[ErasureNotification]:
         async with self._transaction() as connection:
             rows = await self._await(

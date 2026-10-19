@@ -5389,7 +5389,8 @@ uintptr_t edax_ingest_row_key_len(const char *_manifest,
                                   const char *_identity);
 
 /**
- * The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair.
+ * The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair; without
+ * a subject, of the whole tenant.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
@@ -7044,7 +7045,8 @@ uintptr_t edax_projection_state_key_len(const char *_contract_json,
                                         const char *_tenant);
 
 /**
- * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
+ * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair;
+ * without a subject, of the whole tenant.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */

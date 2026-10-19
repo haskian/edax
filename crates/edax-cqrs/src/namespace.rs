@@ -38,11 +38,23 @@ pub fn key(generation: &str, parts_json: &str) -> Result<String, Error> {
 /// through [`key`], so the range matches the keys byte for byte (`COLLATE "C"`): after `parts` comes
 /// the comma and the string's opening `"`, and `#`, the next byte, bounds it.
 pub fn range(generation: &str, parts: &Value) -> Result<(String, String), Error> {
-    let open = key(generation, &parts.to_string())?;
-    let head = open
-        .strip_suffix(']')
-        .ok_or_else(|| Error::codec("a key range needs an array of parts"))?;
+    let head = head(generation, parts)?;
     Ok((format!("{head},\""), format!("{head},#")))
+}
+
+/// [`range`] for keys that continue with any JSON value after `parts`, `null` included: a tenant's
+/// keys whatever subject follows. After `parts` comes the comma, and `-`, the next byte, bounds it.
+pub fn prefix_range(generation: &str, parts: &Value) -> Result<(String, String), Error> {
+    let head = head(generation, parts)?;
+    Ok((format!("{head},"), format!("{head}-")))
+}
+
+/// The key of `parts` without its closing bracket.
+fn head(generation: &str, parts: &Value) -> Result<String, Error> {
+    let open = key(generation, &parts.to_string())?;
+    open.strip_suffix(']')
+        .map(str::to_owned)
+        .ok_or_else(|| Error::codec("a key range needs an array of parts"))
 }
 
 edax_core::closed_names! {

@@ -1264,13 +1264,15 @@ func IngestRowKey(manifest string, identity string) (string, error) {
 }
 
 // IngestScopeRange calls the shared kernel.
-func IngestScopeRange(manifest string, subject string, tenant *string) (string, error) {
+func IngestScopeRange(manifest string, subject *string, tenant *string) (string, error) {
 	var zero string
 	if err := checkNativeString("manifest", manifest); err != nil {
 		return zero, err
 	}
-	if err := checkNativeString("subject", subject); err != nil {
-		return zero, err
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
 	}
 	if tenant != nil {
 		if err := checkNativeString("tenant", *tenant); err != nil {
@@ -2561,13 +2563,15 @@ func ProjectionStateKey(contractJSON string, aggregate string, subject *string, 
 }
 
 // ProjectionStateScopeRange calls the shared kernel.
-func ProjectionStateScopeRange(contractJSON string, subject string, tenant *string) (string, error) {
+func ProjectionStateScopeRange(contractJSON string, subject *string, tenant *string) (string, error) {
 	var zero string
 	if err := checkNativeString("contractJSON", contractJSON); err != nil {
 		return zero, err
 	}
-	if err := checkNativeString("subject", subject); err != nil {
-		return zero, err
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
 	}
 	if tenant != nil {
 		if err := checkNativeString("tenant", *tenant); err != nil {

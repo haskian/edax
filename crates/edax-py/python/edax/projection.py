@@ -21,10 +21,11 @@ from typing import Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 from . import _json, _native
 from ._owned import ThreadBound
 from ._units import own_write
+from .erasure import ScopeCleanup
 from .errors import BadHandle, Shredded, StoreError
 from .outbox import check_page
 from .query import Document, Page, Query
-from .sealing import Sealing, StoredPart
+from .sealing import KeyScope, Sealing, StoredPart
 from .unit_of_work import TxT_contra
 
 __all__ = [
@@ -186,6 +187,13 @@ class ProjectionTarget:
     def intent_key(self, intent_id: str) -> str:
         """The storage key of effect intent ``intent_id`` in this generation."""
         return _native.projection_intent_key(self._contract, intent_id)
+
+    def state_scope_range(self, scope: KeyScope) -> tuple[str, str]:
+        """The key range ``[start, end)`` of ``scope``'s state: a subject's, or a whole tenant's."""
+        start, end = _json.decode(
+            _native.projection_state_scope_range(self._contract, scope.subject, scope.tenant)
+        )
+        return start, end
 
     def state_key(self, tenant: str | None, subject: str | None, aggregate: str) -> str:
         """The storage key of one aggregate's state: what sealing its ``private`` part binds."""
@@ -693,3 +701,14 @@ class MemoryProjectionStateStore(ProjectionStateStore):
     async def prune(self, limit: int = 1000) -> int:
         check_page(limit)
         return self._database.get().prune(self.target.manifest_key, self.target.generation, limit)
+
+    def cleanup(self) -> ScopeCleanup:
+        """The erasure participant that deletes a scope's state: a subject's, or a whole tenant's. A
+        ``plaintext`` target needs it; sealed state is erased by destroying the key. Receipts stay: they
+        hold keyed fingerprints, which the destroyed key leaves untestable."""
+
+        async def delete(scope: KeyScope) -> int:
+            start, end = self.target.state_scope_range(scope)
+            return self._database.get().delete_scope(start, end)
+
+        return ScopeCleanup(delete)

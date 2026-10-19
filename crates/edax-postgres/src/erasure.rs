@@ -111,6 +111,9 @@ pub struct Statements {
     pub get_operation: String,
     /// `$1` limit, `$2` optional exclusive operation-ID cursor; reset after an empty page.
     pub pending_operations: String,
+    /// `$1` limit, `$2` optional exclusive operation-ID cursor: every operation past `persisted`, whose
+    /// scope is revoked, for a cleanup participant's sweep after a restore.
+    pub revoked_operations: String,
     /// `$1` operation ID, `$2` expected version, `$3` operation JSON, `$4` optional notification JSON.
     pub update_operation: String,
     /// `$1` canonical scope; shared fence held until transaction end.
@@ -334,6 +337,10 @@ pub fn statements(schema: &str) -> Result<Statements, Error> {
         get_operation: format!("SELECT {row} FROM {operations} WHERE operation_id = $1::text"),
         pending_operations: format!(
             "SELECT {row} FROM {operations} WHERE record::json->>'stage' <> 'complete' AND ($2::text IS NULL OR operation_id > $2::text) \
+             ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
+        ),
+        revoked_operations: format!(
+            "SELECT {row} FROM {operations} WHERE record::json->>'stage' <> 'persisted' AND ($2::text IS NULL OR operation_id > $2::text) \
              ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
         ),
         update_operation: format!(
