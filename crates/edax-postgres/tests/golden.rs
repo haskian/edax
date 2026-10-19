@@ -726,13 +726,23 @@ fn golden_error() {
         ("22P05", None),
         ("22021", None),
         ("54000", None),
+        ("23514", None),
+        ("22012", None),
         ("42P01", None),
+        ("3D000", None),
+        ("28P01", None),
         ("42501", None),
         ("XX000", None),
     ];
     // Every state on three operations, and the two timeout states, whose verdict turns on the operation,
     // on every operation.
-    let full = [Op::Append, Op::Claim, Op::ProjectionSave];
+    let full = [
+        Op::Append,
+        Op::Claim,
+        Op::ProjectionSave,
+        Op::Ingest,
+        Op::ProjectionState,
+    ];
     for op in Op::ALL.iter().copied() {
         let states: &[(&str, Option<UniqueKey>)] = if full.contains(&op) {
             &states
@@ -955,4 +965,55 @@ fn golden_query() {
         }));
     }
     write_or_check("postgres_query.json", cases);
+}
+
+/// Optional ingestion SQL, shared by every ingestion adapter.
+#[test]
+fn golden_ingest() {
+    let mut cases = Vec::new();
+    for (name, config) in [
+        ("default", "{}"),
+        (
+            "custom_schema_and_names",
+            r#"{"schema":"billing","names":{"ingest_events":"incoming","ingest_state":"current_orders","ingest_rejections":"rejected_orders"}}"#,
+        ),
+        (
+            "partial_names",
+            r#"{"schema":"sales","names":{"ingest_state":"current_orders"}}"#,
+        ),
+        ("malformed_json", "{"),
+        ("schema_uppercase", r#"{"schema":"Public"}"#),
+        ("schema_injection", r#"{"schema":"public'; DROP TABLE events; --"}"#),
+        ("table_quote", r#"{"names":{"ingest_events":"events\""}}"#),
+        ("table_dash", r#"{"names":{"ingest_events":"incoming-events"}}"#),
+        (
+            "shared_name",
+            r#"{"names":{"ingest_events":"shared","ingest_state":"shared"}}"#,
+        ),
+        // Ingestion tables are independent of the event store's, so its default names are free here.
+        (
+            "event_store_names_allowed",
+            r#"{"names":{"ingest_events":"edax_events","ingest_state":"edax_projections"}}"#,
+        ),
+        ("unknown_role", r#"{"names":{"events":"incoming"}}"#),
+        ("unknown_field", r#"{"prefix":"my_"}"#),
+    ] {
+        let result = edax_postgres::ingest::statements(config);
+        cases.push(json!({
+            "name": name, "op": "statements", "config": config,
+            "want": result.as_ref().ok(), "error": refusal(&result),
+        }));
+    }
+    let row = json!({"stream":"order-42","sequence":1,"fingerprint":"42", "private":{"total":5.808820077685227e16},"public":{"total":1e23,"nested":[-5.808820077685227e16,null]}});
+    let rejection = json!({"fingerprint":"digest","error":"codec: rejected","raw":"original","published":false});
+    let plan = json!({"outcomes":["accepted","accepted","rejected"],"writes":{"new":row,"changed":row},"rejections":{"new-rejection":rejection,"replay":rejection}});
+    let stored = json!({"changed":row});
+    let rejected = json!({"replay":rejection});
+    let result = edax_postgres::ingest::write_plan(
+        &serde_json::from_value(plan.clone()).unwrap(),
+        &serde_json::from_value(stored.clone()).unwrap(),
+        &serde_json::from_value(rejected.clone()).unwrap(),
+    );
+    cases.push(json!({"name":"write_plan_exact_numbers_and_first_decisions","op":"write_plan", "plan":plan,"stored":stored,"rejected":rejected,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    write_or_check("postgres_ingest.json", cases);
 }

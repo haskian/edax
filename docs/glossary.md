@@ -48,7 +48,11 @@ command may name one. When present, it is the message's ordering key.
 compare-and-set operations on a version. A stale writer gets `ConcurrencyError` and nothing is
 written.
 
-**Snapshot** — a serialized aggregate state stored so a load replays fewer events.
+**Snapshot** — a serialized aggregate state with its stream sequence, stored so a load replays
+only later events. It does not establish a checkpoint for other aggregates sharing a partition.
+
+**Event sourcing** — persisting domain changes as the authoritative event history and reconstructing
+aggregate state from that history. A downstream projection can consume those events.
 
 **Transactional Outbox** — writing the events and the rows to publish in one transaction, so
 committed state and published events cannot diverge. `Relay` and `pump` drain it. See
@@ -260,7 +264,26 @@ The kernel's `ErrorCode` carries the verdict, so no SDK restates it. See [errors
 
 ## Read side
 
-**Projection** — a read model built by folding events into an `Entity`.
+**Projection** — the process of deriving a read model from events. It may append independent rows,
+replace complete state, or apply deltas through a reducer. See [projections](sdk/projections.md).
+
+**Read model** — the stored result of a projection, shaped for its readers.
+
+**Reducer** — an application function that takes previous state and one event and returns new state.
+For `KafkaProjection`, it is pure and may also return effect intents to persist with that state.
+
+**Fold** — applying a reducer repeatedly to ordered events. `KafkaProjection` folds each aggregate's events
+with database checkpoints and deduplication. A batch still calls the reducer once per new event.
+
+**Checkpoint** — the next source position to read. A projection commits it with the state, receipts and
+effect intents produced by the preceding records.
+
+**Generation** — an isolated ingestion or projection target with a fixed source and interpretation.
+Changing the mapper, reducer or source requires a new generation and a rebuild.
+
+**Effect intent** — a destination and payload returned by a projection reducer for delivery after commit.
+A `Relay` drains it as an `EffectIntent`. Its deterministic ID lets the destination deduplicate
+repeated outbox delivery.
 
 **Entity** — id, version, document: a value. The version makes `save` a compare-and-set, and `save`
 returns the new one. A read carries the id in the document as `"id"`.

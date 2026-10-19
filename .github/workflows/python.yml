@@ -146,7 +146,8 @@ jobs:
         run: .venv/bin/python -m mypy.stubtest edax._edax --allowlist stubtest-allowlist.txt
 
       - name: Test
-        run: crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -q
+        timeout-minutes: 10
+        run: crates/edax-py/.venv/bin/python -m pytest crates/edax-py/tests -v -o faulthandler_timeout=60
 
       # Every example ends in asserts and prints a final `ok:` line. They run in this job rather than
       # beside the linters because they import the compiled extension built above. The exit code

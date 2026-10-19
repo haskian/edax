@@ -18,7 +18,7 @@ import types
 import uuid
 from collections import defaultdict, namedtuple
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, asynccontextmanager, contextmanager, nullcontext
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -845,3 +845,37 @@ async def kafka_consumer(n: int) -> tuple[FakeKafkaClient, KafkaConsumer]:
     for i in range(n):
         await producer.publish(build_message("a", "Tick", 1, id=str(i)))
     return c, KafkaConsumer(c, serializer=IdSerializer())
+
+
+class CountingKeys(edax.sealing.MemoryKeys):
+    """The reference key provider, recording each reservation's subject and count."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reserved: list[tuple[str | None, int]] = []
+
+    async def reserve(
+        self, scope: edax.sealing.KeyScope, cipher: edax.sealing.Cipher, count: int = 1
+    ) -> edax.sealing.KeyReservation:
+        self.reserved.append((scope.subject, count))
+        return await super().reserve(scope, cipher, count)
+
+
+@asynccontextmanager
+async def postgres_schema(prefix: str, *ddls: Callable[[str], str]) -> AsyncIterator[tuple[Any, str]]:
+    """A pool and an isolated schema holding the tables ``ddls`` create, dropped on exit. Skips the test
+    without a live Postgres."""
+    url = os.environ.get("EDAX_POSTGRES_URL")
+    if url is None:
+        pytest.skip("EDAX_POSTGRES_URL is not set: no live Postgres")
+    asyncpg = pytest.importorskip("asyncpg")
+    pool = await asyncpg.create_pool(url, min_size=1, max_size=4)
+    schema = f"{prefix}_{uuid.uuid4().hex}"
+    await pool.execute(f'CREATE SCHEMA "{schema}"')
+    try:
+        for ddl in ddls:
+            await pool.execute(ddl(schema))
+        yield pool, schema
+    finally:
+        await pool.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        await pool.close()

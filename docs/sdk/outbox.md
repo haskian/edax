@@ -35,14 +35,16 @@ written by the same store, in the same transaction, as the state it announces.
 `Outbox` (a Python `Protocol`, a Rust trait) is only the read side a `Relay` drains: `unpublished`
 and `mark_published`. It is a port of its own, never a member of a write port. Every write port stages
 its outbox rows in the caller's `tx`, and one object may implement both, as the memory stores do. A row
-needs only an `id` to be marked by. Every outbox is written in the same transaction as the state it
-announces:
+needs an `id` to be marked by, and a `tenant` and `aggregate_id` to be ordered by (Python's
+`OutboxRow`). Every outbox is written in the same transaction as the state it announces:
 
 | Outbox | Rows | Written by | Read through |
 |---|---|---|---|
 | the event outbox | `EventMessage`s | an `EventStore`'s `append` | the store's own `Outbox`, where it implements one |
 | a saga's command outbox, one per saga name | `CommandMessage`s | the saga step's `save` or `complete` | `runner.outbox()`, a `SagaOutbox` |
 | a command outbox, optional | `CommandMessage`s | `Repository.save(..., commands=[...])`, through `CommandOutbox.enqueue` under the save's `tx` | the backend's `Outbox` |
+| projection effect intents (Python) | `EffectIntent`s | a `ProjectionStateStore` commit, with the reducer's state | the store itself ([projection processing](./projection-processing.md#outbox-and-rebuild-activation)) |
+| ingestion rejections (Python) | `Rejection`s | a `BatchSink` commit, with the accepted rows | `RejectionOutbox(sink)` ([ingestion](../backends/ingestion.md)) |
 
 So no backend can split the state write and the to-publish write across two systems by accident. A
 command outbox enforces it; see [its refusals](../backends/README.md#commandoutbox). See [commands](./commands.md#three-routes-for-a-command) for when to send a command
@@ -225,6 +227,7 @@ looping on `drain` stops on `edax::is_fatal` the same way. Rust's `Relay::drain(
 takes the publish closure per call instead of at construction. `publish` there is synchronous, so
 wrap it in your async runtime for a network transport. Both relays drain any `Outbox`: the event
 store's, a command outbox, and one saga's command outbox, `runner.outbox()` (see [sagas.md](./sagas.md)).
+Python's also drains projection effect intents and ingestion rejections.
 
 **What `drain` needs from the store**
 

@@ -142,6 +142,17 @@ pub(crate) fn check_document(json: &[u8]) -> Result<(), Error> {
     check_integers(json, Width::Bits64)
 }
 
+/// Whether a string or an object key anywhere in `value` holds NUL. Postgres `jsonb` cannot store one,
+/// so every store refuses such a value alike, as `codec`, rather than only the store that fails.
+pub fn holds_nul(value: &Value) -> bool {
+    match value {
+        Value::String(s) => s.contains('\0'),
+        Value::Array(items) => items.iter().any(holds_nul),
+        Value::Object(fields) => fields.iter().any(|(key, item)| key.contains('\0') || holds_nul(item)),
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

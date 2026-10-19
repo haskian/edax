@@ -13,12 +13,12 @@ flowchart TB
     end
 
     subgraph sdk["SDK — orchestration and I/O"]
-        B["CommandBus and middleware<br/>Repository, outbox, Relay<br/>KeyOrderedDispatcher<br/>EventRouter, SagaRunner<br/>the storage and broker seams"]
+        B["CommandBus and middleware<br/>Repository, outbox, Relay<br/>KeyOrderedDispatcher<br/>EventRouter, SagaRunner<br/>KafkaIngestion, KafkaProjection<br/>the storage and broker seams"]
     end
 
     subgraph kernels["kernels — pure, agreed bit for bit"]
-        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, protected, ledger, Decimal, Instant<br/>filter, query"]
-        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga, sealing, erasure"]
+        C["edax-cqrs<br/>canonical_json, command_hash, received_key, claim_key<br/>record, protected, ledger, Decimal, Instant<br/>filter, query, namespace, ingest, projection"]
+        D["edax-event<br/>message, codec, causation<br/>partition, staleness, idempotency, sequence<br/>upcast, retry, drain, saga, sealing, erasure, batch"]
         S["edax-seal<br/>cipher, EncryptionInfo, AAD, keys"]
         E["edax-core<br/>hash, key, backoff, clock<br/>guid, version, names, error"]
     end
@@ -64,10 +64,11 @@ flowchart LR
     seal["edax-seal<br/>encryption and key lifecycle"]
     postgres["edax-postgres<br/>SQL and erasure fences"]
     event["edax-event<br/>event kernel"]
-    cqrs["edax-cqrs<br/>command kernel"]
+    cqrs["edax-cqrs<br/>command and query kernel"]
     memory["edax-memory<br/>in-memory stores"]
     kafka["edax-kafka<br/>Kafka record + offsets kernel"]
     redis["edax-redis<br/>Redis ledger kernel"]
+    postgres["edax-postgres<br/>Postgres storage kernel"]
     abi["edax-abi<br/>flat surface"]
     rust["crates/edax<br/>Rust SDK"]
     py["crates/edax-py<br/>Python binding"]
@@ -95,6 +96,9 @@ flowchart LR
     kafka --> event
     redis --> core
     redis --> cqrs
+    postgres --> core
+    postgres --> event
+    postgres --> cqrs
     rust --> core
     rust --> event
     rust --> cqrs
@@ -105,6 +109,7 @@ flowchart LR
     abi --> memory
     abi --> kafka
     abi --> redis
+    abi --> postgres
     py --> abi
     ffi --> abi
     go --> ffi
@@ -113,6 +118,7 @@ flowchart LR
     cqrs -.-> golden
     kafka -.-> golden
     redis -.-> golden
+    postgres -.-> golden
     rust -.-> golden
 ```
 
@@ -123,12 +129,12 @@ what each one owns.
 |---|---|
 | `edax-core` | `hash`, `key` (tenancy, the guard key), `backoff`, `clock`, `guid`, `version`, `names` (`closed_names!`), the `error` taxonomy; and the Rust-only runtime helpers `lock` and `TokenMint` |
 | `edax-seal` | cipher and encryption records, authenticated context, encryption, fingerprints, randomness, `keys` lifecycle and usage accounting |
-| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `sealing`, `erasure` |
-| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, `protected` fingerprints and results, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query` |
-| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, written once and shared by the Rust, Python and Go SDKs |
+| `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `sealing`, `erasure`, `batch` |
+| `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, `protected` fingerprints and results, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `namespace`, `ingest`, `projection` |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, and `ingest` (the atomic ingestion reference sink) and `projection_state` (ordered projection transactions), written once and shared by the Rust, Python and Go SDKs |
 | `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
-| `edax-postgres` | `config`, `error`, `schema`, `statements`, `rows`, `documents`, `query`, `ledger`, `erasure` |
+| `edax-postgres` | `config`, `error`, `schema`, `statements`, `rows`, `documents`, `query`, `ledger`, `erasure`, `ingest`, `projection` |
 | `edax-abi` | a flat, plain-Rust surface that forwards to the kernels and backends, holding no logic of its own |
 | `edax` | the reference Rust SDK |
 | `edax-py` | the Python SDK: a generated native module plus a hand-written package |
@@ -136,16 +142,49 @@ what each one owns.
 | `crates/edax-go` | the Go SDK: generated cgo binding and handle facade, plus hand-written orchestration |
 | `edax-golden` | the golden-vector harness, one writer and one reader for every kernel |
 
-The `edax-memory`, `edax-kafka` and `edax-redis` rows follow one rule. A backend's bytes, its names
+The storage and transport crates follow one rule. A backend's bytes, its names
 and its state decisions live in a kernel crate named `edax-<tech>`, pinned by golden vectors. Each
 SDK then ships only the client calls around that crate. Call it a protocol module in Rust and an
 input and output (I/O) shell per SDK.
 
-The Rust, Python and Go in-memory backends are views over `edax-memory`. The
-staging, the optimistic-concurrency checks and the transaction boundary are one implementation.
+The base Rust, Python and Go in-memory backends are views over `edax-memory`. Their
+staging, optimistic-concurrency checks and transaction boundary share one implementation.
+The Python memory projection state store stages the writes returned by `edax-cqrs::projection` through
+`edax-memory::projection_state`, which checks read versions at atomic commit.
 `edax-kafka` owns the record a published message becomes and the offset watermark that settles it.
 `edax-redis` owns the value stored under an idempotency key and the Lua a fenced write runs. Neither
-crate links a client library, so the I/O stays in the SDK that has one.
+crate links a client library, so the I/O stays in the SDK that has one. `edax-postgres` owns
+table contracts, SQL and error verdicts for the base stores, ingestion and projection state.
+
+## Ingestion and projection processing boundaries
+
+Append and upsert consume complete values. Projection processing folds ordered changes into previous
+state through an application reducer. All three maintain derived data; the application still owns its command
+handlers and authoritative event history.
+
+| Concern | Owner | SDK responsibility |
+|---|---|---|
+| Batch limits, flush thresholds and recovery actions | `edax-event::batch` | Track retained inputs, schedule partitions, wait and release capacity |
+| Append identity and upsert ownership, version checks, deletion markers and durable rejection precedence | `edax-cqrs::ingest` | Supply original records and persist the returned plan atomically |
+| Projection sequence checks, event/sequence receipts, checkpoint leases, source proof validation and effect cutoffs | `edax-cqrs::projection` | Load records, call the reducer for novel events and commit all returned writes together |
+| Kafka record encoding, delivery tokens and commit generations | `edax-kafka::{record, offsets}` | Check assignment before booking, seek safely and retain unfinished client requests |
+| PostgreSQL table contracts, locks, statements and recovery verdicts | `edax-postgres::{ingest, projection}` | Execute SQL inside an owned transaction |
+| Mapping, reducing, source verification and effect delivery | Host application | Supply callbacks and destination deduplication |
+
+Python's `edax.ingestion` and `edax.projection` define the application-facing values and storage contracts.
+The Kafka runners live in `edax.backend.kafka_ingest` and `edax.backend.kafka_projection`. PostgreSQL
+adapters live in `edax.backend.ingest_postgres` and `edax.backend.projection_postgres`.
+`ProjectionStateStore` shares transaction orchestration between its PostgreSQL adapter and volatile
+`MemoryProjectionStateStore`; both ask the same Rust kernel for state transitions.
+
+The application reducer performs no I/O. The store reads previous state before calling it.
+A projection transaction saves state, receipts, intents and its database checkpoint together. Kafka
+append/upsert ingestion uses the broker's committed offset for recovery. Projection processing uses its database
+checkpoint and a verified source proof. These recovery contracts require separate runners.
+
+The generated Go bindings expose the same decisions for contract tests. They do not provide a
+public Go ingestion or projection runtime. See [ingestion](backends/ingestion.md) and
+[projection processing](sdk/projection-processing.md) for the Python APIs and operating requirements.
 
 ## The build pipeline
 
@@ -220,6 +259,7 @@ across versions or languages, it belongs in a kernel with a golden vector.
 | concurrency | synchronous; dispatcher workers are operating-system threads | `asyncio` tasks | synchronous context-aware calls; dispatcher workers are goroutines |
 | transaction handle | explicit or obtained from a host provider | `contextvars`, keyed by database | `context.Context`, keyed by `UnitOfWork` |
 | backends shipped | in-memory | in-memory, Redis, Kafka, Postgres | in-memory, Redis, Kafka client interfaces |
+| ingestion and projection processing | kernel APIs and memory ingestion store | append/upsert sinks, projection state stores, Kafka runners and outbox delivery | generated kernel bindings; no public ingestion/projection runner or store |
 | guard that owns the transaction | not implemented | `unit_of_work=` on both guards | `IdempotentOptions.UnitOfWork` on both guards |
 
 None of these differences reaches the kernels. All three SDKs call the same kernel functions, so a

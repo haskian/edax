@@ -1231,3 +1231,127 @@ impl MemoryBroker {
         self.try_poll(group).map(|value| PollLookup { value })
     }
 }
+/// An atomic in-memory ingestion database. Persist this handle across runner restarts in tests.
+pub struct MemoryIngestion {
+    inner: edax_memory::MemoryIngest,
+}
+
+/// Build an independent in-memory ingestion database.
+pub fn memory_ingestion() -> MemoryIngestion {
+    MemoryIngestion {
+        inner: edax_memory::MemoryIngest::default(),
+    }
+}
+
+impl MemoryIngestion {
+    /// Commit original records and durable rejection decisions together.
+    pub fn commit(&self, manifest: &str, inputs: &str) -> Result<String, String> {
+        let contract = crate::read_json::<edax_cqrs::ingest::Contract>(manifest)?;
+        let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(crate::to_wire)?;
+        crate::write_json(&self.inner.commit(&contract, &inputs).map_err(crate::to_wire)?)
+    }
+
+    /// Read a committed row as JSON, or JSON null.
+    pub fn get(&self, key: &str) -> Result<String, String> {
+        crate::write_json(&self.inner.get(key))
+    }
+
+    /// Read pending rejections as a JSON map, scoped to a target prefix.
+    pub fn pending(&self, prefix: &str, limit: u32) -> Result<String, String> {
+        crate::write_json(&self.inner.pending(prefix, limit as usize))
+    }
+
+    /// Delete every row in the erasure key range `[start, end)`; return how many.
+    pub fn delete_scope(&self, start: &str, end: &str) -> u64 {
+        count(self.inner.delete_scope(start, end))
+    }
+
+    /// Confirm publication of a rejection whose original fingerprint still matches.
+    pub fn published(&self, source: &str, fingerprint: &str) -> Result<(), String> {
+        self.inner.published(source, fingerprint).map_err(crate::to_wire)
+    }
+
+    /// Confirm a JSON map of source fingerprints atomically; invalid entries mark nothing.
+    pub fn published_many(&self, confirmed: &str) -> Result<(), String> {
+        self.inner
+            .published_many(&crate::read_json(confirmed)?)
+            .map_err(crate::to_wire)
+    }
+}
+
+/// An atomic in-memory projection state database: records and effect intents. Keep this handle for
+/// as long as the state should live.
+pub struct MemoryProjectionDatabase {
+    inner: edax_memory::MemoryProjectionState,
+}
+
+/// Build an independent in-memory projection state database.
+pub fn memory_projection_database() -> MemoryProjectionDatabase {
+    MemoryProjectionDatabase {
+        inner: edax_memory::MemoryProjectionState::default(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProjectionWrites {
+    inserts: std::collections::BTreeMap<String, serde_json::Value>,
+    updates: std::collections::BTreeMap<String, serde_json::Value>,
+    intents: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+impl MemoryProjectionDatabase {
+    /// Read the JSON list `keys`: `{"records": {key: value}, "versions": {key: version}}`, an absent key
+    /// at version zero with no record.
+    pub fn read(&self, keys: &str) -> Result<String, String> {
+        let read = self.inner.read(&crate::read_json::<Vec<String>>(keys)?);
+        crate::write_json(&serde_json::json!({"records": read.records, "versions": read.versions}))
+    }
+
+    /// Commit `writes`, `{"inserts", "updates", "intents"}`, if every record in `versions` is unchanged.
+    pub fn commit(&self, versions: &str, writes: &str) -> Result<(), String> {
+        let writes: ProjectionWrites = crate::read_json(writes)?;
+        let writes = edax_memory::Writes {
+            inserts: writes.inserts,
+            updates: writes.updates,
+            intents: writes.intents,
+        };
+        self.inner
+            .commit(&crate::read_json(versions)?, &writes)
+            .map_err(to_wire)
+    }
+
+    /// Up to `limit` deliverable intents of `generation`, as a JSON list in delivery order.
+    pub fn unpublished(&self, manifest_key: &str, generation: &str, limit: u32) -> Result<String, String> {
+        crate::write_json(
+            &self
+                .inner
+                .unpublished(manifest_key, generation, limit as usize)
+                .map_err(to_wire)?,
+        )
+    }
+
+    /// Delete each still-eligible intent the JSON list `keys` names; return how many.
+    pub fn mark_published(&self, manifest_key: &str, generation: &str, keys: &str) -> Result<u64, String> {
+        let keys: Vec<String> = crate::read_json(keys)?;
+        Ok(count(
+            self.inner
+                .mark_published(manifest_key, generation, &keys)
+                .map_err(to_wire)?,
+        ))
+    }
+
+    /// Delete every record in the erasure key range `[start, end)`; return how many.
+    pub fn delete_scope(&self, start: &str, end: &str) -> u64 {
+        count(self.inner.delete_scope(start, end))
+    }
+
+    /// Delete up to `limit` intents a cutover made permanently ineligible; return how many.
+    pub fn prune(&self, manifest_key: &str, generation: &str, limit: u32) -> Result<u64, String> {
+        Ok(count(
+            self.inner
+                .prune(manifest_key, generation, limit as usize)
+                .map_err(to_wire)?,
+        ))
+    }
+}

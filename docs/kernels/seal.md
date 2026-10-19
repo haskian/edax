@@ -93,7 +93,7 @@ authentication failing. AEAD itself does not prevent replay of the unchanged val
 the sequencing and idempotency kernels supply that behavior.
 See [RFC 5116](https://www.rfc-editor.org/rfc/rfc5116.html#section-1.2).
 
-### Snapshots and saga state
+### Stored state
 
 Domain: `edax.state.v1`.
 
@@ -102,9 +102,15 @@ str(kind), encryption, str(identity), str(type_name), u64(version),
 opt_str(tenant), opt_str(subject), str(marks), u32(completed)
 ```
 
-`kind` is exactly `snapshot` or `saga`; `completed` is 0 or 1.
-Snapshot identity is its storage key; saga identity is its instance ID, with saga name as
-`type_name`. Marks are the stored serialized processing marks.
+`kind` is one of `snapshot`, `saga`, `ingestion`, `projection` and `intent`. `completed` is 0 or 1.
+Snapshot identity is its storage key. Saga identity is its instance ID, with saga name as
+`type_name`. Marks are the stored serialized processing marks. The other three seal a subject's
+private data in the CQRS stores. `ingestion` binds the row key and its sequence when supplied, or 0 when absent.
+`projection` binds the state key and the event sequence. `intent` binds the intent's storage key
+with version 0. Each leaves `type_name` and marks empty and `completed` 0. The storage key carries the
+generation and the scope fields carry the tenant and subject. So a sealed value copied to another row,
+generation or subject fails authentication. The CQRS kernel's seal and open plans name these values;
+a store never builds them.
 
 The protected-state JSON envelope carries `edax_protected_state: 1`, `tenant`, `subject`,
 `completed`, `encryption`, and `data`. `completed` must be present and boolean.
@@ -157,7 +163,10 @@ completed records.
 
 The reference `MemoryKeyProvider` is mutable synchronous state. Sharing hosts serialize its calls
 with a mutex. Its `reserve(scope, cipher)` atomically chooses a generation and charges one
-invocation; exhausted generations rotate while remaining readable. Encryption generations are
+invocation; exhausted generations rotate while remaining readable. `reserve_many(scope, cipher,
+count)` charges `count` invocations to one generation, so a batch seals many values under one
+reservation, each with its own nonce. A generation with fewer than `count` left rotates; unused uses
+stay charged. A count of zero or above the cipher's limit is `bad_handle`. Encryption generations are
 separate per cipher. `fingerprint(scope)` selects a separate stable-purpose key.
 
 `resolve(scope, cipher, key_id)` and `resolve_fingerprint(scope, key_id)` never create keys.

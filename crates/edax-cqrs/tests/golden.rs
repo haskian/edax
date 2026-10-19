@@ -1820,6 +1820,1090 @@ fn idempotency_fence_cases() -> Vec<Value> {
         .collect()
 }
 
+fn ingest_cases() -> Vec<Value> {
+    use edax_cqrs::ingest::{self, Contract, Input, Rejection, Stored};
+    use edax_cqrs::namespace;
+    use std::collections::BTreeMap;
+
+    let target = "orders-v1";
+    let input = |offset: i64, sequence: Option<u64>, status: &str| {
+        let raw = json!({"offset":offset,"sequence":sequence,"status":status}).to_string();
+        Input {
+            source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
+            key: namespace::key(target, &json!(["upsert", "acme", null, "order-42"]).to_string()).unwrap(),
+            stream: "order-42".into(),
+            event_id: format!("order-42-event-{offset}"),
+            sequence,
+            content: json!({"aggregate_id":"order-42", "sequence":sequence, "name":"OrderState", "version":1, "status":status}),
+            private: Some(json!({"order_id":"order-42", "status":status})),
+            public: None,
+            erased: false,
+            fingerprint: None,
+            raw_fingerprint: ingest::raw_fingerprint(raw.as_bytes()),
+            raw,
+            failure: None,
+        }
+    };
+    let empty = BTreeMap::new();
+    let no_rejections = BTreeMap::new();
+    let mut rows = Vec::new();
+    let mut add = |name: &str,
+                   mode: &str,
+                   inputs: Vec<Input>,
+                   stored: &BTreeMap<String, Stored>,
+                   rejected: &BTreeMap<String, Rejection>| {
+        let result = ingest::plan(mode, &inputs, stored, rejected);
+        rows.push(json!({
+            "name":name, "op":"plan", "mode":mode, "inputs":inputs, "stored":stored,
+            "rejected":rejected, "want":result.as_ref().ok(), "error":refusal(&result),
+        }));
+    };
+    let created = input(0, Some(1), "created");
+    let paid = input(1, Some(2), "paid");
+    let shipped = input(2, Some(3), "shipped");
+    let other_stream = Input {
+        stream: "order-99".into(),
+        ..input(3, Some(4), "paid")
+    };
+    let paid_state = ingest::plan("upsert", std::slice::from_ref(&paid), &empty, &no_rejections).unwrap();
+    let mut conflicting_paid = input(4, Some(2), "cancelled");
+    // Keep raw identity different while using the same committed sequence and target.
+    conflicting_paid.event_id = "order-42-conflicting-payment".into();
+    let mut append = created.clone();
+    append.sequence = None;
+    append.key = namespace::key(target, &json!(["append", "acme", null, append.event_id]).to_string()).unwrap();
+    let append_state = ingest::plan("append", std::slice::from_ref(&append), &empty, &no_rejections).unwrap();
+    let append_conflict = Input {
+        private: Some(json!({"order_id":"order-42","status":"cancelled"})),
+        ..append.clone()
+    };
+    for (name, nul) in [
+        (
+            "nul_in_value_rejected_as_record",
+            Input {
+                private: Some(json!({"order_id":"order-42","note":"a\u{0}b"})),
+                ..paid.clone()
+            },
+        ),
+        (
+            "nul_in_stream_rejected_as_record",
+            Input {
+                stream: "order\u{0}42".into(),
+                ..paid.clone()
+            },
+        ),
+    ] {
+        add(name, "upsert", vec![nul], &empty, &no_rejections);
+    }
+    add(
+        "append_new_event_without_sequence",
+        "append",
+        vec![append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "append_exact_replay",
+        "append",
+        vec![append.clone()],
+        &append_state.writes,
+        &no_rejections,
+    );
+    add(
+        "append_conflicting_replay",
+        "append",
+        vec![append_conflict],
+        &append_state.writes,
+        &no_rejections,
+    );
+    add(
+        "append_duplicate_in_batch",
+        "append",
+        vec![append.clone(), append],
+        &empty,
+        &no_rejections,
+    );
+    let mut failed_append = created.clone();
+    failed_append.sequence = None;
+    failed_append.key = namespace::key(
+        target,
+        &json!(["append", "acme", null, failed_append.event_id]).to_string(),
+    )
+    .unwrap();
+    failed_append.failure = Some("codec: mapper refused this event".into());
+    let mut valid_append = failed_append.clone();
+    valid_append.failure = None;
+    add(
+        "one_source_valid_then_failed_refused",
+        "append",
+        vec![valid_append.clone(), failed_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "one_source_failed_then_valid_refused",
+        "append",
+        vec![failed_append, valid_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    let mut erased_append = valid_append.clone();
+    erased_append.erased = true;
+    erased_append.private = None;
+    add(
+        "one_source_valid_then_erased_refused",
+        "append",
+        vec![valid_append.clone(), erased_append.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "one_source_erased_then_valid_refused",
+        "append",
+        vec![erased_append, valid_append],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "upsert_absent_key_first_owner_wins",
+        "upsert",
+        vec![created.clone(), other_stream.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "upsert_lower_sequence_ignored",
+        "upsert",
+        vec![created.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_equal_sequence_exact_replay",
+        "upsert",
+        vec![paid.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_equal_sequence_conflict",
+        "upsert",
+        vec![conflicting_paid.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "upsert_higher_sequence",
+        "upsert",
+        vec![shipped.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "equal_new_sequence_first_value_wins",
+        "upsert",
+        vec![paid.clone(), conflicting_paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "compaction_preserves_original_outcomes",
+        "upsert",
+        vec![shipped.clone(), created.clone(), paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "stale_conflicts_are_ignored",
+        "upsert",
+        vec![paid.clone(), conflicting_paid.clone()],
+        &ingest::plan("upsert", std::slice::from_ref(&shipped), &empty, &no_rejections)
+            .unwrap()
+            .writes,
+        &no_rejections,
+    );
+    let erased = Input {
+        erased: true,
+        private: None,
+        ..input(5, Some(4), "erased")
+    };
+    add(
+        "erased_input_accepted_without_write",
+        "upsert",
+        vec![erased.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "erased_input_never_creates_a_row",
+        "upsert",
+        vec![erased],
+        &empty,
+        &no_rejections,
+    );
+    let sealed_key = [9u8; 32];
+    let keyed = |input: Input| {
+        let input = Input {
+            public: Some(json!({"status":"paid"})),
+            ..input
+        };
+        let fingerprint = ingest::keyed_fingerprint(
+            &sealed_key,
+            &input.content,
+            input.private.as_ref(),
+            input.public.as_ref(),
+        )
+        .unwrap();
+        Input {
+            fingerprint: Some(fingerprint),
+            ..input
+        }
+    };
+    let sealed_paid = keyed(paid.clone());
+    let sealed_state = ingest::plan("upsert", std::slice::from_ref(&sealed_paid), &empty, &no_rejections).unwrap();
+    add(
+        "keyed_fingerprint_is_stored",
+        "upsert",
+        vec![sealed_paid.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "keyed_fingerprint_exact_replay",
+        "upsert",
+        vec![sealed_paid],
+        &sealed_state.writes,
+        &no_rejections,
+    );
+    add(
+        "unsealed_replay_of_a_sealed_sequence_conflicts",
+        "upsert",
+        vec![paid.clone()],
+        &sealed_state.writes,
+        &no_rejections,
+    );
+    let tombstone = Input {
+        private: None,
+        ..input(5, Some(4), "deleted")
+    };
+    let deleted = ingest::plan(
+        "upsert",
+        std::slice::from_ref(&tombstone),
+        &paid_state.writes,
+        &no_rejections,
+    )
+    .unwrap();
+    add(
+        "tombstone_retains_owner_and_sequence",
+        "upsert",
+        vec![tombstone.clone()],
+        &paid_state.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_exact_replay",
+        "upsert",
+        vec![tombstone],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_rejects_new_owner",
+        "upsert",
+        vec![other_stream.clone()],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "tombstone_ignores_stale_resurrection",
+        "upsert",
+        vec![created.clone()],
+        &deleted.writes,
+        &no_rejections,
+    );
+    add(
+        "missing_sequence_rejected",
+        "upsert",
+        vec![input(6, None, "created")],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "postgres_sequence_overflow_rejected",
+        "upsert",
+        vec![input(7, Some(i64::MAX as u64 + 1), "created")],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "zero_sequence_is_valid",
+        "upsert",
+        vec![input(8, Some(0), "created")],
+        &empty,
+        &no_rejections,
+    );
+    let invalid = Input {
+        failure: Some("codec: order status is malformed".into()),
+        ..created.clone()
+    };
+    let rejected = ingest::plan("upsert", std::slice::from_ref(&invalid), &empty, &no_rejections).unwrap();
+    add(
+        "invalid_original_does_not_propose_owner",
+        "upsert",
+        vec![invalid, other_stream.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "durable_rejection_excluded_before_owner_selection",
+        "upsert",
+        vec![created.clone(), other_stream.clone()],
+        &empty,
+        &rejected.rejections,
+    );
+    let mut published = rejected.rejections.clone();
+    for rejection in published.values_mut() {
+        rejection.published = true;
+    }
+    add(
+        "published_rejection_still_excludes_original",
+        "upsert",
+        vec![created.clone(), other_stream],
+        &empty,
+        &published,
+    );
+    let first_batch = vec![paid.clone(), conflicting_paid.clone(), shipped.clone()];
+    let first_result = ingest::plan("upsert", &first_batch, &empty, &no_rejections).unwrap();
+    add(
+        "commit_before_crash",
+        "upsert",
+        first_batch.clone(),
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "replay_after_commit_keeps_rejection_despite_compaction",
+        "upsert",
+        first_batch,
+        &first_result.writes,
+        &first_result.rejections,
+    );
+    let reused_source = Input {
+        raw_fingerprint: ingest::raw_fingerprint(b"changed-source-record"),
+        raw: "changed-source-record".into(),
+        ..created.clone()
+    };
+    add(
+        "durable_rejection_detects_source_reuse",
+        "upsert",
+        vec![reused_source.clone()],
+        &empty,
+        &rejected.rejections,
+    );
+    add(
+        "source_reuse_in_batch_refuses_entire_call",
+        "upsert",
+        vec![created.clone(), reused_source],
+        &empty,
+        &no_rejections,
+    );
+    let original_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    let full_record = Input {
+        raw_fingerprint: original_digest.into(),
+        failure: Some("codec: order status is malformed".into()),
+        ..created.clone()
+    };
+    let stub_record = Input {
+        raw: json!({"topic":"orders","partition":0,"offset":0,"oversized":true,"sha256":original_digest}).to_string(),
+        ..full_record.clone()
+    };
+    let full_rejection = ingest::plan("upsert", std::slice::from_ref(&full_record), &empty, &no_rejections).unwrap();
+    let stub_rejection = ingest::plan("upsert", std::slice::from_ref(&stub_record), &empty, &no_rejections).unwrap();
+    add(
+        "source_digest_survives_full_to_stub_replay",
+        "upsert",
+        vec![stub_record.clone()],
+        &empty,
+        &full_rejection.rejections,
+    );
+    add(
+        "source_digest_survives_stub_to_full_replay",
+        "upsert",
+        vec![full_record.clone()],
+        &empty,
+        &stub_rejection.rejections,
+    );
+    add(
+        "source_digest_survives_full_and_stub_in_batch",
+        "upsert",
+        vec![full_record.clone(), stub_record.clone()],
+        &empty,
+        &no_rejections,
+    );
+    let changed_digest = Input {
+        raw_fingerprint: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into(),
+        ..stub_record
+    };
+    add(
+        "source_digest_change_refused_on_replay",
+        "upsert",
+        vec![changed_digest.clone()],
+        &empty,
+        &full_rejection.rejections,
+    );
+    add(
+        "source_digest_change_refuses_entire_batch",
+        "upsert",
+        vec![full_record, changed_digest],
+        &empty,
+        &no_rejections,
+    );
+    add(
+        "unknown_mode_refused",
+        "fold",
+        vec![created.clone()],
+        &empty,
+        &no_rejections,
+    );
+    add("empty_batch_no_changes", "upsert", vec![], &empty, &no_rejections);
+
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: target.into(),
+        source_incarnation: "cluster-a/orders-v1".into(),
+        mapper_id: "order-state-v1".into(),
+        at_rest: "sealed".into(),
+    };
+    for (name, previous, expected) in [
+        ("bind_new_target", None, contract.clone()),
+        ("bind_same_target", Some(contract.clone()), contract.clone()),
+        (
+            "changed_mapper_refused",
+            Some(contract.clone()),
+            Contract {
+                mapper_id: "order-state-v2".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "changed_source_refused",
+            Some(contract.clone()),
+            Contract {
+                source_incarnation: "cluster-b/orders-v1".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "changed_at_rest_refused",
+            Some(contract.clone()),
+            Contract {
+                at_rest: "plaintext".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "unsupported_at_rest_refused",
+            None,
+            Contract {
+                at_rest: "hashed".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "unsupported_contract_mode",
+            None,
+            Contract {
+                mode: "fold".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "empty_generation_refused",
+            None,
+            Contract {
+                generation: String::new(),
+                ..contract.clone()
+            },
+        ),
+    ] {
+        let result = ingest::bind_contract(previous.as_ref(), &expected).map(|()| true);
+        rows.push(json!({"name":name,"op":"bind","previous":previous,"expected":expected,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, inputs) in [
+        ("valid_scoped_input", vec![created.clone()]),
+        (
+            "source_offset_at_json_safe_integer_boundary",
+            vec![Input {
+                source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, 9_007_199_254_740_992).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "source_offset_at_postgres_bigint_maximum",
+            vec![Input {
+                source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, i64::MAX).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "foreign_target_refused",
+            vec![Input {
+                key: namespace::key("orders-v2", r#"["upsert","acme",null,"order-42"]"#).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "foreign_source_incarnation_refused",
+            vec![Input {
+                source: ingest::source_key(target, "other-cluster", "orders", 0, 0).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "noncanonical_identity_refused",
+            vec![Input {
+                key: format!(
+                    "{}[\"upsert\", \"acme\", \"order-42\"]",
+                    namespace::prefix(target).unwrap()
+                ),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_stream_refused",
+            vec![Input {
+                stream: String::new(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "row_mode_must_match_contract",
+            vec![Input {
+                key: ingest::row_key(target, "append", Some("acme"), None, &created.event_id).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "source_partition_above_i32_maximum_refused",
+            vec![Input {
+                source: namespace::key(
+                    target,
+                    &json!(["source", "cluster-a/orders-v1", "orders", i64::from(i32::MAX) + 1, "0"]).to_string(),
+                )
+                .unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "non_string_tenant_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", 42, null, "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_row_id_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", null, ""]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_event_id_refused",
+            vec![Input {
+                event_id: String::new(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "uppercase_raw_fingerprint_refused",
+            vec![Input {
+                raw_fingerprint: created.raw_fingerprint.to_uppercase(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "short_raw_fingerprint_refused",
+            vec![Input {
+                raw_fingerprint: "0123456789abcdef".into(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "short_keyed_fingerprint_refused",
+            vec![Input {
+                fingerprint: Some("0123456789abcdef".into()),
+                ..created.clone()
+            }],
+        ),
+        (
+            "uppercase_keyed_fingerprint_refused",
+            vec![Input {
+                fingerprint: Some(created.raw_fingerprint.to_uppercase()),
+                ..created.clone()
+            }],
+        ),
+        (
+            "empty_subject_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", "", "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "non_string_subject_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", 42, "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "pre_subject_row_key_refused",
+            vec![Input {
+                key: namespace::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
+                ..created.clone()
+            }],
+        ),
+    ] {
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    // A sealed target stores a subject's private part only as its protected-state envelope.
+    let envelope = |tenant: &str, subject: &str| -> Value {
+        let encryption = edax_seal::EncryptionInfo {
+            format_version: 1,
+            key_namespace: "people".into(),
+            key_id: "generation-7".into(),
+            cipher: edax_seal::Cipher::XChaCha20Poly1305,
+            nonce: vec![0x24; edax_seal::Cipher::XChaCha20Poly1305.nonce_len()],
+        };
+        let state = edax_event::sealing::ProtectedState::new(
+            Some(tenant.into()),
+            Some(subject.into()),
+            false,
+            encryption,
+            vec![0x5a; 40],
+        );
+        serde_json::from_str(&edax_event::sealing::encode_protected_state(&state).unwrap()).unwrap()
+    };
+    let personal = Input {
+        key: ingest::row_key(target, "upsert", Some("acme"), Some("person-7"), "order-42").unwrap(),
+        fingerprint: Some("ab".repeat(32)),
+        private: Some(envelope("acme", "person-7")),
+        ..created.clone()
+    };
+    let plaintext_contract = Contract {
+        at_rest: "plaintext".into(),
+        ..contract.clone()
+    };
+    let append_contract_for_open = Contract {
+        mode: "append".into(),
+        ..contract.clone()
+    };
+    for (name, contract, input) in [
+        ("sealed_subject_row_accepted", &contract, personal.clone()),
+        (
+            "sealed_subject_plaintext_private_refused",
+            &contract,
+            Input {
+                private: Some(json!({"email":"person-7@example.com"})),
+                ..personal.clone()
+            },
+        ),
+        (
+            "sealed_subject_without_keyed_fingerprint_refused",
+            &contract,
+            Input {
+                fingerprint: None,
+                ..personal.clone()
+            },
+        ),
+        (
+            "envelope_of_another_subject_refused",
+            &contract,
+            Input {
+                private: Some(envelope("acme", "person-8")),
+                ..personal.clone()
+            },
+        ),
+        (
+            "envelope_of_another_tenant_refused",
+            &contract,
+            Input {
+                private: Some(envelope("globex", "person-7")),
+                ..personal.clone()
+            },
+        ),
+        (
+            "sealed_deletion_marker_accepted",
+            &contract,
+            Input {
+                private: None,
+                public: None,
+                ..personal.clone()
+            },
+        ),
+        (
+            "erased_subject_row_accepted",
+            &contract,
+            Input {
+                private: None,
+                fingerprint: None,
+                erased: true,
+                ..personal.clone()
+            },
+        ),
+        (
+            "refused_subject_row_accepted",
+            &contract,
+            Input {
+                private: None,
+                fingerprint: None,
+                failure: Some("codec: sealed record refused".into()),
+                ..personal.clone()
+            },
+        ),
+        ("row_without_subject_stays_plaintext", &contract, created.clone()),
+        (
+            "plaintext_target_keeps_subject_private",
+            &plaintext_contract,
+            Input {
+                private: Some(json!({"email":"person-7@example.com"})),
+                fingerprint: None,
+                ..personal.clone()
+            },
+        ),
+    ] {
+        let inputs = vec![input];
+        let result = ingest::check_sealed(contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"check_sealed","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    // What a sink seals: the present private part of each written subject row of a sealed target, bound
+    // to its row key and sequence; and what it opens in a row it read.
+    let plain = |offset: i64, subject: Option<&str>, row: &str| {
+        let raw = json!({"offset":offset}).to_string();
+        Input {
+            source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
+            key: ingest::row_key(target, "upsert", Some("acme"), subject, row).unwrap(),
+            stream: row.into(),
+            private: Some(json!({"email": format!("{}@example.com", subject.unwrap_or("nobody"))})),
+            public: Some(json!({"status":"paid"})),
+            raw_fingerprint: ingest::raw_fingerprint(raw.as_bytes()),
+            raw,
+            ..created.clone()
+        }
+    };
+    let batch = vec![
+        plain(10, Some("person-7"), "order-1"),
+        plain(11, None, "order-2"),
+        Input {
+            erased: true,
+            private: None,
+            public: None,
+            ..plain(12, Some("person-7"), "order-3")
+        },
+        Input {
+            failure: Some("codec: sealed record refused".into()),
+            private: None,
+            public: None,
+            ..plain(13, Some("person-7"), "order-4")
+        },
+        Input {
+            private: None,
+            ..plain(14, Some("person-8"), "order-5")
+        },
+        plain(15, Some("person-8"), "order-6"),
+    ];
+    for (name, contract) in [
+        ("seal_plan_of_a_mixed_batch", &contract),
+        ("seal_plan_of_a_plaintext_target_is_empty", &plaintext_contract),
+    ] {
+        let result = ingest::seal_plan(contract, &batch);
+        rows.push(json!({"name":name,"op":"seal_plan","contract":contract,"inputs":batch,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let stored = |key: &str, sequence: Option<u64>, private: Option<Value>| {
+        (
+            key.to_owned(),
+            Stored {
+                stream: "order-1".into(),
+                sequence,
+                fingerprint: "ab".repeat(32),
+                private,
+                public: Some(json!({"status":"paid"})),
+            },
+        )
+    };
+    let subject_key = ingest::row_key(target, "upsert", Some("acme"), Some("person-7"), "order-1").unwrap();
+    let plain_key = ingest::row_key(target, "upsert", Some("acme"), None, "order-2").unwrap();
+    let sealed_private = Some(envelope("acme", "person-7"));
+    for (name, contract, (key, row)) in [
+        (
+            "open_plan_of_a_sealed_subject_row",
+            &contract,
+            stored(&subject_key, Some(3), sealed_private.clone()),
+        ),
+        (
+            "open_plan_of_a_row_without_subject",
+            &contract,
+            stored(&plain_key, Some(3), Some(json!({"email":"x"}))),
+        ),
+        (
+            "open_plan_of_a_deletion_marker",
+            &contract,
+            stored(&subject_key, Some(4), None),
+        ),
+        (
+            "open_plan_of_a_plaintext_target",
+            &plaintext_contract,
+            stored(&subject_key, Some(3), Some(json!({"email":"x"}))),
+        ),
+        (
+            "open_plan_of_an_append_row_binds_version_zero",
+            &append_contract_for_open,
+            stored(
+                &ingest::row_key(target, "append", Some("acme"), Some("person-7"), &created.event_id).unwrap(),
+                None,
+                sealed_private.clone(),
+            ),
+        ),
+    ] {
+        let result = ingest::open_plan(contract, &key, &row);
+        rows.push(json!({"name":name,"op":"open_plan","contract":contract,"row_key":key,"stored":row,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let append_contract = Contract {
+        mode: "append".into(),
+        ..contract.clone()
+    };
+    for (name, row_id) in [
+        ("valid_append_contract_input", created.event_id.as_str()),
+        ("append_row_id_must_equal_event_id", "different-event"),
+    ] {
+        let inputs = vec![Input {
+            key: ingest::row_key(target, "append", Some("acme"), None, row_id).unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&append_contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":append_contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, offset) in [
+        ("numeric_source_offset_refused", json!(0)),
+        ("leading_zero_source_offset_refused", json!("00")),
+        ("positive_sign_source_offset_refused", json!("+1")),
+        ("negative_source_offset_refused", json!("-1")),
+        ("negative_zero_source_offset_refused", json!("-0")),
+        ("whitespace_source_offset_refused", json!(" 1")),
+        ("source_offset_beyond_bigint_refused", json!("9223372036854775808")),
+    ] {
+        let inputs = vec![Input {
+            source: namespace::key(
+                target,
+                &json!(["source", "cluster-a/orders-v1", "orders", 0, offset]).to_string(),
+            )
+            .unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, partition, offset) in [
+        ("source_offset_zero", 0, 0),
+        ("source_offset_last_json_safe_integer", 0, 9_007_199_254_740_991),
+        ("source_offset_two_to_53", 0, 9_007_199_254_740_992),
+        ("source_offset_two_to_53_plus_one", 0, 9_007_199_254_740_993),
+        ("source_offset_bigint_maximum", i32::MAX, i64::MAX),
+        ("source_negative_offset_refused", 0, -1),
+        ("source_bigint_minimum_refused", 0, i64::MIN),
+        ("source_negative_partition_refused", -1, 0),
+    ] {
+        let incarnation = "cluster-a/orders-v1";
+        let topic = "orders";
+        let result = ingest::source_key(target, incarnation, topic, partition, offset);
+        rows.push(json!({"name":name,"op":"source","target":target,"incarnation":incarnation,"topic":topic,"partition":partition,"offset":offset,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, source_id) in [
+        ("opaque_source", "device-7/session-2/reading-9"),
+        ("opaque_unicode_source", "meritev-ž/9"),
+        ("opaque_empty_source", ""),
+        ("opaque_nul_source", "bad\0id"),
+    ] {
+        let incarnation = "cluster-a/orders-v1";
+        let result = ingest::record_source_key(target, incarnation, source_id);
+        rows.push(json!({"name":name,"op":"record_source","target":target,"incarnation":incarnation,"source_id":source_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+        if let Ok(source) = result {
+            let inputs = vec![Input {
+                source,
+                ..created.clone()
+            }];
+            let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+            rows.push(json!({"name":format!("{name}_validated"),"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+            let result = ingest::write_scopes(&contract, &inputs);
+            rows.push(json!({"name":format!("{name}_scopes"),"op":"write_scopes","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+        }
+    }
+    for (name, parts) in [
+        (
+            "opaque_forged_nul",
+            json!(["source-id", contract.source_incarnation, "bad\0id"]),
+        ),
+        ("opaque_wrong_incarnation", json!(["source-id", "other", "reading-9"])),
+        (
+            "opaque_wrong_arity",
+            json!(["source-id", contract.source_incarnation, "reading-9", 0]),
+        ),
+    ] {
+        let inputs = vec![Input {
+            source: edax_cqrs::namespace::key(target, &parts.to_string()).unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let scopes_inputs = [
+        (Some("clinic-a"), Some("patient-42")),
+        (None, None),
+        (Some("clinic-a"), None),
+        (Some("clinic-a"), Some("patient-42")),
+    ]
+    .into_iter()
+    .map(|(tenant, subject)| Input {
+        key: ingest::row_key(target, "upsert", tenant, subject, "reading-1").unwrap(),
+        ..created.clone()
+    })
+    .collect::<Vec<_>>();
+    let result = ingest::write_scopes(&contract, &scopes_inputs);
+    rows.push(json!({"name":"write_scopes_preserve_input_order_and_duplicates","op":"write_scopes","contract":contract,"inputs":scopes_inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    for (name, target, mode, tenant, subject, row_id) in [
+        ("row_key_upsert", "orders-v1", "upsert", Some("acme"), None, "order-42"),
+        ("row_key_append", "orders-v1", "append", Some("acme"), None, "event-42"),
+        ("row_key_absent_tenant", "orders-v1", "upsert", None, None, "order-42"),
+        (
+            "row_key_empty_tenant",
+            "orders-v1",
+            "upsert",
+            Some(""),
+            None,
+            "order-42",
+        ),
+        (
+            "row_key_nul_tenant",
+            "orders-v1",
+            "upsert",
+            Some("acme\0store"),
+            None,
+            "order-42",
+        ),
+        ("row_key_nul_row", "orders-v1", "upsert", None, None, "order\0-42"),
+        (
+            "row_key_unicode",
+            "naročila-v1",
+            "upsert",
+            Some("trgovina-ž"),
+            None,
+            "naročilo-42",
+        ),
+        ("row_key_empty_row_refused", "orders-v1", "upsert", None, None, ""),
+        ("row_key_empty_event_refused", "orders-v1", "append", None, None, ""),
+        (
+            "row_key_invalid_mode_refused",
+            "orders-v1",
+            "fold",
+            None,
+            None,
+            "order-42",
+        ),
+        ("row_key_empty_target_refused", "", "upsert", None, None, "order-42"),
+        (
+            "row_key_nul_target_refused",
+            "orders\0v1",
+            "upsert",
+            None,
+            None,
+            "order-42",
+        ),
+        (
+            "row_key_with_subject",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some("person-42"),
+            "order-42",
+        ),
+        (
+            "row_key_subject_without_tenant",
+            "orders-v1",
+            "upsert",
+            None,
+            Some("person-42"),
+            "order-42",
+        ),
+        (
+            "row_key_empty_subject_refused",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some(""),
+            "order-42",
+        ),
+        (
+            "row_key_nul_subject_refused",
+            "orders-v1",
+            "upsert",
+            Some("acme"),
+            Some("person\0-42"),
+            "order-42",
+        ),
+    ] {
+        let result = ingest::row_key(target, mode, tenant, subject, row_id);
+        rows.push(json!({"name":name,"op":"row_key","target":target,"mode":mode,"tenant":tenant,"subject":subject,"row_id":row_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (name, mode, tenant, subject) in [
+        ("scope_range_of_a_subject", "upsert", Some("acme"), Some("person-42")),
+        ("scope_range_without_tenant", "append", None, Some("person-42")),
+        ("scope_range_of_a_whole_tenant", "upsert", Some("acme"), None),
+        ("scope_range_empty_subject_refused", "upsert", Some("acme"), Some("")),
+        (
+            "scope_range_invalid_mode_refused",
+            "fold",
+            Some("acme"),
+            Some("person-42"),
+        ),
+    ] {
+        let result = ingest::scope_range("orders-v1", mode, tenant, subject);
+        rows.push(json!({"name":name,"op":"scope_range","target":"orders-v1","mode":mode,"tenant":tenant,"subject":subject,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let key = [7u8; 32];
+    for (name, key, private) in [
+        ("keyed_fingerprint", key.as_slice(), json!({"email":"ana@example.com"})),
+        (
+            "keyed_fingerprint_other_value",
+            key.as_slice(),
+            json!({"email":"bob@example.com"}),
+        ),
+        (
+            "keyed_fingerprint_short_key_refused",
+            &key[..16],
+            json!({"email":"ana@example.com"}),
+        ),
+    ] {
+        let content = json!({"name":"OrderPlaced","aggregate_id":"order-42"});
+        let public = json!({"status":"paid"});
+        let result = ingest::keyed_fingerprint(key, &content, Some(&private), Some(&public));
+        rows.push(json!({"name":name,"op":"keyed_fingerprint","key":key,"state":{"content":content,"private":private,"public":public},"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    for (set, names) in [
+        ("ingest_mode", ingest::Mode::NAMES),
+        ("ingest_outcome", ingest::Outcome::NAMES),
+    ] {
+        rows.push(json!({"name":format!("{set}_names"),"op":"names","set":set,"want":names,"error":null}));
+    }
+    rows
+}
+
+#[test]
+fn golden_ingest() {
+    write_or_check("ingest.json", ingest_cases());
+}
+
 #[test]
 fn golden() {
     write_or_check("idempotency_fence.json", idempotency_fence_cases());

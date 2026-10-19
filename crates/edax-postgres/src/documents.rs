@@ -19,6 +19,7 @@
 use std::io;
 
 use edax_core::Error;
+use edax_cqrs::holds_nul;
 use serde::Serialize;
 use serde_json::ser::{CompactFormatter, Formatter, Serializer};
 use serde_json::{Number, Value};
@@ -69,16 +70,6 @@ impl Formatter for ExactFormatter {
         } else {
             CompactFormatter.write_f64(writer, value)
         }
-    }
-}
-
-/// Whether a string or an object key anywhere in `value` holds NUL, which `jsonb` cannot store.
-pub(crate) fn holds_nul(value: &Value) -> bool {
-    match value {
-        Value::String(s) => s.contains('\0'),
-        Value::Array(items) => items.iter().any(holds_nul),
-        Value::Object(fields) => fields.iter().any(|(key, item)| key.contains('\0') || holds_nul(item)),
-        _ => false,
     }
 }
 

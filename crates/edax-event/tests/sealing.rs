@@ -403,8 +403,15 @@ fn golden_sealing() {
         let command = sealed_command(*cipher);
         cases.push(json!({"kind":"event", "cipher":cipher.as_str(), "key_hex":hex(&KEY), "plaintext_hex":hex(PLAINTEXT), "encryption":encryption, "aad_hex":hex(&event_context(&event).unwrap()), "ciphertext_hex":hex(&event.data), "json_hex":hex(&Format::Json.encode(&event).unwrap()), "msgpack_hex":hex(&Format::Msgpack.encode(&event).unwrap())}));
         cases.push(json!({"kind":"command", "cipher":cipher.as_str(), "key_hex":hex(&KEY), "plaintext_hex":hex(PLAINTEXT), "encryption":encryption, "aad_hex":hex(&command_context(&command).unwrap()), "ciphertext_hex":hex(&command.data), "json_hex":hex(&Format::Json.encode(&command).unwrap()), "msgpack_hex":hex(&Format::Msgpack.encode(&command).unwrap())}));
-        for kind in ["snapshot", "saga"] {
-            let state = state(kind);
+        for kind in ["snapshot", "saga", "ingestion", "projection", "intent"] {
+            let mut state = state(kind);
+            if matches!(kind, "ingestion" | "projection" | "intent") {
+                state.type_name = "";
+                state.marks = "";
+                if kind == "intent" {
+                    state.version = 0;
+                }
+            }
             let context = state.context(&encryption).unwrap();
             let ciphertext = edax_seal::seal(&encryption, &KEY, &context, PLAINTEXT).unwrap();
             cases.push(json!({"kind":kind,"cipher":cipher.as_str(),"key_hex":hex(&KEY),"plaintext_hex":hex(PLAINTEXT),"encryption":encryption,"identity":state.identity,"type_name":state.type_name,"version":state.version,"tenant":state.tenant,"subject":state.subject,"marks":state.marks,"completed":state.completed,"aad_hex":hex(&context),"ciphertext_hex":hex(&ciphertext)}));

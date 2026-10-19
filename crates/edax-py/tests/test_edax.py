@@ -426,6 +426,7 @@ def test_golden_kafka_offsets() -> None:
     ``due`` names the commits. Every scenario ends with the per-partition stats it left."""
     for c in golden("kafka_offsets.json"):
         tracker = _edax.offset_tracker()  # fresh per scenario: tokens are per tracker
+        captured: dict[int, _edax.KafkaDue] = {}
         for i, step in enumerate(c["steps"]):
             where = f"{c['name']} step {i} ({step['op']})"
             op, want = step["op"], step["want"]
@@ -453,6 +454,19 @@ def test_golden_kafka_offsets() -> None:
                 assert rows == want["rows"], where
             elif op == "committed":
                 assert tracker.committed(step["topic"], step["partition"], step["offset"]) is None, where
+            elif op == "capture_due":
+                due_rows = tracker.due()
+                assert len(due_rows) == 1, where
+                due = due_rows[0]
+                captured[step["slot"]] = due
+                assert {
+                    "due": {"topic": due.topic, "partition": due.partition, "offset": due.offset}
+                } == want, where
+            elif op == "committed_generation":
+                due = captured[step["slot"]]
+                assert (
+                    tracker.committed_generation(due.topic, due.partition, due.offset, due.generation) is None
+                ), where
             elif op == "reset":
                 assert tracker.reset(step["topic"], step["partition"]) is None, where
             elif op == "stats":

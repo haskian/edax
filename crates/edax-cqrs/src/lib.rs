@@ -38,6 +38,11 @@
 //!   command, and the value order the decimal [`Collation`] gives a filter and a sort.
 //! - [`canonical_timestamp`] — the one text an instant travels as: fixed-width UTC, so string order
 //!   is instant order.
+//! - [`namespace`] — the length-prefixed key namespace of a generation, shared by ingestion and
+//!   projection state.
+//! - [`ingest`] — append/upsert identity, ownership, compaction, durable rejections and target contracts.
+//! - [`projection`] — ordered projection state: canonical reducer input, event and sequence receipts,
+//!   source continuity, checkpoint leases and effect cutovers.
 //!
 //! [`Decimal`] / [`Instant`] are the host-value types that hold those texts. They live here because
 //! both halves read them. A Rust host declares a field with them, so its command hashes, and its event
@@ -60,8 +65,11 @@ mod decimal_text;
 // at the root, the one path a caller names.
 pub mod filter;
 mod host_value;
+pub mod ingest;
 mod json_numbers;
 mod ledger;
+pub mod namespace;
+pub mod projection;
 pub mod protected;
 mod query;
 mod record;
@@ -76,7 +84,7 @@ use edax_core::Error;
 pub use host_value::{Decimal, Instant};
 pub use ledger::{complete_fence, release_fence, Claimed, Fence, Holder};
 pub use timestamp::{canonical_timestamp, timestamp_from_unix_nanos};
-pub use value::{read_json, type_rank, TYPE_ORDER};
+pub use value::{holds_nul, read_json, type_rank, TYPE_ORDER};
 
 pub use filter::{eval, eval_json, Filter, Operator};
 pub use query::{
@@ -88,6 +96,19 @@ pub use record::{
     cached_failure, check_reason, check_settled, decode_prior, decode_record, encode_record, forget, lapsed_claim,
     outcome, replay, settle_failure, unsettled_claim, Outcome, OutcomeKind, Record, Settle, State, StateKind,
 };
+
+/// HMAC-SHA-256 of `canonical` under `key`, tagged with `domain`, as lowercase hex: the keyed
+/// fingerprint ingestion and projection store for a sealed record. Erasure destroys the key, and with
+/// it any way to test a guessed value against the stored digest.
+pub(crate) fn keyed_digest(key: &[u8], domain: &[u8], canonical: &[u8]) -> Result<String, edax_core::Error> {
+    let mac = edax_seal::fingerprint(key, &[domain, canonical].concat())?;
+    Ok(mac.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Whether `value` is a SHA-256 or HMAC-SHA-256 digest in lowercase hex.
+pub(crate) fn is_digest_hex(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
 
 /// The idempotency hash of a command: its **name and the whole command value** serialized as one JSON
 /// object `{"name": name, "payload": value}`, then [`canonical_json`], then [`payload_hash`].

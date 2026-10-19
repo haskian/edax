@@ -1,24 +1,53 @@
-"""Read-model persistence seam. The event-sourced side (:mod:`edax.store`) replays events to rebuild an
-aggregate; a read model is the other shape, a current document saved with an optimistic version and queried
-directly: a versioned document store, not a projector. It records no folded events, so a handler skips a
+"""Read-model persistence, in two shapes.
+
+:class:`ProjectionStore` saves a current document with an optimistic version and queries it directly. It
+is a versioned document store, not a projector: it records no folded events, so a handler skips a
 redelivered one with :func:`~edax.router.idempotent_by_id`. A :class:`ProjectionQuery` backend serves
-:meth:`~ProjectionQuery.get_many` by pushing the kernel's filter, sort and pagination down to native SQL, so
-two services page it identically. See ``docs/sdk/projections.md``."""
+:meth:`~ProjectionQuery.get_many` by pushing the kernel's filter, sort and pagination down to native SQL,
+so two services page it identically. See ``docs/sdk/projections.md``.
+
+:class:`ProjectionStateStore` is a projector's store. A :data:`Reducer` folds ordered delta events into
+per-aggregate state, and each commit writes the state, event receipts, effect intents and source
+checkpoint together. :class:`~edax.backend.kafka_projection.KafkaProjection` drives it. See
+``docs/sdk/projection-processing.md``."""
 
 from __future__ import annotations
 
 import functools
-from dataclasses import dataclass
-from typing import Any, Protocol, runtime_checkable
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack, contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field, fields
+from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from . import _json, _native
+from ._owned import ThreadBound
+from ._units import own_write
+from .erasure import ScopeCleanup
+from .errors import BadHandle, KeyRevoking, KeyUnavailable, Shredded
+from .outbox import check_page
 from .query import Document, Page, Query
+from .sealing import AtRest, KeyScope, ScopeGuard, Sealing, SealPart
 from .unit_of_work import TxT_contra
 
 __all__ = [
+    "EffectIntent",
     "Entity",
+    "MemoryProjectionStateStore",
+    "ProjectionCutover",
+    "ProjectionEvent",
+    "ProjectionInput",
+    "ProjectionIntent",
+    "ProjectionLease",
     "ProjectionQuery",
+    "ProjectionResult",
+    "ProjectionSession",
+    "ProjectionState",
+    "ProjectionStateStore",
     "ProjectionStore",
+    "ProjectionTarget",
+    "Reducer",
+    "SourceProof",
     "check_document",
     "keyed_document",
 ]
@@ -113,3 +142,668 @@ class ProjectionQuery(Protocol[TxT_contra]):
         """The page ``query`` selects (filter -> keyset(``after``) -> sort -> offset -> limit), with the
         cursor that resumes after it."""
         ...
+
+
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class ProjectionTarget:
+    """Immutable generation contract; source identities require independent verification.
+
+    ``starts`` is the complete partition/start vector. Partition additions use a new generation.
+    ``source_history`` identifies an enforced no-truncation history or a verified history lineage.
+    ``at_rest`` is how state stores a subject's ``private`` part: ``"sealed"`` under the subject's key,
+    which needs the store's ``sealing=``, or ``"plaintext"``, whose erasure needs the store's cleanup
+    participant. A subject's intent payloads are sealed either way.
+    """
+
+    generation: str
+    source_identity: str
+    source_history: str
+    topic: str
+    reducer_id: str
+    envelope_id: str
+    keying_id: str
+    effect_namespace: str
+    starts: Mapping[int, int]
+    at_rest: AtRest = "sealed"
+    _contract: str = field(init=False, repr=False)
+    _manifest_key: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        contract = _json.encode({f.name: getattr(self, f.name) for f in fields(self) if f.init})
+        object.__setattr__(self, "_contract", contract)
+        # Validates the contract once; the manifest key comes first.
+        keys = _json.decode(_native.projection_keys(self.request(op="initialize")))
+        object.__setattr__(self, "_manifest_key", cast(str, keys[0]))
+
+    def request(self, **operation: Any) -> str:
+        """The kernel request for ``operation`` against this contract."""
+        return _json.encode({"contract": _json.decode(self._contract), "operation": operation})
+
+    def check_source(self, proof: SourceProof, cursor: int) -> None:
+        """Refuse ``proof`` unless it proves this contract's source holds ``cursor``: the kernel's check."""
+        _native.projection_check_source(self._contract, _json.encode(proof), cursor)
+
+    def intent_key(self, intent_id: str) -> str:
+        """The storage key of effect intent ``intent_id`` in this generation."""
+        return _native.projection_intent_key(self._contract, intent_id)
+
+    def state_scope_range(self, scope: KeyScope) -> tuple[str, str]:
+        """The key range ``[start, end)`` of ``scope``'s state: a subject's, or a whole tenant's."""
+        start, end = _json.decode(
+            _native.projection_state_scope_range(self._contract, scope.subject, scope.tenant)
+        )
+        return start, end
+
+    def state_key(self, tenant: str | None, subject: str | None, aggregate: str) -> str:
+        """The storage key of one aggregate's state: what sealing its ``private`` part binds."""
+        return _native.projection_state_key(self._contract, aggregate, subject, tenant)
+
+    @property
+    def manifest_key(self) -> str:
+        """The generation's manifest key, which also names its locks."""
+        return self._manifest_key
+
+
+@dataclass(frozen=True)
+class SourceProof:
+    """Verified cluster/topic incarnation and history, plus current retained/readable bounds."""
+
+    identity: str
+    history: str
+    beginning: int
+    end: int
+
+
+@dataclass(frozen=True)
+class ProjectionEvent:
+    """All reducer-visible input. Offset and delivery attempt are not logical identity."""
+
+    tenant: str | None
+    aggregate: str
+    event_id: str
+    sequence: int
+    event_type: str
+    schema_version: str
+    payload: Any
+    metadata: Any
+    #: The erasure subject that owns the aggregate's state, from the sealed envelope.
+    subject: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectionIntent:
+    """An effect a reducer asks for: a stable ``key`` within its event, a destination and a payload.
+    The store keeps it with the state; a :class:`~edax.outbox.Relay` delivers it as an
+    :class:`EffectIntent`."""
+
+    key: str
+    destination: str
+    payload: Any
+
+
+@dataclass(frozen=True)
+class ProjectionResult:
+    """A reducer's replacement state, in two parts, and its deterministic effects. ``private`` holds what
+    belongs to the event's erasure subject: the store seals it unless the target is
+    ``at_rest="plaintext"``. ``public`` stays queryable plaintext. Both ``None`` keep an empty state at
+    the event's sequence."""
+
+    private: Any = None
+    public: Any = None
+    intents: Sequence[ProjectionIntent] = ()
+
+
+@dataclass(frozen=True)
+class ProjectionState:
+    """The state a reducer folds an event into, as the previous :class:`ProjectionResult` left it, opened."""
+
+    private: Any
+    public: Any
+
+
+@dataclass(frozen=True)
+class ProjectionLease:
+    """Database-authoritative ownership of one partition: the owner and its fencing ``epoch``, the next
+    source offset to read, and the database-clock expiry in milliseconds."""
+
+    checkpoint_key: str
+    partition: int
+    owner: str
+    epoch: int
+    next_offset: int
+    expires_ms: int
+
+
+@dataclass(frozen=True)
+class ProjectionCutover:
+    """A frozen generation's committed offsets per partition, bound to its source. A rebuilt generation
+    activates with it, so each effect is delivered by exactly one generation."""
+
+    source_identity: str
+    source_history: str
+    topic: str
+    cutoffs: Mapping[int, int]
+
+
+@dataclass(frozen=True)
+class ProjectionInput:
+    """One source record of a batch: its offset and its decoded event. ``erased`` marks a record whose
+    key was destroyed: the store records its receipts without a reducer call. ``fingerprint`` is the
+    kernel's keyed fingerprint of a sealed event; ``None`` binds an unkeyed hash of the plaintext."""
+
+    offset: int
+    event: ProjectionEvent
+    erased: bool = False
+    fingerprint: str | None = None
+
+
+@dataclass(frozen=True)
+class EffectIntent:
+    """A committed effect a reducer returned, as a :class:`~edax.outbox.Relay` drains it from a
+    :class:`ProjectionStateStore`. ``id`` is stable across rebuilds, restores and redelivery, so the
+    destination deduplicates by it. The relay orders intents by ``tenant`` and ``aggregate_id``;
+    ``partition``, ``offset`` and ``ordinal`` name the source record and the intent's place in it."""
+
+    id: str
+    tenant: str | None
+    aggregate_id: str
+    destination: str
+    payload: Any
+    partition: int
+    offset: int
+    ordinal: int
+
+
+def effect_intent(record: Mapping[str, Any]) -> EffectIntent:
+    """The :class:`EffectIntent` a stored intent record holds."""
+    return EffectIntent(
+        id=record["id"],
+        tenant=record["tenant"],
+        aggregate_id=record["aggregate"],
+        destination=record["destination"],
+        payload=record["payload"],
+        partition=record["partition"],
+        offset=record["offset"],
+        ordinal=record["ordinal"],
+    )
+
+
+Reducer = Callable[[ProjectionState | None, ProjectionEvent], ProjectionResult]
+AssignmentGuard = Callable[[], bool]
+
+
+class ProjectionSession:
+    """One transaction's view of a generation, the seam a store adapter implements. Each record is read
+    once, the kernel decides every operation against those reads, and every change is written once when
+    the transaction ends. An adapter supplies :meth:`_lock`, :meth:`_read` and :meth:`_clock`."""
+
+    def __init__(self, target: ProjectionTarget) -> None:
+        self.target = target
+        self._records: dict[str, Any] = {}
+        self._held: Any = None
+        self._now: int | None = None
+        #: Records read as absent, to insert; a concurrent insert of one fails the transaction.
+        self.inserts: dict[str, Any] = {}
+        #: Records read as present, to overwrite under the locks this transaction holds.
+        self.updates: dict[str, Any] = {}
+        #: New effect intents.
+        self.intents: dict[str, Any] = {}
+
+    async def _lock(self, exclusive: bool, partition: int | None) -> None:
+        raise NotImplementedError
+
+    async def _read(self, keys: Sequence[str]) -> Mapping[str, Any]:
+        raise NotImplementedError
+
+    async def _clock(self) -> int:
+        raise NotImplementedError
+
+    async def prefetch(self, **operation: Any) -> None:
+        """Take the locks and read the records ``operation`` needs, without running it, so a later
+        operation of this transaction finds them read."""
+        await self._prepare(self.target.request(**operation))
+
+    async def _prepare(self, request: str) -> list[str]:
+        reads = _json.decode(_native.projection_reads(request))
+        lock = reads["lock"]
+        if self._held is None:
+            await self._lock(lock["exclusive"], lock["partition"])
+            self._held = lock
+        elif lock != self._held:
+            raise BadHandle("one projection transaction holds one lock")
+        keys: list[str] = reads["keys"]
+        missing = [key for key in keys if key not in self._records]
+        if missing:
+            found = await self._read(missing)
+            self._records.update({key: found.get(key) for key in missing})
+        return keys
+
+    async def execute(self, **operation: Any) -> Any:
+        """Run one kernel operation inside this transaction and return its result."""
+        request = self.target.request(**operation)
+        keys = await self._prepare(request)
+        if self._now is None:
+            self._now = await self._clock()
+        records = {key: self._records[key] for key in keys if self._records[key] is not None}
+        plan = _json.decode(_native.projection_transition(request, _json.encode(records), self._now))
+        for key, value in plan["inserts"].items():
+            self._records[key] = self.inserts[key] = value
+        for key, value in plan["updates"].items():
+            self._records[key] = value
+            (self.inserts if key in self.inserts else self.updates)[key] = value
+        self.intents.update(plan["intents"])
+        return plan["result"]
+
+
+def _guard(is_current: AssignmentGuard) -> None:
+    """Refuse work for an assignment the runner no longer holds."""
+    if not is_current():
+        raise BadHandle("obsolete projection assignment")
+
+
+def _canonical(value: Any) -> Any:
+    """``value`` as the kernel stores it, so a reducer sees the same state within a batch as after it."""
+    return _json.decode(_native.canonical_json(_json.encode(value).encode()))
+
+
+class _ReducerFailure(Exception):
+    """Carry a host failure through transaction adapters without assigning it a driver verdict."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        super().__init__(str(error))
+
+
+_commit_sealing: ContextVar[tuple[object, Sealing] | None] = ContextVar(
+    "edax_projection_commit_sealing", default=None
+)
+
+
+class ProjectionStateStore:
+    """Transaction interface shared by the memory reference and the PostgreSQL adapter. A subclass runs
+    :meth:`_transaction` over its own :class:`ProjectionSession` and serves the outbox read side.
+
+    ``sealing`` seals a subject's ``private`` state and intent payloads before they reach the kernel, and
+    opens them for the reducer, :meth:`get` and delivery. Each commit reads keys once through
+    :meth:`~edax.sealing.Sealing.for_batch` and reserves one key per subject."""
+
+    def __init__(
+        self, target: ProjectionTarget, *, sealing: Sealing | None = None, key_timeout_s: float | None = 10.0
+    ) -> None:
+        self.target = target
+        self.sealing = sealing
+        # Context snapshots identify this store without retaining its thread-bound native database.
+        self._sealing_identity = object()
+        #: Deadline of each key-provider call delivery makes; a hung provider then reads as unavailable.
+        self.key_timeout_s = key_timeout_s
+
+    @contextmanager
+    def _using_sealing(self, sealing: Sealing) -> Iterator[None]:
+        """Supply the runner's provider to this store call without changing shared configuration."""
+        token = _commit_sealing.set((self._sealing_identity, sealing))
+        try:
+            yield
+        finally:
+            _commit_sealing.reset(token)
+
+    def _keys(self, keys: Sealing | None = None) -> Sealing:
+        if keys is not None:
+            return keys
+        if self.sealing is None:
+            raise BadHandle("a subject's sealed projection data needs the store's sealing=")
+        return self.sealing
+
+    async def _state(
+        self,
+        keys: Sealing | None,
+        tenant: str | None,
+        subject: str | None,
+        aggregate: str,
+        record: Mapping[str, Any] | None,
+    ) -> ProjectionState | None:
+        """``record``, a stored state, with the private part the kernel's open plan names opened."""
+        if record is None:
+            return None
+        part: SealPart | None = _json.decode(
+            _native.projection_open_state(
+                self.target._contract, _json.encode(record), aggregate, subject, tenant
+            )
+        )
+        private = record["private"]
+        if part is not None:
+            private = await self._keys(keys).open_stored(part, private)
+        return ProjectionState(private, record["public"])
+
+    async def _seal(
+        self, novel: Sequence[tuple[Mapping[str, Any], dict[str, Any]]], sealing: Sealing | None = None
+    ) -> None:
+        """Seal, in place, what the kernel's seal plan names in ``novel``, a batch's ``(event, result)``
+        pairs: one reservation per subject for all of them."""
+        reductions = [{"event": event, "reduced": result} for event, result in novel]
+        plan = _json.decode(_native.projection_seal_plan(self.target._contract, _json.encode(reductions)))
+        if not plan:
+            return
+        places: list[tuple[dict[str, Any], str]] = []
+        for placed in plan:
+            result = novel[placed["item"]][1]
+            places.append(
+                (result, "private")
+                if placed["intent"] is None
+                else (result["intents"][placed["intent"]], "payload")
+            )
+        values = [holder[name] for holder, name in places]
+        sealed = (
+            await self._keys(sealing)
+            .for_batch(self.key_timeout_s)
+            .seal_stored([(placed["part"], value) for placed, value in zip(plan, values, strict=True)])
+        )
+        for (holder, name), value in zip(places, sealed, strict=True):
+            holder[name] = value
+
+    async def _delivered(self, records: Sequence[Mapping[str, Any]]) -> list[EffectIntent]:
+        """``records``, stored intents, with the payloads the kernel's open plan names opened. An intent
+        whose key was destroyed is deleted, never delivered: nothing of it can be read. One whose key is
+        revoking or unreachable waits for a later page, so it never holds up the others."""
+        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
+        intents: list[EffectIntent] = []
+        shredded: list[str] = []
+        held: set[tuple[str | None, str]] = set()
+        for record in records:
+            ordering = (record.get("tenant"), record["aggregate"])
+            if ordering in held:
+                continue
+            payload = record["payload"]
+            part: SealPart | None = _json.decode(
+                _native.projection_open_intent(self.target._contract, _json.encode(record))
+            )
+            try:
+                # Older null payloads and subjectless tenant data have no encrypted part, but still
+                # belong to their scope's lifecycle. No payload can bypass a confirmed destruction.
+                if part is None and keys is not None:
+                    scope = keys.scope(record.get("tenant"), record.get("subject"))
+                    _native.check_key_write_status(await keys.keys.status(scope))
+                elif keys is None and record.get("subject") is not None:
+                    self._keys()  # a subject's effects require the authoritative provider
+                if part is not None:
+                    payload = await self._keys(keys).open_stored(part, payload)
+            except Shredded:
+                shredded.append(record["id"])
+                continue
+            except (KeyRevoking, KeyUnavailable):
+                held.add(ordering)
+                continue
+            intents.append(effect_intent({**record, "payload": payload}))
+        if shredded:
+            await self.mark_published(shredded)
+        return intents
+
+    async def _transaction(self, call: Callable[[ProjectionSession], Awaitable[T]]) -> T:
+        raise NotImplementedError
+
+    async def _execute(self, **operation: Any) -> Any:
+        async def execute(session: ProjectionSession) -> Any:
+            return await session.execute(**operation)
+
+        return await self._transaction(execute)
+
+    async def initialize(self) -> None:
+        """Explicitly create an empty building generation. Never run against a partial restore."""
+        await self._execute(op="initialize")
+
+    async def _fenced(self, is_current: AssignmentGuard, **operation: Any) -> ProjectionLease:
+        """Run a lease operation in its own transaction, refused while the caller's assignment is not
+        current, both before and after it."""
+
+        async def fenced(session: ProjectionSession) -> ProjectionLease:
+            _guard(is_current)
+            lease = ProjectionLease(**await session.execute(**operation))
+            _guard(is_current)
+            return lease
+
+        return await self._transaction(fenced)
+
+    async def acquire(
+        self,
+        partition: int,
+        owner: str,
+        proof: SourceProof,
+        *,
+        lease_ms: int = 30_000,
+        is_current: AssignmentGuard = lambda: True,
+    ) -> ProjectionLease:
+        """Take an unowned or expired partition for ``owner``. A live owner raises
+        :class:`~edax.errors.InProgress`; retrying the same ``owner`` after a lost reply returns its lease."""
+        return await self._fenced(
+            is_current, op="acquire", partition=partition, owner=owner, lease_ms=lease_ms, proof=proof
+        )
+
+    async def refresh(
+        self,
+        lease: ProjectionLease,
+        proof: SourceProof,
+        *,
+        lease_ms: int = 30_000,
+        is_current: AssignmentGuard = lambda: True,
+    ) -> ProjectionLease:
+        """Reload authoritative progress and extend the lease, refencing an expired but current one."""
+        return await self._fenced(is_current, op="refresh", lease=lease, lease_ms=lease_ms, proof=proof)
+
+    async def release(self, lease: ProjectionLease) -> None:
+        """Give up ``lease`` if it is still the stored owner and fence; otherwise do nothing."""
+        await self._execute(op="release", lease=lease)
+
+    async def recover(self, lease: ProjectionLease) -> ProjectionLease:
+        """Reload the database cursor under the same fence after an uncertain commit."""
+        return ProjectionLease(**await self._execute(op="load", lease=lease))
+
+    async def commit(
+        self,
+        lease: ProjectionLease,
+        inputs: Sequence[ProjectionInput],
+        proof: SourceProof,
+        reducer: Reducer,
+        *,
+        lease_ms: int = 30_000,
+        is_current: AssignmentGuard = lambda: True,
+    ) -> ProjectionLease:
+        """Fold one batch in one transaction: extend the lease, run ``reducer`` once per novel event in
+        source order, and commit state, receipts, intents and the next offset together. Hold every
+        non-erased input's scope fence through completion, even when no value needs encryption."""
+        # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits.
+        originals = _json.decode(_json.encode(inputs))
+        supplied = _commit_sealing.get()
+        sealing = (
+            supplied[1] if supplied is not None and supplied[0] is self._sealing_identity else self.sealing
+        )
+        keys = None if sealing is None else sealing.for_batch(self.key_timeout_s)
+        scopes = {
+            (item["event"]["tenant"], item["event"]["subject"]) for item in originals if not item["erased"]
+        }
+        if sealing is None and any(subject is not None for _, subject in scopes):
+            raise BadHandle(
+                "a subject's state needs sealing= on the runner or the store for the erasure fence"
+            )
+
+        async def apply(session: ProjectionSession) -> ProjectionLease:
+            # One read for the whole batch: the batch's records with the extension's checkpoint.
+            await session.prefetch(op="prepare_batch", lease=lease, inputs=originals, proof=proof)
+            # Staging may outlive the lease; the extension shares this transaction's reads.
+            current = await session.execute(
+                op="refresh", lease=lease, lease_ms=lease_ms, proof=proof, expected_offset=lease.next_offset
+            )
+            prepared = await session.execute(op="prepare_batch", lease=current, inputs=originals, proof=proof)
+            states: dict[tuple[str | None, str], ProjectionState | None] = {}
+            reduced: list[Any] = []
+            novel: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
+            for item in prepared["items"]:
+                _guard(is_current)
+                if not item["novel"]:
+                    reduced.append(None)
+                    continue
+                event = ProjectionEvent(**item["event"])
+                key = (event.tenant, event.aggregate)
+                if key not in states:
+                    states[key] = await self._state(
+                        keys, event.tenant, event.subject, event.aggregate, item["state"]
+                    )
+                # Serialize now: reducer aliases cannot change an earlier event's staged result.
+                try:
+                    result_value = reducer(states[key], event)
+                except Exception as error:
+                    raise _ReducerFailure(error) from error
+                result = _canonical(result_value)
+                states[key] = ProjectionState(result["private"], result["public"])
+                reduced.append(result)
+                novel.append((item["event"], result))
+            _guard(is_current)
+            await self._seal(novel, sealing)
+            committed = ProjectionLease(
+                **await session.execute(
+                    op="apply_batch", lease=current, inputs=originals, proof=proof, reduced=reduced
+                )
+            )
+            _guard(is_current)
+            return committed
+
+        original: Exception | None = None
+        try:
+            async with AsyncExitStack() as guards:
+                if sealing is not None:
+                    for scope in sorted(
+                        scopes,
+                        key=lambda scope: (
+                            scope[0] is not None,
+                            scope[0] or "",
+                            scope[1] is not None,
+                            scope[1] or "",
+                        ),
+                    ):
+                        guard = sealing.write_guard(*scope)
+                        if isinstance(guard, ScopeGuard):
+                            guard = guard.for_owned_write()
+                        await guards.enter_async_context(guard)
+                return await self._transaction(apply)
+        except Exception as error:
+            cause: BaseException | None = error
+            seen: set[int] = set()
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                if isinstance(cause, _ReducerFailure):
+                    original = cause.error
+                    break
+                cause = cause.__cause__
+            if original is None:
+                raise
+        # Outside the handler: do not attach the adapter wrapper back onto its original cause.
+        raise original
+
+    async def freeze(self) -> ProjectionCutover:
+        """Drain under the generation lock, retire all owners, and capture committed cutoffs."""
+        result = await self._execute(op="freeze")
+        result["cutoffs"] = {int(p): int(o) for p, o in result["cutoffs"].items()}
+        return ProjectionCutover(**result)
+
+    async def activate(self, cutover: ProjectionCutover) -> None:
+        """Enable effects at/above immutable cutoffs after every partition catches up."""
+        await self._execute(op="activate", cutover=cutover)
+
+    async def get(
+        self, tenant: str | None, aggregate: str, subject: str | None = None
+    ) -> dict[str, Any] | None:
+        """The stored state of one aggregate, ``{"sequence", "partition", "private", "public"}`` with
+        ``private`` opened, or ``None``. A destroyed subject raises :class:`~edax.errors.Shredded`."""
+        record = await self._execute(op="get", tenant=tenant, subject=subject, aggregate=aggregate)
+        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
+        state = await self._state(keys, tenant, subject, aggregate, record)
+        if state is None:
+            return None
+        return {**record, "private": state.private}
+
+    async def unpublished(self, limit: int) -> list[EffectIntent]:
+        """Committed effect intents the generation's activation allows, oldest offset first: the
+        :class:`~edax.outbox.Outbox` read side. Pass the store to a :class:`~edax.outbox.Relay`."""
+        raise NotImplementedError
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        """Delete each delivered intent. An unknown or ineligible id is a no-op."""
+        raise NotImplementedError
+
+    async def prune(self, limit: int = 1000) -> int:
+        """Delete up to ``limit`` intents a cutover made permanently ineligible; return how many."""
+        raise NotImplementedError
+
+
+class _MemorySession(ProjectionSession):
+    def __init__(self, store: MemoryProjectionStateStore) -> None:
+        super().__init__(store.target)
+        self._store = store
+        #: The version of every record read; the commit refuses if one has changed since.
+        self.versions: dict[str, int] = {}
+
+    async def _lock(self, exclusive: bool, partition: int | None) -> None:
+        pass  # the commit checks every read instead, so no lock spans the reducer
+
+    async def _read(self, keys: Sequence[str]) -> Mapping[str, Any]:
+        read = _json.decode(self._store._database.get().read(_json.encode(keys)))
+        self.versions.update(read["versions"])
+        return cast(Mapping[str, Any], read["records"])
+
+    async def _clock(self) -> int:
+        return self._store._clock()
+
+
+class MemoryProjectionStateStore(ProjectionStateStore):
+    """Atomic reference for tests; volatile, with a caller-injectable clock. Transactions run without a
+    lock: a commit whose reads another commit changed raises :class:`~edax.errors.ConcurrencyError`, a
+    transient failure the runner retries, as a Postgres insert race does. Native state is bound to the
+    constructing thread, like other memory backends."""
+
+    def __init__(
+        self,
+        target: ProjectionTarget,
+        *,
+        clock: Callable[[], int] | None = None,
+        sealing: Sealing | None = None,
+        key_timeout_s: float | None = 10.0,
+    ) -> None:
+        super().__init__(target, sealing=sealing, key_timeout_s=key_timeout_s)
+        self._clock = clock or (lambda: _native.current_timestamp() // 1_000_000)
+        self._database = ThreadBound(_native.memory_projection_database(), "MemoryProjectionStateStore")
+
+    async def _transaction(self, call: Callable[[ProjectionSession], Awaitable[T]]) -> T:
+        async with own_write():
+            session = _MemorySession(self)
+            result = await call(session)
+            # Only a finished transaction lands, as a database commit does.
+            writes = {"inserts": session.inserts, "updates": session.updates, "intents": session.intents}
+            self._database.get().commit(_json.encode(session.versions), _json.encode(writes))
+            return result
+
+    async def unpublished(self, limit: int) -> list[EffectIntent]:
+        check_page(limit)
+        pending = self._database.get().unpublished(self.target.manifest_key, self.target.generation, limit)
+        return await self._delivered(_json.decode(pending))
+
+    async def mark_published(self, ids: Sequence[str]) -> None:
+        keys = [self.target.intent_key(intent_id) for intent_id in ids]
+        self._database.get().mark_published(
+            self.target.manifest_key, self.target.generation, _json.encode(keys)
+        )
+
+    async def prune(self, limit: int = 1000) -> int:
+        check_page(limit)
+        return self._database.get().prune(self.target.manifest_key, self.target.generation, limit)
+
+    def cleanup(self, *, key_namespace: str | None = None) -> ScopeCleanup:
+        """The erasure participant that deletes a scope's state: a subject's, or a whole tenant's. A
+        ``plaintext`` target or subjectless state needs it. ``key_namespace`` defaults to the store's
+        sealing namespace and is required without sealing. Receipts retain their keyed fingerprints."""
+
+        async def delete(scope: KeyScope) -> int:
+            start, end = self.target.state_scope_range(scope)
+            return self._database.get().delete_scope(start, end)
+
+        return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)

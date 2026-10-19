@@ -20,6 +20,7 @@ Python service and a Rust service cannot drift.
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `idempotency` | the key and hash an event's idempotency guard claims; the record it claims is `edax-cqrs`'s | `event_idempotency.json` |
 | `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot, and the refusal of one that leads its stream | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
+| `batch` | microbatch limits, admission, flush thresholds, retry ceilings and original-order bisection | `event_batch.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json`, `retry_step.json` |
 | `drain` | which rows an outbox relay's drain publishes, and what a failed row does to the rows behind it | `relay_drain.json` |
 | `saga` | whether a saga step folds an event, the write it makes (save, complete, nothing), the command messages it sends, and the refusal of a write to a completed instance | `saga.json` |
@@ -665,6 +666,28 @@ if !edax::is_stale(stored_sequence, msg.sequence) {
 
 Persist the mark in the same transaction as the projection write. A crash between two separate
 commits leaves the mark ahead of the state it claims to describe.
+
+## `batch` — ingestion limits and recovery
+
+`Config` sets batch record/byte/age thresholds, concurrent sink operations, retained-input budgets,
+input and mapper size limits, and the retry ceiling. `check` validates the limits, including
+headroom for one additional record. `reserve` accounts for source and mapped serialization copies.
+`admit` checks both retained budgets without integer overflow. `cut` answers whether a nonempty
+batch has reached any flush threshold; the SDK supplies monotonic elapsed time.
+
+`recover` reads the failure's error code through `retry::Failure::of`, the classifier every runner
+shares, and returns `stop`, `retry`, `wait`, `split` or `reject`. A fatal code stops. A contended
+code waits without spending an attempt. A transient failure retries unchanged originals until the
+ceiling, and so does a terminal one whose write may have landed. Only a terminal failure with a
+confirmed rollback splits, then rejects. Children retain original order and the left child runs
+first. Originals that already carry a rejection, or a host with no rejection path, are not
+isolable: a terminal failure then stops instead of looping on another rejection.
+
+The SDK owns task scheduling, cancellation and capacity accounting. It retains each task's credits
+until the task releases its data. The kernel supplies the admission decision; the runner must also
+reserve processing capacity and rotate admissions so backing-off partitions cannot starve others.
+`event_batch.json` pins the decisions. [Ingestion](../backends/ingestion.md) documents configuration
+and the Kafka runner's lifecycle.
 
 ## `sequence` — the dense-batch rule
 

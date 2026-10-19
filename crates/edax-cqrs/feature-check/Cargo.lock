@@ -197,23 +197,25 @@ dependencies = [
 
 [[package]]
 name = "edax-core"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "uuid",
 ]
 
 [[package]]
 name = "edax-cqrs"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "base64",
  "bigdecimal",
  "edax-core",
+ "edax-event",
  "edax-seal",
  "jiff",
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sha2",
 ]
 
 [[package]]
@@ -227,15 +229,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "edax-event"
+version = "0.12.0"
+dependencies = [
+ "base64",
+ "edax-core",
+ "edax-seal",
+ "rmp-serde",
+ "serde",
+ "serde_bytes",
+ "serde_json",
+]
+
+[[package]]
 name = "edax-golden"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "edax-seal"
-version = "0.10.0"
+version = "0.12.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -547,6 +562,25 @@ name = "r-efi"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
+
+[[package]]
+name = "rmp"
+version = "0.8.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ba8be72d372b2c9b35542551678538b562e7cf86c3315773cae48dfbfe7790c"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "rmp-serde"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72f81bee8c8ef9b577d1681a70ebbc962c232461e397b22c208c43c04b67a155"
+dependencies = [
+ "rmp",
+ "serde",
+]
 
 [[package]]
 name = "rustversion"

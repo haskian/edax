@@ -35,8 +35,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::config::clamp_bigint;
-use crate::documents::{exact_json, exact_number, holds_nul};
+use crate::documents::{exact_json, exact_number};
 use crate::schema::{Logical, Tables};
+use edax_cqrs::holds_nul;
 
 /// A query compiled to SQL: the statement and its parameters, every one bound as text (`None` binds
 /// SQL `NULL`). Its rows are one text column, a stored document each; hand them to [`page`].

@@ -815,8 +815,8 @@ func TestSealingGoldenEnvelopesContextsAndCiphertexts(t *testing.T) {
 	if err := json.Unmarshal(raw, &rows); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 8 {
-		t.Fatalf("expected both ciphers for four record kinds, got %d", len(rows))
+	if len(rows) != 14 {
+		t.Fatalf("expected both ciphers for seven record kinds, got %d", len(rows))
 	}
 	for _, row := range rows {
 		t.Run(row.Kind+"/"+row.Cipher, func(t *testing.T) {
@@ -894,10 +894,20 @@ func TestSealingGoldenEnvelopesContextsAndCiphertexts(t *testing.T) {
 				if err != nil || !bytes.Equal(opened, plaintext) {
 					t.Fatalf("command plaintext differs: %v", err)
 				}
-			case "snapshot", "saga":
+			case "snapshot", "saga", "ingestion", "projection", "intent":
 				aad, err = kernel.StateEncryptionContext(row.Kind, row.Identity, row.TypeName, row.Version, row.Marks, row.Completed, row.Encryption, row.Tenant, row.Subject)
 				if err != nil {
 					t.Fatal(err)
+				}
+				if row.Kind == "ingestion" || row.Kind == "projection" || row.Kind == "intent" {
+					part, marshalErr := json.Marshal(map[string]any{"kind": row.Kind, "identity": row.Identity, "version": row.Version, "tenant": row.Tenant, "subject": row.Subject})
+					if marshalErr != nil {
+						t.Fatal(marshalErr)
+					}
+					storedAAD, contextErr := kernel.StoredEncryptionContext(string(part), row.Encryption)
+					if contextErr != nil || !bytes.Equal(storedAAD, aad) {
+						t.Fatalf("stored part context differs: %v", contextErr)
+					}
 				}
 			default:
 				t.Fatalf("unknown golden kind %s", row.Kind)

@@ -313,3 +313,20 @@ group has one consumer: there is no partition assignment between several members
   `joins_transaction`.
 - [idempotency](../sdk/idempotency.md) — both guards, both modes, every failure window.
 - [testing](../guides/testing.md) — golden vectors, model tests, proptest and Hypothesis.
+
+## Ingestion reference
+
+`edax.ingestion.MemoryIngestionSink` uses the kernel's independent `MemoryIngest` database.
+It binds the immutable target contract and atomically applies the same append/upsert plans and
+rejection records as PostgreSQL. Keep the sink instance across runner restarts when testing replay.
+It is separate from `MemoryTransactor`; ingestion commits own their transaction boundary.
+See [microbatch ingestion](ingestion.md) for the API and recovery contract.
+
+## Projection state reference
+
+`edax.projection.MemoryProjectionStateStore` keeps its records and effect intents in the kernel's
+`MemoryProjectionState` database. Its transactions take no lock, so none spans the reducer. A commit
+instead checks that every record it read still has the version it read, absent ones included. A
+racing commit fails with `concurrency` and the runner retries, as a Postgres insert race does.
+Delivery pages each partition's oldest eligible intent in turn, the order the Postgres `pending`
+statement uses. See [projection processing](../sdk/projection-processing.md) for the API.

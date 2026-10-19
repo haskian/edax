@@ -54,11 +54,14 @@ from .broker import BrokerContract, BrokerRig
 from .command_outbox import CommandOutboxContract
 from .event_store import EventOutboxContract, EventStoreContract
 from .idempotency_store import IdempotencyStoreContract
+from .ingestion import BatchSinkContract, TransactionalBatchSinkContract
 from .outbox import OutboxContract
 from .projection_store import ProjectionStoreContract
 from .saga_store import SagaOutboxContract, SagaStoreContract
 
 __all__ = [
+    "BatchSinkContract",
+    "TransactionalBatchSinkContract",
     "BrokerContract",
     "BrokerRig",
     "CommandOutboxContract",

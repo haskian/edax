@@ -1,0 +1,5632 @@
+[
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "note": "a\u0000b",
+          "order_id": "order-42"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "nul_in_value_rejected_as_record",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
+          "error": "codec: an ingested record holds a NUL character, which Postgres cannot store",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+          "published": false,
+          "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order\u000042"
+      }
+    ],
+    "mode": "upsert",
+    "name": "nul_in_stream_rejected_as_record",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
+          "error": "codec: an ingested record holds a NUL character, which Postgres cannot store",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+          "published": false,
+          "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "append_new_event_without_sequence",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
+            "order_id": "order-42",
+            "status": "created"
+          },
+          "public": null,
+          "sequence": null,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "append_exact_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+        "fingerprint": "680257454214511780",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "sequence": null,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "append_conflicting_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+        "fingerprint": "680257454214511780",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "sequence": null,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "rejected: append event identity has different content",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+          "published": false,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "append_duplicate_in_batch",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted",
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
+            "order_id": "order-42",
+            "status": "created"
+          },
+          "public": null,
+          "sequence": null,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: mapper refused this event",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_valid_then_failed_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: mapper refused this event",
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_failed_then_valid_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_valid_then_erased_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source has conflicting inputs in this batch",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "append",
+    "name": "one_source_erased_then_valid_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-3",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
+        "stream": "order-99"
+      }
+    ],
+    "mode": "upsert",
+    "name": "upsert_absent_key_first_owner_wins",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted",
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]": {
+          "error": "rejected: upsert key belongs to another aggregate stream",
+          "fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+          "published": false,
+          "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "680257454214511780",
+          "private": {
+            "order_id": "order-42",
+            "status": "created"
+          },
+          "public": null,
+          "sequence": 1,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "upsert_lower_sequence_ignored",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "upsert_equal_sequence_exact_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "cancelled",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-conflicting-payment",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "upsert_equal_sequence_conflict",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
+          "error": "rejected: committed aggregate sequence has different content",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+          "published": false,
+          "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 3,
+          "status": "shipped",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-2",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
+        "sequence": 3,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "upsert_higher_sequence",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
+            "order_id": "order-42",
+            "status": "shipped"
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "cancelled",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-conflicting-payment",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "equal_new_sequence_first_value_wins",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted",
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
+          "error": "rejected: aggregate sequence has different content in this batch",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+          "published": false,
+          "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "17311780243056210839",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": null,
+          "sequence": 2,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 3,
+          "status": "shipped",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-2",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
+        "sequence": 3,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "compaction_preserves_original_outcomes",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted",
+        "accepted",
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
+            "order_id": "order-42",
+            "status": "shipped"
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "cancelled",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-conflicting-payment",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "stale_conflicts_are_ignored",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "6452331707120442648",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "sequence": 3,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted",
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "erased",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"erased\"}",
+        "raw_fingerprint": "814f7278d8580eb720c22e09f4a6489d0944a5cf05588056c477320a9765207c",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "erased_input_accepted_without_write",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "erased",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"erased\"}",
+        "raw_fingerprint": "814f7278d8580eb720c22e09f4a6489d0944a5cf05588056c477320a9765207c",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "erased_input_never_creates_a_row",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "keyed_fingerprint_is_stored",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": {
+            "status": "paid"
+          },
+          "sequence": 2,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "keyed_fingerprint_exact_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "unsealed_replay_of_a_sealed_sequence_conflicts",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "a24664ab42512baab9898afb30958faed13403e36fe71e4f35fe044e64214901",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
+          "error": "rejected: committed aggregate sequence has different content",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+          "published": false,
+          "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "deleted",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
+        "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "tombstone_retains_owner_and_sequence",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "17311780243056210839",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "sequence": 2,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "5707849114940592798",
+          "private": null,
+          "public": null,
+          "sequence": 4,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "deleted",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-5",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
+        "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "tombstone_exact_replay",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
+        "sequence": 4,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-3",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
+        "stream": "order-99"
+      }
+    ],
+    "mode": "upsert",
+    "name": "tombstone_rejects_new_owner",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
+        "sequence": 4,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]": {
+          "error": "rejected: upsert key belongs to another aggregate stream",
+          "fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+          "published": false,
+          "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "tombstone_ignores_stale_resurrection",
+    "op": "plan",
+    "rejected": {},
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "5707849114940592798",
+        "private": null,
+        "public": null,
+        "sequence": 4,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": null,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-6",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":6,\"sequence\":null,\"status\":\"created\"}",
+        "raw_fingerprint": "5f0e2231da834a5a75b8043191858a1cbcbc654e15667990856d7dce694aa0f5",
+        "sequence": null,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"6\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "missing_sequence_rejected",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"6\"]": {
+          "error": "codec: upsert requires a sequence in 0..=i64::MAX",
+          "fingerprint": "5f0e2231da834a5a75b8043191858a1cbcbc654e15667990856d7dce694aa0f5",
+          "published": false,
+          "raw": "{\"offset\":6,\"sequence\":null,\"status\":\"created\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 9223372036854775808,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-7",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":7,\"sequence\":9223372036854775808,\"status\":\"created\"}",
+        "raw_fingerprint": "d3ed49dc36489070f7b04bf46f09021ddd56adf0d72db6bfae3cd338fcab6a65",
+        "sequence": 9223372036854775808,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"7\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "postgres_sequence_overflow_rejected",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"7\"]": {
+          "error": "codec: upsert requires a sequence in 0..=i64::MAX",
+          "fingerprint": "d3ed49dc36489070f7b04bf46f09021ddd56adf0d72db6bfae3cd338fcab6a65",
+          "published": false,
+          "raw": "{\"offset\":7,\"sequence\":9223372036854775808,\"status\":\"created\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 0,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-8",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":8,\"sequence\":0,\"status\":\"created\"}",
+        "raw_fingerprint": "9c6c6543b7a220b13ebdf79729c315f2b37b604895742dd2024d929fd24ddd22",
+        "sequence": 0,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"8\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "zero_sequence_is_valid",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted"
+      ],
+      "rejections": {},
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "4719886521861365861",
+          "private": {
+            "order_id": "order-42",
+            "status": "created"
+          },
+          "public": null,
+          "sequence": 0,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-3",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
+        "stream": "order-99"
+      }
+    ],
+    "mode": "upsert",
+    "name": "invalid_original_does_not_propose_owner",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected",
+        "accepted"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+          "published": false,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-3",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
+        "stream": "order-99"
+      }
+    ],
+    "mode": "upsert",
+    "name": "durable_rejection_excluded_before_owner_selection",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "published": false,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+      }
+    },
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected",
+        "accepted"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+          "published": false,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 4,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-3",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
+        "sequence": 4,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
+        "stream": "order-99"
+      }
+    ],
+    "mode": "upsert",
+    "name": "published_rejection_still_excludes_original",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "published": true,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+      }
+    },
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected",
+        "accepted"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+          "published": true,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "11750174734807273493",
+          "private": {
+            "order_id": "order-42",
+            "status": "paid"
+          },
+          "public": null,
+          "sequence": 4,
+          "stream": "order-99"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "cancelled",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-conflicting-payment",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 3,
+          "status": "shipped",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-2",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
+        "sequence": 3,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "commit_before_crash",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "accepted",
+        "rejected",
+        "accepted"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
+          "error": "rejected: aggregate sequence has different content in this batch",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+          "published": false,
+          "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
+        }
+      },
+      "writes": {
+        "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+          "fingerprint": "6452331707120442648",
+          "private": {
+            "order_id": "order-42",
+            "status": "shipped"
+          },
+          "public": null,
+          "sequence": 3,
+          "stream": "order-42"
+        }
+      }
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "paid",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-1",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "paid"
+        },
+        "public": null,
+        "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 2,
+          "status": "cancelled",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-conflicting-payment",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "cancelled"
+        },
+        "public": null,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "sequence": 2,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 3,
+          "status": "shipped",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-2",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
+        "sequence": 3,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "replay_after_commit_keeps_rejection_despite_compaction",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
+        "error": "rejected: aggregate sequence has different content in this batch",
+        "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+        "published": false,
+        "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
+      }
+    },
+    "stored": {
+      "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]": {
+        "fingerprint": "6452331707120442648",
+        "private": {
+          "order_id": "order-42",
+          "status": "shipped"
+        },
+        "public": null,
+        "sequence": 3,
+        "stream": "order-42"
+      }
+    },
+    "want": {
+      "outcomes": [
+        "accepted",
+        "rejected",
+        "accepted"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
+          "error": "rejected: aggregate sequence has different content in this batch",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
+          "published": false,
+          "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "bad_handle: ingestion source coordinate reused with different raw content",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "changed-source-record",
+        "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "durable_rejection_detects_source_reuse",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "published": false,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+      }
+    },
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source coordinate reused with different raw content",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "changed-source-record",
+        "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_reuse_in_batch_refuses_entire_call",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
+        "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_digest_survives_full_to_stub_replay",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "published": false,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+      }
+    },
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "published": false,
+          "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_digest_survives_stub_to_full_replay",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "published": false,
+        "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}"
+      }
+    },
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "published": false,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
+        "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_digest_survives_full_and_stub_in_batch",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [
+        "rejected",
+        "rejected"
+      ],
+      "rejections": {
+        "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+          "error": "codec: order status is malformed",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+          "published": false,
+          "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+        }
+      },
+      "writes": {}
+    }
+  },
+  {
+    "error": "bad_handle: ingestion source coordinate reused with different raw content",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
+        "raw_fingerprint": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_digest_change_refused_on_replay",
+    "op": "plan",
+    "rejected": {
+      "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
+        "error": "codec: order status is malformed",
+        "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "published": false,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
+      }
+    },
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion source coordinate reused with different raw content",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: order status is malformed",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"oversized\":true,\"partition\":0,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"topic\":\"orders\"}",
+        "raw_fingerprint": "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "upsert",
+    "name": "source_digest_change_refuses_entire_batch",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": "bad_handle: ingestion mode must be append or upsert",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "mode": "fold",
+    "name": "unknown_mode_refused",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": null
+  },
+  {
+    "error": null,
+    "inputs": [],
+    "mode": "upsert",
+    "name": "empty_batch_no_changes",
+    "op": "plan",
+    "rejected": {},
+    "stored": {},
+    "want": {
+      "outcomes": [],
+      "rejections": {},
+      "writes": {}
+    }
+  },
+  {
+    "error": null,
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "bind_new_target",
+    "op": "bind",
+    "previous": null,
+    "want": true
+  },
+  {
+    "error": null,
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "bind_same_target",
+    "op": "bind",
+    "previous": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "want": true
+  },
+  {
+    "error": "bad_handle: invalid or changed ingestion target contract",
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v2",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "changed_mapper_refused",
+    "op": "bind",
+    "previous": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid or changed ingestion target contract",
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-b/orders-v1"
+    },
+    "name": "changed_source_refused",
+    "op": "bind",
+    "previous": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid or changed ingestion target contract",
+    "expected": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "changed_at_rest_refused",
+    "op": "bind",
+    "previous": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid or changed ingestion target contract",
+    "expected": {
+      "at_rest": "hashed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "unsupported_at_rest_refused",
+    "op": "bind",
+    "previous": null,
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid or changed ingestion target contract",
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "fold",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "unsupported_contract_mode",
+    "op": "bind",
+    "previous": null,
+    "want": null
+  },
+  {
+    "error": "bad_handle: a generation must be nonempty and contain no NUL",
+    "expected": {
+      "at_rest": "sealed",
+      "generation": "",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "name": "empty_generation_refused",
+    "op": "bind",
+    "previous": null,
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "valid_scoped_input",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740992\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "source_offset_at_json_safe_integer_boundary",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775807\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "source_offset_at_postgres_bigint_maximum",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: input belongs to another ingestion target",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v2:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "foreign_target_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"other-cluster\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "foreign_source_incarnation_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion identity is not canonical",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\", \"acme\", \"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "noncanonical_identity_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "codec: invalid ingestion event or aggregate identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": ""
+      }
+    ],
+    "name": "empty_stream_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "row_mode_must_match_contract",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",2147483648,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "source_partition_above_i32_maximum_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",42,null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "non_string_tenant_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "empty_row_id_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "codec: invalid ingestion event or aggregate identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "empty_event_id_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "EEB1FE2DDE07DE4405DDF8B7520559D586ED87C4BE72C72A433760EBCF1F0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "uppercase_raw_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "short_raw_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "0123456789abcdef",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "short_keyed_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "EEB1FE2DDE07DE4405DDF8B7520559D586ED87C4BE72C72A433760EBCF1F0253",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "uppercase_keyed_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"\",\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "empty_subject_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",42,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "non_string_subject_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "pre_subject_row_key_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "abababababababababababababababababababababababababababababababab",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "completed": false,
+          "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+          "edax_protected_state": 1,
+          "encryption": {
+            "cipher": "xchacha20-poly1305",
+            "format_version": 1,
+            "key_id": "generation-7",
+            "key_namespace": "people",
+            "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+          },
+          "subject": "person-7",
+          "tenant": "acme"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "sealed_subject_row_accepted",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "abababababababababababababababababababababababababababababababab",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "sealed_subject_plaintext_private_refused",
+    "op": "check_sealed",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: a sealed ingestion row needs a keyed fingerprint",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "completed": false,
+          "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+          "edax_protected_state": 1,
+          "encryption": {
+            "cipher": "xchacha20-poly1305",
+            "format_version": 1,
+            "key_id": "generation-7",
+            "key_namespace": "people",
+            "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+          },
+          "subject": "person-7",
+          "tenant": "acme"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "sealed_subject_without_keyed_fingerprint_refused",
+    "op": "check_sealed",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "abababababababababababababababababababababababababababababababab",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "completed": false,
+          "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+          "edax_protected_state": 1,
+          "encryption": {
+            "cipher": "xchacha20-poly1305",
+            "format_version": 1,
+            "key_id": "generation-7",
+            "key_namespace": "people",
+            "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+          },
+          "subject": "person-8",
+          "tenant": "acme"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "envelope_of_another_subject_refused",
+    "op": "check_sealed",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "abababababababababababababababababababababababababababababababab",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "completed": false,
+          "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+          "edax_protected_state": 1,
+          "encryption": {
+            "cipher": "xchacha20-poly1305",
+            "format_version": 1,
+            "key_id": "generation-7",
+            "key_namespace": "people",
+            "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+          },
+          "subject": "person-7",
+          "tenant": "globex"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "envelope_of_another_tenant_refused",
+    "op": "check_sealed",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "fingerprint": "abababababababababababababababababababababababababababababababab",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "sealed_deletion_marker_accepted",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "erased_subject_row_accepted",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: sealed record refused",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "refused_subject_row_accepted",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "row_without_subject_stays_plaintext",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-42\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "plaintext_target_keeps_subject_private",
+    "op": "check_sealed",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":10}",
+        "raw_fingerprint": "7cf7ffbca89fec23888acfa1282424ec7cd21e009099af1d98ecef65428dd3bc",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"10\"]",
+        "stream": "order-1"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+        "private": {
+          "email": "nobody@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":11}",
+        "raw_fingerprint": "9ff5f85250bc6ac0e61e944731869eb0a6a485e7405b4eff2a1ca79932396149",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"11\"]",
+        "stream": "order-2"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-3\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":12}",
+        "raw_fingerprint": "e18d718b2ab7b25eb4791dde8ce36899bd3ddfbaacd80aee93ec17ac1fba9cea",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"12\"]",
+        "stream": "order-3"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: sealed record refused",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-4\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":13}",
+        "raw_fingerprint": "30c46c0ae90046bee5df5249cd9ff5db42b2779ad07a8ecb36a1942d7cc96f5d",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"13\"]",
+        "stream": "order-4"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-5\"]",
+        "private": null,
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":14}",
+        "raw_fingerprint": "6c59ee951c92f6856b67801219ede25133ba370be946087157d3b69de4966d5b",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"14\"]",
+        "stream": "order-5"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+        "private": {
+          "email": "person-8@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":15}",
+        "raw_fingerprint": "45ab0cdaa0417f2a90d78a54c57923234130bab528994acaf5150ef044c0fe04",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"15\"]",
+        "stream": "order-6"
+      }
+    ],
+    "name": "seal_plan_of_a_mixed_batch",
+    "op": "seal_plan",
+    "want": [
+      [
+        0,
+        {
+          "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+          "kind": "ingestion",
+          "subject": "person-7",
+          "tenant": "acme",
+          "version": 1
+        }
+      ],
+      [
+        5,
+        {
+          "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+          "kind": "ingestion",
+          "subject": "person-8",
+          "tenant": "acme",
+          "version": 1
+        }
+      ]
+    ]
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+        "private": {
+          "email": "person-7@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":10}",
+        "raw_fingerprint": "7cf7ffbca89fec23888acfa1282424ec7cd21e009099af1d98ecef65428dd3bc",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"10\"]",
+        "stream": "order-1"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+        "private": {
+          "email": "nobody@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":11}",
+        "raw_fingerprint": "9ff5f85250bc6ac0e61e944731869eb0a6a485e7405b4eff2a1ca79932396149",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"11\"]",
+        "stream": "order-2"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": true,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-3\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":12}",
+        "raw_fingerprint": "e18d718b2ab7b25eb4791dde8ce36899bd3ddfbaacd80aee93ec17ac1fba9cea",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"12\"]",
+        "stream": "order-3"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": "codec: sealed record refused",
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-4\"]",
+        "private": null,
+        "public": null,
+        "raw": "{\"offset\":13}",
+        "raw_fingerprint": "30c46c0ae90046bee5df5249cd9ff5db42b2779ad07a8ecb36a1942d7cc96f5d",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"13\"]",
+        "stream": "order-4"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-5\"]",
+        "private": null,
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":14}",
+        "raw_fingerprint": "6c59ee951c92f6856b67801219ede25133ba370be946087157d3b69de4966d5b",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"14\"]",
+        "stream": "order-5"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"person-8\",\"order-6\"]",
+        "private": {
+          "email": "person-8@example.com"
+        },
+        "public": {
+          "status": "paid"
+        },
+        "raw": "{\"offset\":15}",
+        "raw_fingerprint": "45ab0cdaa0417f2a90d78a54c57923234130bab528994acaf5150ef044c0fe04",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"15\"]",
+        "stream": "order-6"
+      }
+    ],
+    "name": "seal_plan_of_a_plaintext_target_is_empty",
+    "op": "seal_plan",
+    "want": []
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_sealed_subject_row",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "completed": false,
+        "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+        "edax_protected_state": 1,
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "generation-7",
+          "key_namespace": "people",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "subject": "person-7",
+        "tenant": "acme"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": {
+      "identity": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+      "kind": "ingestion",
+      "subject": "person-7",
+      "tenant": "acme",
+      "version": 3
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_row_without_subject",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-2\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_deletion_marker",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": null,
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 4,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "plaintext",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_a_plaintext_target",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"upsert\",\"acme\",\"person-7\",\"order-1\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "email": "x"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": 3,
+      "stream": "order-1"
+    },
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "append",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "name": "open_plan_of_an_append_row_binds_version_zero",
+    "op": "open_plan",
+    "row_key": "9:orders-v1:[\"append\",\"acme\",\"person-7\",\"order-42-event-0\"]",
+    "stored": {
+      "fingerprint": "abababababababababababababababababababababababababababababababab",
+      "private": {
+        "completed": false,
+        "data": "WlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWlpaWg==",
+        "edax_protected_state": 1,
+        "encryption": {
+          "cipher": "xchacha20-poly1305",
+          "format_version": 1,
+          "key_id": "generation-7",
+          "key_namespace": "people",
+          "nonce": "JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk"
+        },
+        "subject": "person-7",
+        "tenant": "acme"
+      },
+      "public": {
+        "status": "paid"
+      },
+      "sequence": null,
+      "stream": "order-1"
+    },
+    "want": {
+      "identity": "9:orders-v1:[\"append\",\"acme\",\"person-7\",\"order-42-event-0\"]",
+      "kind": "ingestion",
+      "subject": "person-7",
+      "tenant": "acme",
+      "version": 0
+    }
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "append",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"order-42-event-0\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "valid_append_contract_input",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "append",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"append\",\"acme\",null,\"different-event\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "append_row_id_must_equal_event_id",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,0]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "numeric_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"00\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "leading_zero_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"+1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "positive_sign_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "negative_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "negative_zero_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\" 1\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "whitespace_source_offset_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775808\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "source_offset_beyond_bigint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_offset_zero",
+    "offset": 0,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]"
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_offset_last_json_safe_integer",
+    "offset": 9007199254740991,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740991\"]"
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_offset_two_to_53",
+    "offset": 9007199254740992,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740992\"]"
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_offset_two_to_53_plus_one",
+    "offset": 9007199254740993,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740993\"]"
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_offset_bigint_maximum",
+    "offset": 9223372036854775807,
+    "op": "source",
+    "partition": 2147483647,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",2147483647,\"9223372036854775807\"]"
+  },
+  {
+    "error": "bad_handle: invalid ingestion source coordinate",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_negative_offset_refused",
+    "offset": -1,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion source coordinate",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_bigint_minimum_refused",
+    "offset": -9223372036854775808,
+    "op": "source",
+    "partition": 0,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion source coordinate",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "source_negative_partition_refused",
+    "offset": 0,
+    "op": "source",
+    "partition": -1,
+    "target": "orders-v1",
+    "topic": "orders",
+    "want": null
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_source",
+    "op": "record_source",
+    "source_id": "device-7/session-2/reading-9",
+    "target": "orders-v1",
+    "want": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]"
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_source_validated",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_source_scopes",
+    "op": "write_scopes",
+    "want": [
+      [
+        "acme",
+        null
+      ]
+    ]
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_unicode_source",
+    "op": "record_source",
+    "source_id": "meritev-ž/9",
+    "target": "orders-v1",
+    "want": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]"
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_unicode_source_validated",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_unicode_source_scopes",
+    "op": "write_scopes",
+    "want": [
+      [
+        "acme",
+        null
+      ]
+    ]
+  },
+  {
+    "error": "bad_handle: invalid ingestion source identity",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_empty_source",
+    "op": "record_source",
+    "source_id": "",
+    "target": "orders-v1",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion source identity",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_nul_source",
+    "op": "record_source",
+    "source_id": "bad\u0000id",
+    "target": "orders-v1",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"bad\\u0000id\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_forged_nul",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"other\",\"reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_wrong_incarnation",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"reading-9\",0]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_wrong_arity",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",\"patient-42\",\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",null,null,\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",null,\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",\"patient-42\",\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "write_scopes_preserve_input_order_and_duplicates",
+    "op": "write_scopes",
+    "want": [
+      [
+        "clinic-a",
+        "patient-42"
+      ],
+      [
+        null,
+        null
+      ],
+      [
+        "clinic-a",
+        null
+      ],
+      [
+        "clinic-a",
+        "patient-42"
+      ]
+    ]
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_upsert",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]"
+  },
+  {
+    "error": null,
+    "mode": "append",
+    "name": "row_key_append",
+    "op": "row_key",
+    "row_id": "event-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": "9:orders-v1:[\"append\",\"acme\",null,\"event-42\"]"
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_absent_tenant",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": null,
+    "want": "9:orders-v1:[\"upsert\",null,null,\"order-42\"]"
+  },
+  {
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "mode": "upsert",
+    "name": "row_key_empty_tenant",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": "",
+    "want": null
+  },
+  {
+    "error": "codec: tenant holds a NUL character",
+    "mode": "upsert",
+    "name": "row_key_nul_tenant",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": "acme\u0000store",
+    "want": null
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_nul_row",
+    "op": "row_key",
+    "row_id": "order\u0000-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": null,
+    "want": "9:orders-v1:[\"upsert\",null,null,\"order\\u0000-42\"]"
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_unicode",
+    "op": "row_key",
+    "row_id": "naročilo-42",
+    "subject": null,
+    "target": "naročila-v1",
+    "tenant": "trgovina-ž",
+    "want": "12:naročila-v1:[\"upsert\",\"trgovina-ž\",null,\"naročilo-42\"]"
+  },
+  {
+    "error": "codec: invalid ingestion row identity",
+    "mode": "upsert",
+    "name": "row_key_empty_row_refused",
+    "op": "row_key",
+    "row_id": "",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": null,
+    "want": null
+  },
+  {
+    "error": "codec: invalid ingestion row identity",
+    "mode": "append",
+    "name": "row_key_empty_event_refused",
+    "op": "row_key",
+    "row_id": "",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": null,
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion row identity",
+    "mode": "fold",
+    "name": "row_key_invalid_mode_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": null,
+    "want": null
+  },
+  {
+    "error": "bad_handle: a generation must be nonempty and contain no NUL",
+    "mode": "upsert",
+    "name": "row_key_empty_target_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "",
+    "tenant": null,
+    "want": null
+  },
+  {
+    "error": "bad_handle: a generation must be nonempty and contain no NUL",
+    "mode": "upsert",
+    "name": "row_key_nul_target_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": null,
+    "target": "orders\u0000v1",
+    "tenant": null,
+    "want": null
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_with_subject",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",\"order-42\"]"
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "row_key_subject_without_tenant",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": null,
+    "want": "9:orders-v1:[\"upsert\",null,\"person-42\",\"order-42\"]"
+  },
+  {
+    "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
+    "mode": "upsert",
+    "name": "row_key_empty_subject_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": "codec: subject holds a NUL character",
+    "mode": "upsert",
+    "name": "row_key_nul_subject_refused",
+    "op": "row_key",
+    "row_id": "order-42",
+    "subject": "person\u0000-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "scope_range_of_a_subject",
+    "op": "scope_range",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": [
+      "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",\"",
+      "9:orders-v1:[\"upsert\",\"acme\",\"person-42\",#"
+    ]
+  },
+  {
+    "error": null,
+    "mode": "append",
+    "name": "scope_range_without_tenant",
+    "op": "scope_range",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": null,
+    "want": [
+      "9:orders-v1:[\"append\",null,\"person-42\",\"",
+      "9:orders-v1:[\"append\",null,\"person-42\",#"
+    ]
+  },
+  {
+    "error": null,
+    "mode": "upsert",
+    "name": "scope_range_of_a_whole_tenant",
+    "op": "scope_range",
+    "subject": null,
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": [
+      "9:orders-v1:[\"upsert\",\"acme\",",
+      "9:orders-v1:[\"upsert\",\"acme\"-"
+    ]
+  },
+  {
+    "error": "codec: subject must contain 1 to 256 UTF-8 bytes",
+    "mode": "upsert",
+    "name": "scope_range_empty_subject_refused",
+    "op": "scope_range",
+    "subject": "",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion row identity",
+    "mode": "fold",
+    "name": "scope_range_invalid_mode_refused",
+    "op": "scope_range",
+    "subject": "person-42",
+    "target": "orders-v1",
+    "tenant": "acme",
+    "want": null
+  },
+  {
+    "error": null,
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "ana@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
+    "want": "b3572bba1f1a4c5732194883f73d99b085859a5402fb424acf920e20f7eb37f3"
+  },
+  {
+    "error": null,
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint_other_value",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "bob@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
+    "want": "e01c8e0167e3a6216fbf806d00f37d338e9f4e29b29d9dbfb5b3aebcdd49cb97"
+  },
+  {
+    "error": "codec: invalid encryption key length",
+    "key": [
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7,
+      7
+    ],
+    "name": "keyed_fingerprint_short_key_refused",
+    "op": "keyed_fingerprint",
+    "state": {
+      "content": {
+        "aggregate_id": "order-42",
+        "name": "OrderPlaced"
+      },
+      "private": {
+        "email": "ana@example.com"
+      },
+      "public": {
+        "status": "paid"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "name": "ingest_mode_names",
+    "op": "names",
+    "set": "ingest_mode",
+    "want": [
+      "append",
+      "upsert"
+    ]
+  },
+  {
+    "error": null,
+    "name": "ingest_outcome_names",
+    "op": "names",
+    "set": "ingest_outcome",
+    "want": [
+      "accepted",
+      "rejected"
+    ]
+  }
+]

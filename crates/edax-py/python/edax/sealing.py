@@ -2,23 +2,31 @@
 
 Providers must resolve exact scope, purpose, and generation before reporting destruction. They must
 fence revocation atomically with reservations. The reference provider is process-local and loses keys
-and tombstones on restart. Neither adapter nor :class:`Sealing` caches key material.
+and tombstones on restart. :class:`Sealing` keeps no key cache of its own; a consumer batch runner reads
+each scope's keys once through :meth:`Sealing.for_batch` and drops them with that batch.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, nullcontext
+from collections import Counter
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Mapping, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from types import TracebackType
-from typing import Any, Literal, Protocol, cast, get_args, runtime_checkable
+from types import MappingProxyType, TracebackType
+from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast, get_args, runtime_checkable
 
-from . import _names, _native
+from . import _json, _names, _native
 from ._owned import ThreadBound
 from ._values import give_value_semantics
-from .errors import BadHandle, CodecError, Shredded
+from .errors import BadHandle, CodecError, KeyRevoking, KeyUnavailable, Shredded
 from .message import CommandMessage, EventDraft, EventMessage
 
 __all__ = [
@@ -32,11 +40,37 @@ __all__ = [
     "Opened",
     "SealedValue",
     "Sealing",
+    "AtRest",
+    "SealPart",
+    "StoredKind",
     "TransactionFence",
     "WriteFence",
 ]
 
+T = TypeVar("T")
+#: A write fence's scope: tenant and subject.
+Scope = tuple[str | None, str | None]
+
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
+#: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
+#: projection intent's payload.
+StoredKind = Literal["ingestion", "projection", "intent"]
+#: Every kind of state the protected-state context binds.
+StateKind = Literal["snapshot", "saga", "ingestion", "projection", "intent"]
+#: How a generation stores a subject's private part: sealed under the subject's key, or plaintext.
+AtRest = Literal["sealed", "plaintext"]
+
+
+class SealPart(TypedDict):
+    """One part the kernel's seal or open plan names: what the protected-state context binds."""
+
+    kind: StoredKind
+    identity: str
+    version: int
+    tenant: str | None
+    subject: str
+
+
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
 #: How :meth:`Sealing.write_guard` fences a write: ``"guard"`` holds the provider's ``guard`` from before
 #: the transaction through its commit; ``"transaction"`` fences inside each transaction that opens.
@@ -56,6 +90,7 @@ class KeyReservation:
 
 _names.check(get_args(Cipher), _native.encryption_ciphers(), "encryption ciphers")
 _names.check(get_args(KeyStatus), _native.key_statuses(), "key statuses")
+_names.check(get_args(AtRest), _native.at_rest_names(), "at-rest modes")
 give_value_semantics(KeyScope)
 give_value_semantics(SealedValue)
 # A reservation contains a secret. Do not give it the field-printing repr of public value records.
@@ -64,13 +99,15 @@ give_value_semantics(SealedValue)
 class KeyProvider(Protocol):
     """Async I/O port. A missing key is an error, never evidence of destruction.
 
-    ``reserve`` charges an invocation atomically and rotates exhausted generations. ``resolve`` never
-    creates material and checks exact ownership and purpose before returning ``Shredded``. Revoking a
-    tenant scope fences every current and future subject. Returned keys belong to one operation only.
+    ``reserve`` charges ``count`` invocations to one generation atomically, rotating one with fewer left.
+    ``resolve`` never creates material and checks exact ownership and purpose before returning
+    ``Shredded``. Revoking a tenant scope fences every current and future subject. Returned keys belong
+    to one operation only: a batch runner's :meth:`Sealing.for_batch` view, which keeps them until its
+    batch ends, is one operation, as is a store's sealing of one batch.
     Production providers must retain permanent tombstones across restarts and backup restoration.
     """
 
-    async def reserve(self, scope: KeyScope, cipher: Cipher) -> KeyReservation: ...
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation: ...
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes: ...
     async def fingerprint(self, scope: KeyScope) -> KeyReservation: ...
     async def resolve_fingerprint(self, scope: KeyScope, key_id: str) -> bytes: ...
@@ -136,6 +173,8 @@ def detach_sealing_context() -> None:
     _pending_fences.set(())
     _authenticated_event.set(None)
     _opened_event.set(None)
+    _scope_guards.set({})
+    _joined_guards.set(None)
 
 
 class MemoryKeys:
@@ -152,9 +191,9 @@ class MemoryKeys:
         self._guard_owner: object | None = None
         self._guard_depth = 0
 
-    async def reserve(self, scope: KeyScope, cipher: Cipher) -> KeyReservation:
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
         native = self._native.get()
-        reserved = native.reserve(scope, cipher)
+        reserved = native.reserve(scope, cipher, count)
         return KeyReservation(reserved.key_id, bytes(native.resolve(scope, cipher, reserved.key_id)))
 
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
@@ -237,6 +276,91 @@ class MemoryKeys:
                 self._guard.release()
 
 
+class ScopeGuard(AbstractAsyncContextManager[None]):
+    """One live provider guard. Borrowing never transfers its release responsibility."""
+
+    def __init__(self, keys: KeyProvider, scope: KeyScope) -> None:
+        self.keys = keys
+        self.scope = scope
+        self._identity = (id(keys), scope)
+        self.task: asyncio.Task[Any] | None = None
+        self.active = False
+        self._guard = keys.guard(scope)
+
+    async def __aenter__(self) -> None:
+        await self._guard.__aenter__()
+        self.task = asyncio.current_task()
+        self.active = True
+        # Copy on write: a child keeps the index snapshot it inherited, not its parent's later guards.
+        index = dict(_scope_guards.get())
+        previous = tuple(guard for guard in index.get(self._identity, ()) if guard.active)
+        index[self._identity] = (*previous, self)
+        _scope_guards.set(index)
+
+    async def __aexit__(
+        self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
+    ) -> bool | None:
+        self.active = False
+        try:
+            return await self._guard.__aexit__(kind, error, trace)
+        finally:
+            index = dict(_scope_guards.get())
+            previous = tuple(guard for guard in index.get(self._identity, ()) if guard.active)
+            if previous:
+                index[self._identity] = previous
+            else:
+                index.pop(self._identity, None)
+            _scope_guards.set(index)
+
+    def held(self) -> ScopeGuard | None:
+        return next(
+            (guard for guard in reversed(_scope_guards.get().get(self._identity, ())) if guard.active), None
+        )
+
+    def borrowable(self) -> bool:
+        task = asyncio.current_task()
+        joined = _joined_guards.get()
+        return self.active and (
+            self.task is task or (joined is not None and joined.task is task and self in joined.guards)
+        )
+
+    def for_owned_write(self) -> AbstractAsyncContextManager[None]:
+        """Borrow only from this task or the parent that explicitly joins this operation."""
+        held = self.held()
+        if held is not None and held.borrowable():
+            return nullcontext()
+        return self
+
+
+_scope_guards: ContextVar[Mapping[tuple[int, KeyScope], tuple[ScopeGuard, ...]]] = ContextVar(
+    "edax_scope_guards", default=MappingProxyType({})
+)
+
+
+@dataclass
+class _JoinedGuards:
+    guards: frozenset[ScopeGuard]
+    task: asyncio.Future[Any] | None = None
+
+
+_joined_guards: ContextVar[_JoinedGuards | None] = ContextVar("edax_joined_guards", default=None)
+
+
+def active_scope_guards() -> tuple[ScopeGuard, ...]:
+    return tuple(guard for guards in _scope_guards.get().values() for guard in guards if guard.active)
+
+
+@contextmanager
+def joined_scope_guards() -> Iterator[_JoinedGuards]:
+    """Authorize one child only. Set its task, then join it before releasing the parent's guards."""
+    joined = _JoinedGuards(frozenset(guard for guard in active_scope_guards() if guard.borrowable()))
+    token = _joined_guards.set(joined)
+    try:
+        yield joined
+    finally:
+        _joined_guards.reset(token)
+
+
 class PendingFence(AbstractAsyncContextManager[None]):
     """A write guard under ``write_fence="transaction"``. Entering it admits nothing: while it is entered,
     every edax transaction that opens fences its scope (:mod:`edax._units`), so a handler that writes
@@ -273,6 +397,144 @@ class Opened:
     data: bytes = field(repr=False)
 
 
+_provider_deadline: ContextVar[float | None] = ContextVar("edax_provider_deadline", default=None)
+
+
+@contextmanager
+def provider_deadline(timeout_s: float | None) -> Iterator[None]:
+    """Give key calls a shared budget inside an enclosing operation's deadline.
+
+    Leave scheduling headroom so a provider timeout is classified as key unavailability before the
+    runner's general storage deadline. Nested callers can shorten, never extend, the budget.
+    """
+    previous = _provider_deadline.get()
+    deadline = None
+    if timeout_s is not None:
+        deadline = asyncio.get_running_loop().time() + timeout_s - min(0.05, timeout_s * 0.5)
+    if previous is not None:
+        deadline = previous if deadline is None else min(previous, deadline)
+    token = _provider_deadline.set(deadline)
+    try:
+        yield
+    finally:
+        _provider_deadline.reset(token)
+
+
+@dataclass
+class _ProviderCall:
+    task: asyncio.Future[Any]
+    released: asyncio.Event = field(default_factory=asyncio.Event)
+    abandoned: bool = False
+
+
+class _ProviderCalls:
+    """Own provider tasks until they actually finish, including cancellation-suppressing calls.
+
+    Batch views share this coordinator. A timed-out call is never duplicated or its late reservation
+    reused, and outstanding work is capped even when many distinct unavailable scopes are visited.
+    """
+
+    _limit = 1024
+
+    def __init__(self) -> None:
+        self._pending: dict[tuple[Any, ...], _ProviderCall] = {}
+
+    async def call(
+        self, key: tuple[Any, ...], call: Callable[[], Awaitable[T]], timeout_s: float | None
+    ) -> T:
+        loop = asyncio.get_running_loop()
+        deadline = _provider_deadline.get()
+        if timeout_s is not None:
+            own_deadline = loop.time() + timeout_s
+            deadline = own_deadline if deadline is None else min(deadline, own_deadline)
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            budget = deadline - loop.time()
+            if budget <= 0:
+                raise KeyUnavailable("key provider call exceeded its deadline")
+            return budget
+
+        while (previous := self._pending.get(key)) is not None:
+            if previous.task.done():
+                self._pending.pop(key, None)
+                break
+            if previous.abandoned:
+                raise KeyUnavailable("an earlier key provider call is still unresolved")
+            # Wait for ownership, not its result: status must be fresh and reservations never shared.
+            wait_budget = remaining()
+            waiter = asyncio.create_task(previous.released.wait())
+            try:
+                # wait_for can swallow a concurrent cancellation on Python 3.10.
+                released, _ = await asyncio.wait((waiter,), timeout=wait_budget)
+                if not released:
+                    raise KeyUnavailable("key provider call exceeded its deadline")
+                waiter.result()
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
+        if len(self._pending) >= self._limit:
+            raise KeyUnavailable("too many unresolved key provider calls")
+        timeout_s = remaining()
+        task = asyncio.ensure_future(call())
+        pending = _ProviderCall(task)
+        self._pending[key] = pending
+
+        def finished(done: asyncio.Future[Any]) -> None:
+            if self._pending.get(key) is pending:
+                self._pending.pop(key, None)
+            if not done.cancelled():
+                done.exception()  # retrieve a late error; late key material is never reused
+
+        task.add_done_callback(finished)
+        try:
+            done, _ = await asyncio.wait((task,), timeout=timeout_s)
+            if not done:
+                pending.abandoned = True
+                task.cancel()
+                raise KeyUnavailable("key provider call exceeded its deadline")
+            return task.result()
+        except asyncio.CancelledError:
+            pending.abandoned = True
+            task.cancel()
+            raise
+        finally:
+            pending.released.set()
+
+
+class _BatchKeys:
+    """Cache successful reads within one batch; unresolved provider work belongs to its Sealing."""
+
+    def __init__(self, keys: KeyProvider, timeout_s: float | None, calls: _ProviderCalls) -> None:
+        self._keys = keys
+        self._timeout_s = timeout_s
+        self._calls = calls
+        self._known: dict[tuple[Any, ...], Any] = {}
+
+    async def _once(self, known: tuple[Any, ...], call: Callable[[], Awaitable[T]]) -> T:
+        if known not in self._known:
+            self._known[known] = await self._calls.call(known, call, self._timeout_s)
+        return cast(T, self._known[known])
+
+    async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
+        return await self._once(
+            ("resolve", scope, cipher, key_id), lambda: self._keys.resolve(scope, cipher, key_id)
+        )
+
+    async def status(self, scope: KeyScope) -> KeyStatus:
+        return await self._once(("status", scope), lambda: self._keys.status(scope))
+
+    async def fingerprint(self, scope: KeyScope) -> KeyReservation:
+        return await self._once(("fingerprint", scope), lambda: self._keys.fingerprint(scope))
+
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
+        # Reservations are writes and are never cached; an ambiguous late result stays charged.
+        return await self._calls.call(
+            ("reserve", scope, cipher), lambda: self._keys.reserve(scope, cipher, count), self._timeout_s
+        )
+
+
 class Sealing:
     """Wire one authoritative provider into a deployment namespace.
 
@@ -302,6 +564,7 @@ class Sealing:
             raise BadHandle("write_fence='transaction' needs a provider with transactor and fence()")
         self._fencing = cast(TransactionFence, keys) if write_fence == "transaction" else None
         self.keys = keys
+        self._calls = _ProviderCalls()
         self.key_namespace = key_namespace
         selected = _native.default_cipher() if cipher is None else cipher
         self.cipher = cast(
@@ -310,10 +573,75 @@ class Sealing:
         self.allow_plaintext = allow_plaintext
         self.scope(None, None)
 
+    def check_compatible(self, other: Sealing) -> None:
+        """A runner and its destination must fence the authority that seals stored data."""
+        if self.keys is not other.keys or self.key_namespace != other.key_namespace:
+            raise BadHandle("runner and destination sealing must use the same provider and key namespace")
+
     def scope(self, tenant: str | None, subject: str | None) -> KeyScope:
         scope = KeyScope(key_namespace=self.key_namespace, tenant=tenant, subject=subject)
         _native.check_key_scope(scope)
         return scope
+
+    def for_batch(self, timeout_s: float | None = None) -> Sealing:
+        """A view for one consumer batch that opens records: each scope's key, status and fingerprint key
+        is read from the provider once, under ``timeout_s``, and kept only as long as the view. A batch
+        runner drops the view with its batch, so no key outlives it; the commit's write fence still reads
+        status afresh and decides against revocation."""
+        return Sealing(
+            cast(KeyProvider, _BatchKeys(self.keys, timeout_s, self._calls)),
+            self.key_namespace,
+            cipher=self.cipher,
+            allow_plaintext=self.allow_plaintext,
+        )
+
+    async def _statuses(self, scopes: Sequence[Scope], timeout_s: float | None) -> list[KeyStatus]:
+        async def read(scope: Scope) -> KeyStatus:
+            key_scope = self.scope(*scope)
+            return await self._calls.call(
+                ("status", key_scope), lambda: self.keys.status(key_scope), timeout_s
+            )
+
+        return list(await asyncio.gather(*(read(scope) for scope in scopes)))
+
+    @asynccontextmanager
+    async def fenced(
+        self, scopes: Collection[Scope], *, timeout_s: float | None = None
+    ) -> AsyncIterator[frozenset[Scope]]:
+        """Hold the write fence of every scope in ``scopes``, entered in one order, around a batch write,
+        and yield the destroyed ones, whose data the write must leave out. Each scope's status is read
+        afresh first and classified by the kernel: a revoking scope raises
+        :class:`~edax.errors.KeyRevoking`, which a runner waits on uncounted. The fence decides the race
+        against an erasure that lands after this read: a refused write whose scope is no longer active
+        raises ``KeyRevoking`` too, so the next attempt reads the new status. The write must have really
+        ended when the block exits: a fence released while a commit may still land lets erasure pass it."""
+        order = sorted(
+            set(scopes),
+            key=lambda scope: (scope[0] is not None, scope[0] or "", scope[1] is not None, scope[1] or ""),
+        )
+        destroyed: set[Scope] = set()
+        for scope, status in zip(order, await self._statuses(order, timeout_s), strict=True):
+            try:
+                _native.check_key_write_status(status)
+            except Shredded:
+                destroyed.add(scope)
+        fenced = [scope for scope in order if scope not in destroyed]
+        try:
+            async with AsyncExitStack() as guards:
+                for scope in fenced:
+                    await guards.enter_async_context(self.write_guard(*scope))
+                yield frozenset(destroyed)
+        except Exception:
+            for status in await self._statuses(fenced, timeout_s):
+                try:
+                    _native.check_key_write_status(status)
+                except (Shredded, KeyRevoking) as erased:
+                    raise KeyRevoking("a written subject was erased during the write") from erased
+            raise
+
+    async def fingerprint_key(self, tenant: str | None, subject: str | None) -> bytes:
+        """The scope's fingerprint key: what a keyed fingerprint of its plaintext binds."""
+        return bytes((await self.keys.fingerprint(self.scope(tenant, subject))).key)
 
     def write_guard(self, tenant: str | None, subject: str | None) -> AbstractAsyncContextManager[None]:
         """Hold the provider's storage fence outside the transaction context, through commit; under
@@ -321,7 +649,7 @@ class Sealing:
         scope = self.scope(tenant, subject)
         if self._fencing is not None:
             return PendingFence(self._fencing, scope)
-        return self.keys.guard(scope)
+        return ScopeGuard(self.keys, scope)
 
     @property
     def write_fence(self) -> WriteFence:
@@ -364,10 +692,10 @@ class Sealing:
 
     async def check_legacy(self, tenant: str | None, subject: str | None) -> None:
         """Legacy compatibility never permits restoring data into a revoked scope."""
-        _native.check_plaintext_policy(self.allow_plaintext)
         scope = KeyScope(key_namespace=self.key_namespace, tenant=tenant, subject=subject)
         _native.check_key_scope(scope)
         _native.check_key_write_status(await self.keys.status(scope))
+        _native.check_plaintext_policy(self.allow_plaintext)
 
     async def seal_event(self, draft: EventDraft) -> EventDraft:
         info, key = await self.reserve(draft.tenant, draft.subject)
@@ -417,6 +745,25 @@ class Sealing:
             return None
         return Opened(bytes(_native.open_command(message, key)))
 
+    def _seal_with(
+        self,
+        info: EncryptionInfo,
+        key: bytes,
+        kind: StateKind,
+        identity: str,
+        type_name: str,
+        version: int,
+        data: bytes,
+        tenant: str | None,
+        subject: str | None,
+        marks: str = "",
+        completed: bool = False,
+    ) -> SealedValue:
+        context = _native.state_encryption_context(
+            kind, identity, type_name, version, marks, completed, info, tenant, subject
+        )
+        return SealedValue(encryption=info, data=_native.seal_bytes(info, key, context, data))
+
     async def seal_state(
         self,
         kind: Literal["snapshot", "saga"],
@@ -430,14 +777,13 @@ class Sealing:
         completed: bool = False,
     ) -> SealedValue:
         info, key = await self.reserve(tenant, subject)
-        context = _native.state_encryption_context(
-            kind, identity, type_name, version, marks, completed, info, tenant, subject
+        return self._seal_with(
+            info, key, kind, identity, type_name, version, data, tenant, subject, marks, completed
         )
-        return SealedValue(encryption=info, data=_native.seal_bytes(info, key, context, data))
 
     async def open_state(
         self,
-        kind: Literal["snapshot", "saga"],
+        kind: StateKind,
         identity: str,
         type_name: str,
         version: int,
@@ -453,6 +799,47 @@ class Sealing:
         )
         key = await self.resolve(info, tenant, subject)
         return bytes(_native.open_bytes(info, key, context, bytes(value.data)))
+
+    async def seal_stored(self, parts: Sequence[tuple[SealPart, Any]]) -> list[Any]:
+        """Seal each ``(part, value)`` as its protected-state envelope. The kernel's part names what the
+        context binds and the scope: a store takes it from the kernel's seal plan, never builds it. One
+        reservation per scope covers all its parts, each sealed under its own nonce, so a batch costs one
+        provider call per subject rather than one per row."""
+        counts = Counter((part["tenant"], part["subject"]) for part, _ in parts)
+        scopes = list(counts)
+        reservations = await asyncio.gather(
+            *(
+                self.keys.reserve(
+                    _native.protected_scope(self.key_namespace, *scope), self.cipher, counts[scope]
+                )
+                for scope in scopes
+            )
+        )
+        reserved = dict(zip(scopes, reservations, strict=True))
+        sealed: list[Any] = []
+        for part, value in parts:
+            tenant, subject = part["tenant"], part["subject"]
+            reservation = reserved[(tenant, subject)]
+            info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
+            data = _json.encode(value).encode()
+            context = _native.stored_encryption_context(_json.encode(part), info)
+            ciphertext = _native.seal_bytes(info, reservation.key, context, data)
+            state = _native.ProtectedState(False, info, bytes(ciphertext), tenant, subject)
+            sealed.append(_json.decode(_native.encode_protected_state(state)))
+        return sealed
+
+    async def open_stored(self, part: SealPart, stored: Any) -> Any:
+        """Open a value :meth:`seal_stored` sealed as ``part``, which the kernel's open plan names. The
+        scope comes from the part, so an envelope moved to another row or subject fails authentication. A
+        destroyed scope raises :class:`~edax.errors.Shredded`; any other envelope, or none, raises
+        :class:`~edax.errors.CodecError`."""
+        state = _native.decode_protected_state(_json.encode(stored)).value
+        if state is None:
+            raise CodecError("a sealed part is not a protected-state envelope")
+        context = _native.stored_encryption_context(_json.encode(part), state.encryption)
+        key = await self.resolve(state.encryption, part["tenant"], part["subject"])
+        opened = _native.open_bytes(state.encryption, key, context, bytes(state.data))
+        return _json.decode(bytes(opened))
 
 
 # An opened view never replaces the ciphertext used by guards or nested saga runners.

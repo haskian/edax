@@ -51,6 +51,14 @@ fn to_wire(error: edax_core::Error) -> String {
     error.to_string()
 }
 
+fn read_json<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, String> {
+    serde_json::from_str(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+}
+
+fn write_json<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+}
+
 /// The taxonomy code a host names, `None` for a failure no code classifies. A code the kernel does not
 /// know is a `codec:` error.
 fn error_code(code: Option<String>) -> Result<Option<ErrorCode>, String> {
@@ -77,6 +85,11 @@ fn names(list: &[&str]) -> Vec<String> {
 /// A kernel count as the boundary's fixed-width `u64`, saturating on a target wider than 64 bits.
 fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
+}
+
+/// A boundary count as the host width, saturating rather than truncating on narrower targets.
+fn host_count(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 /// A host dictionary as the kernel's key-ordered map, so encoded bytes are deterministic.

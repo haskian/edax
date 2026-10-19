@@ -1,0 +1,1270 @@
+//! Ordered projection state: a reducer folds delta events into per-aggregate state.
+//!
+//! A store runs every operation in one transaction under the lock [`lock`] names: the generation lock,
+//! shared for partition work and exclusive for generation-wide changes, plus the partition's own lock.
+//! Every transition is pure. A batch runs in two steps inside one transaction: `PrepareBatch` proves
+//! which events are novel, the host calls its reducer once per novel event, and `ApplyBatch` checks the
+//! results and returns every write. The host reads each record once and writes each change once.
+
+use crate::{canonical_json, holds_nul, is_digest_hex, keyed_digest, namespace, payload_hash};
+use edax_core::{Error, ErrorCode};
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use std::collections::BTreeMap;
+
+/// Parse a command without rounding reducer-visible integer literals. Protocol counters
+/// retain their i64 domain; only application payloads use the canonical numeric domain.
+pub fn request_json(text: &str) -> Result<Request, Error> {
+    use crate::json_numbers::{check_integers, Width};
+    use serde_json::value::RawValue;
+
+    fn fields(text: &str) -> Result<BTreeMap<String, &RawValue>, Error> {
+        serde_json::from_str(text).map_err(Error::codec)
+    }
+    fn items(text: &str) -> Result<Vec<&RawValue>, Error> {
+        serde_json::from_str(text).map_err(Error::codec)
+    }
+    let request = fields(text)?;
+    if let Some(operation) = request.get("operation") {
+        let operation = fields(operation.get())?;
+        if let Some(inputs) = operation.get("inputs") {
+            for input in items(inputs.get())? {
+                if let Some(event) = fields(input.get())?.get("event") {
+                    let event = fields(event.get())?;
+                    for name in ["payload", "metadata"] {
+                        if let Some(value) = event.get(name) {
+                            check_integers(value.get().as_bytes(), Width::Double)?;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(reduced) = operation.get("reduced") {
+            check_integers(reduced.get().as_bytes(), Width::Double)?;
+        }
+    }
+    // Keep structural error messages independent of host JSON whitespace.
+    let value: Value = serde_json::from_str(text).map_err(Error::codec)?;
+    serde_json::from_value(value).map_err(Error::codec)
+}
+
+/// Parse a reducer-visible event without rounding its original application integer tokens.
+/// Sequence counters retain the protocol's full i64 domain.
+pub fn event_json(text: &str) -> Result<Event, Error> {
+    use crate::json_numbers::{check_integers, Width};
+    use serde_json::value::RawValue;
+    let fields: BTreeMap<String, &RawValue> = serde_json::from_str(text).map_err(Error::codec)?;
+    for name in ["payload", "metadata"] {
+        if let Some(value) = fields.get(name) {
+            check_integers(value.get().as_bytes(), Width::Double)?;
+        }
+    }
+    let value: Value = serde_json::from_str(text).map_err(Error::codec)?;
+    serde_json::from_value(value).map_err(Error::codec)
+}
+
+/// Immutable interpretation and complete partition set of a generation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Contract {
+    /// Isolated physical generation namespace.
+    pub generation: String,
+    /// Verified cluster and topic incarnation.
+    pub source_identity: String,
+    /// Verified history lineage or enforced no-truncation contract.
+    pub source_history: String,
+    /// Source topic name.
+    pub topic: String,
+    /// Immutable reducer implementation identity.
+    pub reducer_id: String,
+    /// Immutable canonical-envelope version.
+    pub envelope_id: String,
+    /// Immutable aggregate keying contract.
+    pub keying_id: String,
+    /// Stable logical effect namespace shared across rebuilds.
+    pub effect_namespace: String,
+    #[serde(deserialize_with = "partition_map")]
+    /// Complete explicit partition start vector.
+    pub starts: BTreeMap<i32, i64>,
+    /// How state stores a subject's private part: [`namespace::AtRest`] by name. Intent payloads of a
+    /// subject are sealed either way: they wait for delivery, never for queries.
+    pub at_rest: String,
+}
+
+/// Evidence obtained from a trusted source capability, not inferred from event sequences.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Proof {
+    /// Verified physical source identity.
+    pub identity: String,
+    /// Verified source history lineage.
+    pub history: String,
+    /// Earliest retained offset.
+    pub beginning: i64,
+    /// Exclusive readable end offset.
+    pub end: i64,
+}
+
+/// Reducer-visible canonical envelope. Transport coordinates are intentionally separate.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Event {
+    /// Tenant namespace, or absence for a single tenant.
+    pub tenant: Option<String>,
+    /// Erasure subject that owns the aggregate's state, from the sealed envelope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    /// Complete aggregate stream identity.
+    pub aggregate: String,
+    /// Stable logical event identity.
+    pub event_id: String,
+    /// Aggregate sequence, starting at one.
+    pub sequence: i64,
+    /// Canonical event type.
+    pub event_type: String,
+    /// Canonical event schema version.
+    pub schema_version: String,
+    /// Canonical effect or event payload.
+    pub payload: Value,
+    /// All reducer-visible event metadata.
+    pub metadata: Value,
+}
+
+/// One source record of a batch: its offset and its canonical event.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Input {
+    /// Source offset; gaps between offsets are permitted.
+    pub offset: i64,
+    /// Canonical reducer input.
+    pub event: Event,
+    /// The record's key was destroyed: record its receipts and move past it, without a reducer call
+    /// or a state change, so an erased subject neither stops the partition nor regains state.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub erased: bool,
+    /// [`keyed_fingerprint`] of a sealed event. Without it the receipts bind an unkeyed hash of the
+    /// canonical event, which suits plaintext only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+}
+
+/// The identity a sealed record's envelope fixes, readable without its key.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Envelope {
+    /// Tenant namespace, or absence for a single tenant.
+    pub tenant: Option<String>,
+    /// Erasure subject that owns the aggregate's state.
+    pub subject: Option<String>,
+    /// Complete aggregate stream identity.
+    pub aggregate: String,
+    /// Stable logical event identity.
+    pub event_id: String,
+    /// Aggregate sequence.
+    pub sequence: i64,
+    /// Event type.
+    pub event_type: String,
+    /// Event schema version.
+    pub schema_version: String,
+}
+
+/// The batch input of a sealed record at `offset`. With `event`, the host's decoding of the opened
+/// record: it must keep the envelope's tenant, aggregate, event id and sequence, and takes the
+/// envelope's subject. Without, the record's key was destroyed: an erased input that carries only the
+/// envelope's identity, so its receipts sit where the event's would.
+pub fn sealed_input(offset: i64, envelope: &Envelope, event: Option<Event>) -> Result<Input, Error> {
+    let Some(mut event) = event else {
+        return Ok(Input {
+            offset,
+            event: Event {
+                tenant: envelope.tenant.clone(),
+                subject: envelope.subject.clone(),
+                aggregate: envelope.aggregate.clone(),
+                event_id: envelope.event_id.clone(),
+                sequence: envelope.sequence,
+                event_type: envelope.event_type.clone(),
+                schema_version: envelope.schema_version.clone(),
+                payload: Value::Null,
+                metadata: json!({}),
+            },
+            erased: true,
+            fingerprint: None,
+        });
+    };
+    if (&event.tenant, &event.aggregate, &event.event_id, event.sequence)
+        != (
+            &envelope.tenant,
+            &envelope.aggregate,
+            &envelope.event_id,
+            envelope.sequence,
+        )
+    {
+        return Err(Error::bad_handle(
+            "a sealed projection event must keep its envelope's identity",
+        ));
+    }
+    event.subject.clone_from(&envelope.subject);
+    Ok(Input {
+        offset,
+        event,
+        erased: false,
+        fingerprint: None,
+    })
+}
+
+/// One deterministic external effect.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Intent {
+    /// Reducer-defined stable effect key within the event.
+    pub key: String,
+    /// Logical effect destination.
+    pub destination: String,
+    /// Canonical effect or event payload.
+    pub payload: Value,
+}
+
+/// Pure reducer output: the replacement state in two parts, as an ingestion row holds them.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reduced {
+    /// The subject's part of the state, sealed before it reaches the kernel unless the generation is
+    /// `plaintext`. JSON null when absent.
+    pub private: Value,
+    /// The queryable part of the state. JSON null when absent.
+    pub public: Value,
+    /// Deterministic external effects.
+    pub intents: Vec<Intent>,
+}
+
+/// Database-authoritative partition ownership and progress.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Lease {
+    /// Exact generation/source/topic/partition checkpoint identity.
+    pub checkpoint_key: String,
+    /// Registered source partition.
+    pub partition: i32,
+    /// Unique acquisition owner.
+    pub owner: String,
+    /// Monotonically increasing ownership fence.
+    pub epoch: i64,
+    /// Authoritative next source offset.
+    pub next_offset: i64,
+    /// Database-clock lease expiry in milliseconds.
+    pub expires_ms: i64,
+}
+
+/// Frozen source boundary, carried intact to the rebuilt generation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Cutover {
+    /// Verified cluster and topic incarnation.
+    pub source_identity: String,
+    /// Verified history lineage or enforced no-truncation contract.
+    pub source_history: String,
+    /// Source topic name.
+    pub topic: String,
+    #[serde(deserialize_with = "partition_map")]
+    /// Immutable inclusive effect activation offsets.
+    pub cutoffs: BTreeMap<i32, i64>,
+}
+
+/// Closed projection transition protocol.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Operation {
+    /// Create an empty building generation or validate an existing one.
+    Initialize,
+    /// Acquire an unowned or expired checkpoint.
+    Acquire {
+        /// Registered source partition.
+        partition: i32,
+        /// Unique acquisition owner.
+        owner: String,
+        /// Positive lease duration in milliseconds.
+        lease_ms: i64,
+        /// Verified source identity and retained boundaries.
+        proof: Proof,
+    },
+    /// Reload and extend a still-current assignment, fencing an expired lease anew.
+    Refresh {
+        /// A commit extends only the cursor it staged. Ordinary refreshes reload progress.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_offset: Option<i64>,
+        /// Previously acquired ownership identity.
+        lease: Lease,
+        /// Positive lease duration.
+        lease_ms: i64,
+        /// Fresh verified source boundaries.
+        proof: Proof,
+    },
+    /// Release only the matching ownership fence.
+    Release {
+        /// Previously loaded ownership fence and cursor.
+        lease: Lease,
+    },
+    /// Reload the authoritative cursor after an uncertain commit.
+    Load {
+        /// Previously loaded ownership fence and cursor.
+        lease: Lease,
+    },
+    /// Decide which inputs are novel, before the host calls its reducer. Writes nothing.
+    PrepareBatch {
+        /// Previously loaded ownership fence and cursor.
+        lease: Lease,
+        /// Source records in offset order.
+        inputs: Vec<Input>,
+        /// Verified source identity and retained boundaries.
+        proof: Proof,
+    },
+    /// Atomically advance state, both receipts, effects and cursor for a whole batch.
+    ApplyBatch {
+        /// Previously loaded ownership fence and cursor.
+        lease: Lease,
+        /// The inputs `PrepareBatch` decided over.
+        inputs: Vec<Input>,
+        /// Verified source identity and retained boundaries.
+        proof: Proof,
+        /// One reducer result per input: present for a novel input, absent for a replay.
+        reduced: Vec<Option<Reduced>>,
+    },
+    /// Stop all writes and capture a committed cutoff vector.
+    Freeze,
+    /// Enable effects using a complete immutable cutoff vector.
+    Activate {
+        /// Source-bound frozen partition vector.
+        cutover: Cutover,
+    },
+    /// Read one generation-scoped aggregate state.
+    Get {
+        /// Tenant namespace, or absence for a single tenant.
+        tenant: Option<String>,
+        /// Erasure subject that owns the state, or absence for unsealed data.
+        #[serde(default)]
+        subject: Option<String>,
+        /// Complete aggregate stream identity.
+        aggregate: String,
+    },
+}
+
+/// A generation-bound projection command.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Request {
+    /// Expected immutable generation contract.
+    pub contract: Contract,
+    /// Requested projection transition.
+    pub operation: Operation,
+}
+
+/// The locks a store takes, in this order, before it reads any record of an operation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Lock {
+    /// Take the generation lock exclusively: initialization, freeze and activation see no other writer.
+    pub exclusive: bool,
+    /// Also take this partition's lock: one writer per partition's checkpoint and aggregates.
+    pub partition: Option<i32>,
+}
+
+/// Atomic projection writes and the resulting host value.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct Plan {
+    /// Records the operation read as absent. A store inserts them and fails on a concurrent insert,
+    /// so two partitions racing on one event identity cannot both win.
+    pub inserts: BTreeMap<String, Value>,
+    /// Records the operation read as present, under a lock that excludes every other writer.
+    pub updates: BTreeMap<String, Value>,
+    /// New effect intents, stored apart from state so delivery never rewrites state rows.
+    pub intents: BTreeMap<String, Value>,
+    /// Operation result returned only after commit.
+    pub result: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct Manifest {
+    contract: Contract,
+    active: bool,
+    frozen: bool,
+    cutoffs: BTreeMap<i32, i64>,
+    upper: BTreeMap<i32, i64>,
+}
+
+/// A stored state's position, read without copying its value.
+#[derive(Deserialize)]
+struct StateHead {
+    sequence: i64,
+    partition: i32,
+}
+
+/// A record as this transaction sees it: staged by an earlier input of the batch, else as read.
+fn staged<'a>(
+    writes: &'a BTreeMap<String, Value>,
+    records: &'a BTreeMap<String, Value>,
+    key: &str,
+) -> Option<&'a Value> {
+    writes.get(key).or_else(|| records.get(key))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct State {
+    sequence: i64,
+    partition: i32,
+    private: Value,
+    public: Value,
+}
+
+fn required(value: &str) -> Result<(), Error> {
+    if value.is_empty() || value.contains('\0') {
+        return Err(Error::bad_handle("empty or NUL projection identity"));
+    }
+    Ok(())
+}
+
+impl Contract {
+    /// Validate all immutable identities and registered starts.
+    pub fn validate(&self) -> Result<(), Error> {
+        for value in [
+            &self.generation,
+            &self.source_identity,
+            &self.source_history,
+            &self.topic,
+            &self.reducer_id,
+            &self.envelope_id,
+            &self.keying_id,
+            &self.effect_namespace,
+        ] {
+            required(value)?;
+        }
+        if namespace::AtRest::by_name(&self.at_rest).is_none() {
+            return Err(Error::bad_handle("projection at_rest must be sealed or plaintext"));
+        }
+        if self.starts.is_empty() || self.starts.iter().any(|(p, o)| *p < 0 || *o < 0) {
+            return Err(Error::bad_handle(
+                "projection requires explicit nonnegative partition starts",
+            ));
+        }
+        Ok(())
+    }
+    /// Build a generation-scoped canonical storage key.
+    pub fn key(&self, parts: Value) -> Result<String, Error> {
+        namespace::key(&self.generation, &parts.to_string())
+    }
+    /// Generation manifest and generation lock identity.
+    pub fn manifest_key(&self) -> Result<String, Error> {
+        self.key(json!(["projection", "manifest"]))
+    }
+    fn checkpoint_key(&self, partition: i32) -> Result<String, Error> {
+        if !self.starts.contains_key(&partition) {
+            return Err(Error::bad_handle("unregistered projection partition"));
+        }
+        self.key(json!([
+            "projection",
+            "checkpoint",
+            self.source_identity,
+            self.topic,
+            partition
+        ]))
+    }
+    /// The storage key of one aggregate's state: what sealing its private part binds.
+    pub fn state_key(
+        &self,
+        tenant: &Option<String>,
+        subject: &Option<String>,
+        aggregate: &str,
+    ) -> Result<String, Error> {
+        required(aggregate)?;
+        namespace::check_tenant(tenant.as_deref())?;
+        subject.as_deref().map(namespace::check_subject).transpose()?;
+        self.key(json!(["projection", "state", tenant, subject, aggregate]))
+    }
+    /// The half-open key range `[start, end)` holding every state record of one tenant and subject:
+    /// what an erasure cleanup of a plaintext generation deletes. Without a subject, every state record
+    /// of the tenant, unsealed ones included.
+    pub fn state_scope_range(&self, tenant: &Option<String>, subject: Option<&str>) -> Result<(String, String), Error> {
+        namespace::check_tenant(tenant.as_deref())?;
+        match subject {
+            Some(subject) => {
+                namespace::check_subject(subject)?;
+                namespace::range(&self.generation, &json!(["projection", "state", tenant, subject]))
+            }
+            None => namespace::prefix_range(&self.generation, &json!(["projection", "state", tenant])),
+        }
+    }
+    fn event_keys(&self, event: &Event) -> Result<[String; 3], Error> {
+        required(&event.event_id)?;
+        required(&event.event_type)?;
+        required(&event.schema_version)?;
+        if event.sequence < 1 {
+            return Err(Error::codec("projection sequence must start at one"));
+        }
+        if event.tenant.as_deref().is_some_and(|tenant| tenant.contains('\0')) {
+            return Err(Error::codec("projection tenant holds a NUL character"));
+        }
+        Ok([
+            self.state_key(&event.tenant, &event.subject, &event.aggregate)?,
+            self.key(json!(["projection", "event", event.tenant, event.event_id]))?,
+            self.key(json!([
+                "projection",
+                "sequence",
+                event.tenant,
+                event.aggregate,
+                event.sequence.to_string()
+            ]))?,
+        ])
+    }
+    /// Fail closed on identity/history changes or missing required input.
+    pub fn continuity(&self, proof: &Proof, cursor: i64) -> Result<(), Error> {
+        if proof.identity != self.source_identity
+            || proof.history != self.source_history
+            || proof.beginning < 0
+            || proof.end < proof.beginning
+            || cursor < proof.beginning
+            || cursor > proof.end
+        {
+            return Err(Error::bad_handle(
+                "projection source continuity is unproven or required history is missing",
+            ));
+        }
+        Ok(())
+    }
+    /// The storage key of the effect intent `id`, as delivery marks it.
+    pub fn intent_key(&self, id: &str) -> Result<String, Error> {
+        required(id)?;
+        self.key(json!(["projection", "intent", id]))
+    }
+}
+
+/// Keys of the state records an operation reads, the manifest first. Stores read them after taking
+/// [`lock`].
+pub fn keys(request: &Request) -> Result<Vec<String>, Error> {
+    let c = &request.contract;
+    c.validate()?;
+    let mut keys = vec![c.manifest_key()?];
+    match &request.operation {
+        Operation::Initialize | Operation::Freeze | Operation::Activate { .. } => {
+            for p in c.starts.keys() {
+                keys.push(c.checkpoint_key(*p)?);
+            }
+        }
+        Operation::Acquire { partition, .. } => keys.push(c.checkpoint_key(*partition)?),
+        Operation::Refresh { lease, .. } | Operation::Release { lease } | Operation::Load { lease } => {
+            keys.push(c.checkpoint_key(lease.partition)?);
+        }
+        Operation::PrepareBatch { lease, inputs, .. } | Operation::ApplyBatch { lease, inputs, .. } => {
+            keys.push(c.checkpoint_key(lease.partition)?);
+            for input in inputs {
+                keys.extend(c.event_keys(&input.event)?);
+            }
+        }
+        Operation::Get {
+            tenant,
+            subject,
+            aggregate,
+        } => keys.push(c.state_key(tenant, subject, aggregate)?),
+    }
+    // The manifest stays first; a batch names each record once.
+    let mut seen = std::collections::BTreeSet::new();
+    keys.retain(|key| seen.insert(key.clone()));
+    Ok(keys)
+}
+
+/// The locks an operation runs under. Partition work shares the generation lock, so partitions commit
+/// in parallel; initialization, freeze and activation take it alone.
+pub fn lock(request: &Request) -> Result<Lock, Error> {
+    let partition = match &request.operation {
+        Operation::Initialize | Operation::Freeze | Operation::Activate { .. } => {
+            return Ok(Lock {
+                exclusive: true,
+                partition: None,
+            });
+        }
+        Operation::Get { .. } => None,
+        Operation::Acquire { partition, .. } => Some(*partition),
+        Operation::Refresh { lease, .. }
+        | Operation::Release { lease }
+        | Operation::Load { lease }
+        | Operation::PrepareBatch { lease, .. }
+        | Operation::ApplyBatch { lease, .. } => Some(lease.partition),
+    };
+    if let Some(p) = partition {
+        request.contract.checkpoint_key(p)?;
+    }
+    Ok(Lock {
+        exclusive: false,
+        partition,
+    })
+}
+
+fn read<T: serde::de::DeserializeOwned>(records: &BTreeMap<String, Value>, key: &str) -> Result<T, Error> {
+    serde_json::from_value(
+        records
+            .get(key)
+            .cloned()
+            .ok_or_else(|| Error::bad_handle("missing projection storage record"))?,
+    )
+    .map_err(Error::codec)
+}
+
+fn lease_check(c: &Contract, records: &BTreeMap<String, Value>, lease: &Lease, now: i64) -> Result<Lease, Error> {
+    let stored: Lease = read(records, &c.checkpoint_key(lease.partition)?)?;
+    if lease.checkpoint_key != c.checkpoint_key(lease.partition)?
+        || stored.checkpoint_key != lease.checkpoint_key
+        || stored.partition != lease.partition
+        || stored.owner != lease.owner
+        || stored.epoch != lease.epoch
+        || stored.next_offset != lease.next_offset
+        || stored.expires_ms <= now
+        || stored.owner.is_empty()
+    {
+        return Err(Error::bad_handle("stale projection owner, cursor or expired lease"));
+    }
+    Ok(stored)
+}
+
+fn expiry(now: i64, duration: i64) -> Result<i64, Error> {
+    if now < 0 || duration <= 0 {
+        return Err(Error::bad_handle("invalid projection lease duration or clock"));
+    }
+    now.checked_add(duration)
+        .ok_or_else(|| Error::bad_handle("projection lease clock overflow"))
+}
+
+fn next_epoch(checkpoint: &Lease) -> Result<i64, Error> {
+    checkpoint
+        .epoch
+        .checked_add(1)
+        .ok_or_else(|| Error::bad_handle("projection epoch exhausted"))
+}
+
+/// Stable across generation rebuilds, restore, delivery attempts and source offsets.
+pub fn intent_id(c: &Contract, event: &Event, intent: &Intent) -> Result<String, Error> {
+    required(&intent.key)?;
+    required(&intent.destination)?;
+    namespace::key(
+        &c.effect_namespace,
+        &json!([event.tenant, event.aggregate, event.event_id, intent.key]).to_string(),
+    )
+}
+
+/// What a batch decided: the reducer input per input, the writes and the advanced lease.
+struct Batch {
+    items: Vec<Value>,
+    writes: BTreeMap<String, Value>,
+    intents: BTreeMap<String, Value>,
+    lease: Lease,
+}
+
+/// Run a batch over `records`, in source order. Without `reduced` it only decides novelty: each novel
+/// event still stages its receipts and sequence, so a later copy in the same batch reads
+/// as a replay and a later delta of the same aggregate needs the next sequence.
+#[allow(clippy::too_many_arguments)]
+fn run_batch(
+    c: &Contract,
+    manifest: &Manifest,
+    records: &BTreeMap<String, Value>,
+    lease: &Lease,
+    inputs: &[Input],
+    proof: &Proof,
+    reduced: Option<&[Option<Reduced>]>,
+    now: i64,
+) -> Result<Batch, Error> {
+    if manifest.frozen {
+        return Err(Error::bad_handle("projection generation is frozen"));
+    }
+    if reduced.is_some_and(|r| r.len() != inputs.len()) {
+        return Err(Error::bad_handle("projection batch needs one reducer result per input"));
+    }
+    // The state each novel event's reducer starts from is sent once per aggregate.
+    let mut sent_state = std::collections::BTreeSet::new();
+    let mut batch = Batch {
+        items: Vec::with_capacity(inputs.len()),
+        writes: BTreeMap::new(),
+        intents: BTreeMap::new(),
+        lease: lease_check(c, records, lease, now)?,
+    };
+    for (index, input) in inputs.iter().enumerate() {
+        let Input {
+            offset,
+            event,
+            erased,
+            fingerprint,
+        } = input;
+        let checkpoint = &mut batch.lease;
+        c.continuity(proof, checkpoint.next_offset)?;
+        if *offset < checkpoint.next_offset || *offset >= proof.end {
+            return Err(Error::bad_handle("projection record outside proven source interval"));
+        }
+        let [state_key, event_key, sequence_key] = c.event_keys(event)?;
+        let canonical = canonical_event(event)?;
+        let mut normalized_event: Value = serde_json::from_slice(&canonical).map_err(Error::codec)?;
+        *normalized_event
+            .get_mut("sequence")
+            .ok_or_else(|| Error::codec("missing sequence"))? = json!(event.sequence);
+        if fingerprint.as_deref().is_some_and(|f| !is_digest_hex(f)) {
+            return Err(Error::bad_handle(
+                "projection keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
+            ));
+        }
+        // The receipt binds a hash of the canonical event: the same conflict check, without keeping
+        // a second copy of every payload. An erased event binds no hash: nothing of it can be read.
+        let bound = if *erased {
+            ERASED.to_owned()
+        } else {
+            fingerprint
+                .clone()
+                .unwrap_or_else(|| payload_hash(&canonical).to_string())
+        };
+        let receipt = json!({"fingerprint": bound, "partition": checkpoint.partition});
+        let by_event = staged(&batch.writes, records, &event_key);
+        let by_sequence = staged(&batch.writes, records, &sequence_key);
+        let duplicate = by_event.is_some() || by_sequence.is_some();
+        // A receipt that differs blames the message; a missing partner receipt blames the store. An
+        // erased replay matches any receipt: one from before erasure holds its earlier fingerprint.
+        if !*erased
+            && [by_event, by_sequence]
+                .into_iter()
+                .flatten()
+                .any(|saved| *saved != receipt)
+        {
+            return Err(Error::codec("conflicting projection event identity"));
+        }
+        if by_event.is_some() != by_sequence.is_some() {
+            return Err(Error::bad_handle("incomplete projection deduplication indexes"));
+        }
+        if *erased {
+            if reduced.and_then(|r| r.get(index)).is_some_and(Option::is_some) {
+                return Err(Error::bad_handle("projection reducer result given for an erased event"));
+            }
+            if reduced.is_none() {
+                batch
+                    .items
+                    .push(json!({"novel": false, "state": null, "event": normalized_event}));
+            }
+            // A receipt from before erasure stays: it holds no plaintext, and replays still match it.
+            if !duplicate {
+                batch.writes.insert(event_key, receipt.clone());
+                batch.writes.insert(sequence_key, receipt);
+            }
+        } else {
+            let state = staged(&batch.writes, records, &state_key)
+                .map(StateHead::deserialize)
+                .transpose()
+                .map_err(Error::codec)?;
+            if state.as_ref().is_some_and(|s| s.partition != checkpoint.partition) {
+                return Err(Error::codec("aggregate moved to another source partition"));
+            }
+            if !duplicate && state.as_ref().is_some_and(|s| s.sequence >= event.sequence) {
+                return Err(Error::bad_handle(
+                    "projection state is ahead of its deduplication records",
+                ));
+            }
+            if !duplicate && state.as_ref().map_or(Some(1), |s| s.sequence.checked_add(1)) != Some(event.sequence) {
+                return Err(Error::codec(if state.is_none() {
+                    "projection aggregate has no state: first sequence must be one and subject must stay unchanged"
+                } else {
+                    "projection aggregate sequence gap"
+                }));
+            }
+            if duplicate && state.as_ref().is_none_or(|s| s.sequence < event.sequence) {
+                return Err(Error::bad_handle("projection state and deduplication restore disagree"));
+            }
+            if reduced.is_none() {
+                // The reducer starts from the state the batch read; the host carries it between deltas.
+                let first = !duplicate && sent_state.insert(state_key.clone());
+                let before = first.then(|| records.get(&state_key)).flatten();
+                batch
+                    .items
+                    .push(json!({"novel": !duplicate, "state": before, "event": normalized_event}));
+            }
+            if !duplicate {
+                let result = match reduced.and_then(|r| r.get(index)) {
+                    None => None,
+                    Some(None) => return Err(Error::bad_handle("projection reducer result missing for a novel event")),
+                    Some(Some(result)) => Some(checked(c, event, result)?),
+                };
+                let (private, public) = result
+                    .as_ref()
+                    .map_or((Value::Null, Value::Null), |r| (r.private.clone(), r.public.clone()));
+                let state = json!(State {
+                    sequence: event.sequence,
+                    partition: checkpoint.partition,
+                    private,
+                    public,
+                });
+                for (key, value) in [
+                    (state_key, state),
+                    (event_key, receipt.clone()),
+                    (sequence_key, receipt),
+                ] {
+                    batch.writes.insert(key, value);
+                }
+                for (ordinal, intent) in result.iter().flat_map(|r| r.intents.iter()).enumerate() {
+                    let id = intent_id(c, event, intent)?;
+                    let key = c.intent_key(&id)?;
+                    let record = json!({
+                        "id": id,
+                        "generation": c.generation,
+                        "tenant": event.tenant,
+                        "subject": event.subject,
+                        "aggregate": event.aggregate,
+                        "destination": intent.destination,
+                        "payload": intent.payload,
+                        "partition": checkpoint.partition,
+                        "offset": offset,
+                        "ordinal": ordinal
+                    });
+                    if batch.intents.insert(key, record).is_some() {
+                        return Err(Error::codec("duplicate projection intent key"));
+                    }
+                }
+            } else if reduced.and_then(|r| r.get(index)).is_some_and(Option::is_some) {
+                return Err(Error::bad_handle(
+                    "projection reducer result given for a replayed event",
+                ));
+            }
+        }
+        checkpoint.next_offset = offset
+            .checked_add(1)
+            .ok_or_else(|| Error::bad_handle("projection offset exhausted"))?;
+        let key = c.checkpoint_key(checkpoint.partition)?;
+        batch.writes.insert(key, json!(checkpoint));
+    }
+    Ok(batch)
+}
+
+/// The receipt fingerprint of an erased event: no hash, since nothing of the event can be read.
+const ERASED: &str = "erased";
+
+/// The canonical bytes a receipt binds: the event with its sequence as decimal text, so a 64-bit
+/// sequence survives JSON. Normalized values must remain valid reducer inputs after storage and
+/// replay: a float such as 1e18 otherwise becomes an unsafe integer on the next JSON crossing.
+fn canonical_event(event: &Event) -> Result<Vec<u8>, Error> {
+    let mut value = json!(event);
+    *value
+        .get_mut("sequence")
+        .ok_or_else(|| Error::codec("missing event sequence"))? = json!(event.sequence.to_string());
+    let canonical = canonical_json(&serde_json::to_vec(&value).map_err(Error::codec)?)?;
+    canonical_json(&canonical)?;
+    Ok(canonical)
+}
+
+/// The receipt fingerprint of a sealed event: HMAC-SHA-256 under the subject's fingerprint key over
+/// the canonical opened event. Erasure destroys the key, and with it any way to test a guessed
+/// payload against the receipt.
+pub fn keyed_fingerprint(key: &[u8], event: &Event) -> Result<String, Error> {
+    keyed_digest(key, b"edax.projection.event/v1\0", &canonical_event(event)?)
+}
+
+/// A reducer result in canonical form, refused as `codec` when no store could keep it. A subject's
+/// private part on a sealed generation, and every intent payload of a subject, must arrive sealed under
+/// the event's scope: a host that forgot to seal fails here, before anything is written.
+fn checked(c: &Contract, event: &Event, reduced: &Reduced) -> Result<Reduced, Error> {
+    let bytes = canonical_json(&serde_json::to_vec(reduced).map_err(Error::codec)?)?;
+    canonical_json(&bytes)?;
+    let reduced: Reduced = serde_json::from_slice(&bytes).map_err(Error::codec)?;
+    if holds_nul(&reduced.private)
+        || holds_nul(&reduced.public)
+        || reduced.intents.iter().any(|intent| holds_nul(&intent.payload))
+    {
+        return Err(Error::codec(
+            "projection reducer output holds a NUL character, which Postgres cannot store",
+        ));
+    }
+    if let Some(subject) = &event.subject {
+        for (intent, _) in sealed_parts(c, event, &reduced)? {
+            let value = match intent {
+                None => &reduced.private,
+                Some(index) => {
+                    &reduced
+                        .intents
+                        .get(index)
+                        .ok_or_else(|| Error::bad_handle("missing intent"))?
+                        .payload
+                }
+            };
+            if intent.is_some() && value.is_null() {
+                return Err(Error::bad_handle(
+                    "a subject's intent payload must arrive sealed under its own scope",
+                ));
+            }
+            namespace::check_sealed(Some(value), event.tenant.as_deref(), subject)?;
+        }
+    }
+    Ok(reduced)
+}
+
+/// The parts of `reduced` a host seals for `event`, each with the intent it sits in (none for the private
+/// state): a subject's present private state on a sealed generation, and every present intent payload of
+/// a subject. The state binds its key and the event's sequence; an intent binds its key and version 0.
+fn sealed_parts(
+    c: &Contract,
+    event: &Event,
+    reduced: &Reduced,
+) -> Result<Vec<(Option<usize>, namespace::Part)>, Error> {
+    let Some(subject) = &event.subject else {
+        return Ok(Vec::new());
+    };
+    let part = |kind: &str, identity: String, version: u64| namespace::Part {
+        kind: kind.into(),
+        identity,
+        version,
+        tenant: event.tenant.clone(),
+        subject: subject.clone(),
+    };
+    let mut parts = Vec::new();
+    if c.at_rest == namespace::AtRest::Sealed.as_str() && !reduced.private.is_null() {
+        let sequence =
+            u64::try_from(event.sequence).map_err(|_| Error::codec("projection sequence must start at one"))?;
+        let identity = c.state_key(&event.tenant, &event.subject, &event.aggregate)?;
+        parts.push((None, part("projection", identity, sequence)));
+    }
+    for (index, intent) in reduced.intents.iter().enumerate() {
+        let identity = c.intent_key(&intent_id(c, event, intent)?)?;
+        parts.push((Some(index), part("intent", identity, 0)));
+    }
+    Ok(parts)
+}
+
+/// One event's reducer result, as a host seals it before `ApplyBatch`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reduction {
+    /// The canonical event the reducer folded.
+    pub event: Event,
+    /// Its plaintext reducer result.
+    pub reduced: Reduced,
+}
+
+/// A part to seal in a batch's reducer results.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Placed {
+    /// Index of the reduction in the batch.
+    pub item: usize,
+    /// Index of the intent whose payload it is; none for the private state.
+    pub intent: Option<usize>,
+    /// What sealing it binds.
+    pub part: namespace::Part,
+}
+
+/// What a host seals in a batch's reducer results before `ApplyBatch`, which then refuses anything of a
+/// subject this plan names and the host left plaintext.
+pub fn seal_plan(c: &Contract, reductions: &[Reduction]) -> Result<Vec<Placed>, Error> {
+    c.validate()?;
+    let mut placed = Vec::new();
+    for (item, reduction) in reductions.iter().enumerate() {
+        for (intent, part) in sealed_parts(c, &reduction.event, &reduction.reduced)? {
+            placed.push(Placed { item, intent, part });
+        }
+    }
+    Ok(placed)
+}
+
+/// What a host opens in the state record it read for one aggregate, or none: a plaintext generation, an
+/// aggregate without a subject, or a state without a private part.
+pub fn open_state(
+    c: &Contract,
+    tenant: &Option<String>,
+    subject: &Option<String>,
+    aggregate: &str,
+    record: &Value,
+) -> Result<Option<namespace::Part>, Error> {
+    c.validate()?;
+    let state: State = serde_json::from_value(record.clone()).map_err(Error::codec)?;
+    let Some(subject) = subject
+        .as_ref()
+        .filter(|_| c.at_rest == namespace::AtRest::Sealed.as_str())
+    else {
+        return Ok(None);
+    };
+    if state.private.is_null() {
+        return Ok(None);
+    }
+    Ok(Some(namespace::Part {
+        kind: "projection".into(),
+        identity: c.state_key(tenant, &Some(subject.clone()), aggregate)?,
+        version: u64::try_from(state.sequence).map_err(|_| Error::codec("invalid projection state sequence"))?,
+        tenant: tenant.clone(),
+        subject: subject.clone(),
+    }))
+}
+
+/// What a host opens in a stored intent record before delivery, or none: an intent without a subject or
+/// a payload.
+pub fn open_intent(c: &Contract, record: &Value) -> Result<Option<namespace::Part>, Error> {
+    c.validate()?;
+    let field = |name: &str| {
+        record
+            .get(name)
+            .ok_or_else(|| Error::codec(format_args!("intent record lacks {name}")))
+    };
+    let Some(subject) = record.get("subject").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    if field("payload")?.is_null() {
+        return Ok(None);
+    }
+    let id = field("id")?.as_str().ok_or_else(|| Error::codec("invalid intent id"))?;
+    Ok(Some(namespace::Part {
+        kind: "intent".into(),
+        identity: c.intent_key(id)?,
+        version: 0,
+        tenant: record.get("tenant").and_then(Value::as_str).map(str::to_owned),
+        subject: subject.to_owned(),
+    }))
+}
+
+/// Apply one operation. The caller persists every write atomically, or none of them.
+pub fn transition(request: &Request, records: &BTreeMap<String, Value>, now: i64) -> Result<Plan, Error> {
+    keys(request)?;
+    let c = &request.contract;
+    let manifest_key = c.manifest_key()?;
+    let mut writes = BTreeMap::new();
+    let mut plan = Plan::default();
+    if let Operation::Initialize = request.operation {
+        if records.contains_key(&manifest_key) {
+            let saved: Manifest = read(records, &manifest_key)?;
+            if saved.contract != *c {
+                return Err(Error::bad_handle("changed projection contract"));
+            }
+            for p in c.starts.keys() {
+                let _: Lease = read(records, &c.checkpoint_key(*p)?)?;
+            }
+            return Ok(plan);
+        }
+        if records.keys().any(|key| key != &manifest_key) {
+            return Err(Error::bad_handle("partial projection restore"));
+        }
+        let manifest = Manifest {
+            contract: c.clone(),
+            active: false,
+            frozen: false,
+            cutoffs: BTreeMap::new(),
+            upper: BTreeMap::new(),
+        };
+        plan.inserts.insert(manifest_key, json!(manifest));
+        for (partition, start) in &c.starts {
+            let checkpoint = Lease {
+                checkpoint_key: c.checkpoint_key(*partition)?,
+                partition: *partition,
+                owner: String::new(),
+                epoch: 0,
+                next_offset: *start,
+                expires_ms: 0,
+            };
+            plan.inserts
+                .insert(checkpoint.checkpoint_key.clone(), json!(checkpoint));
+        }
+        return Ok(plan);
+    }
+    let mut manifest: Manifest = read(records, &manifest_key)?;
+    if manifest.contract != *c {
+        return Err(Error::bad_handle("changed projection contract"));
+    }
+    match &request.operation {
+        Operation::Initialize => return Err(Error::bad_handle("unexpected projection initialization")),
+        Operation::Acquire {
+            partition,
+            owner,
+            lease_ms,
+            proof,
+        } => {
+            required(owner)?;
+            if manifest.frozen {
+                return Err(Error::bad_handle("projection generation is frozen"));
+            }
+            let key = c.checkpoint_key(*partition)?;
+            let mut checkpoint: Lease = read(records, &key)?;
+            let expires_ms = expiry(now, *lease_ms)?;
+            // A live owner may have committed past this caller's proof: wait for it, check no proof.
+            if checkpoint.expires_ms > now && !checkpoint.owner.is_empty() {
+                if checkpoint.owner == *owner {
+                    // The same unique acquisition retried after a lost response.
+                    plan.result = json!(checkpoint);
+                    return Ok(plan);
+                }
+                return Err(Error::new(ErrorCode::InProgress, "projection partition already owned"));
+            }
+            c.continuity(proof, checkpoint.next_offset)?;
+            checkpoint.epoch = next_epoch(&checkpoint)?;
+            checkpoint.owner.clone_from(owner);
+            checkpoint.expires_ms = expires_ms;
+            plan.result = json!(checkpoint);
+            writes.insert(key, json!(checkpoint));
+        }
+        Operation::Refresh {
+            lease,
+            lease_ms,
+            proof,
+            expected_offset,
+        } => {
+            required(&lease.owner)?;
+            if manifest.frozen {
+                return Err(Error::bad_handle("projection generation is frozen"));
+            }
+            let key = c.checkpoint_key(lease.partition)?;
+            let mut checkpoint: Lease = read(records, &key)?;
+            if lease.checkpoint_key != key
+                || checkpoint.checkpoint_key != key
+                || checkpoint.owner != lease.owner
+                || checkpoint.epoch < lease.epoch
+            {
+                return Err(Error::bad_handle("stale projection ownership"));
+            }
+            if expected_offset.is_some_and(|expected| expected != checkpoint.next_offset) {
+                return Err(Error::new(
+                    ErrorCode::Store,
+                    "projection cursor moved; reload it and fetch again",
+                ));
+            }
+            c.continuity(proof, checkpoint.next_offset)?;
+            if checkpoint.expires_ms <= now {
+                checkpoint.epoch = next_epoch(&checkpoint)?;
+            }
+            checkpoint.expires_ms = expiry(now, *lease_ms)?;
+            plan.result = json!(checkpoint);
+            writes.insert(key, json!(checkpoint));
+        }
+        Operation::Load { lease } => {
+            let stored: Lease = read(records, &c.checkpoint_key(lease.partition)?)?;
+            let mut expected = lease.clone();
+            expected.next_offset = stored.next_offset;
+            plan.result = json!(lease_check(c, records, &expected, now)?);
+        }
+        Operation::Release { lease } => {
+            let key = c.checkpoint_key(lease.partition)?;
+            let mut checkpoint: Lease = read(records, &key)?;
+            if lease.checkpoint_key == key
+                && checkpoint.checkpoint_key == key
+                && !lease.owner.is_empty()
+                && checkpoint.owner == lease.owner
+                && checkpoint.epoch == lease.epoch
+            {
+                checkpoint.owner.clear();
+                checkpoint.expires_ms = 0;
+                writes.insert(key, json!(checkpoint));
+            }
+        }
+        Operation::PrepareBatch { lease, inputs, proof } => {
+            let batch = run_batch(c, &manifest, records, lease, inputs, proof, None, now)?;
+            plan.result = json!({"items": batch.items});
+        }
+        Operation::ApplyBatch {
+            lease,
+            inputs,
+            proof,
+            reduced,
+        } => {
+            let batch = run_batch(c, &manifest, records, lease, inputs, proof, Some(reduced), now)?;
+            plan.result = json!(batch.lease);
+            plan.intents = batch.intents;
+            writes = batch.writes;
+        }
+        Operation::Freeze => {
+            if !manifest.active {
+                return Err(Error::bad_handle(
+                    "cannot hand over effects from an inactive projection generation",
+                ));
+            }
+            if !manifest.frozen {
+                for p in c.starts.keys() {
+                    let key = c.checkpoint_key(*p)?;
+                    let mut checkpoint: Lease = read(records, &key)?;
+                    manifest.upper.insert(*p, checkpoint.next_offset);
+                    checkpoint.owner.clear();
+                    checkpoint.expires_ms = 0;
+                    writes.insert(key, json!(checkpoint));
+                }
+                manifest.frozen = true;
+                writes.insert(manifest_key, json!(manifest));
+            }
+            plan.result = json!(Cutover {
+                source_identity: c.source_identity.clone(),
+                source_history: c.source_history.clone(),
+                topic: c.topic.clone(),
+                cutoffs: manifest.upper
+            });
+        }
+        Operation::Activate { cutover } => {
+            if cutover.source_identity != c.source_identity
+                || cutover.source_history != c.source_history
+                || cutover.topic != c.topic
+            {
+                return Err(Error::bad_handle(
+                    "projection cutover belongs to another source history",
+                ));
+            }
+            let cutoffs = &cutover.cutoffs;
+            if manifest.frozen
+                || cutoffs.keys().ne(c.starts.keys())
+                || cutoffs
+                    .iter()
+                    .any(|(p, o)| c.starts.get(p).is_none_or(|start| o < start))
+            {
+                return Err(Error::bad_handle("invalid projection activation vector"));
+            }
+            if manifest.active && manifest.cutoffs != *cutoffs {
+                return Err(Error::bad_handle("projection activation is immutable"));
+            }
+            for (p, cutoff) in cutoffs {
+                let checkpoint: Lease = read(records, &c.checkpoint_key(*p)?)?;
+                if checkpoint.next_offset < *cutoff {
+                    return Err(Error::bad_handle("projection rebuild has not reached cutoff"));
+                }
+            }
+            // Eligibility is read against these immutable cutoffs, so no historical intent is rewritten.
+            manifest.active = true;
+            manifest.cutoffs.clone_from(cutoffs);
+            writes.insert(manifest_key, json!(manifest));
+        }
+        Operation::Get {
+            tenant,
+            subject,
+            aggregate,
+        } => {
+            plan.result = records
+                .get(&c.state_key(tenant, subject, aggregate)?)
+                .cloned()
+                .unwrap_or(Value::Null);
+        }
+    }
+    for (key, value) in writes {
+        if records.contains_key(&key) {
+            plan.updates.insert(key, value);
+        } else {
+            plan.inserts.insert(key, value);
+        }
+    }
+    Ok(plan)
+}
+
+/// Whether an intent may be delivered under a generation's manifest: at or above its partition's
+/// activation cutoff, and below its frozen upper bound. Every store reads it at delivery time.
+pub fn eligible(manifest: &Value, intent: &Value) -> Result<bool, Error> {
+    let m: Manifest = serde_json::from_value(manifest.clone()).map_err(Error::codec)?;
+    let partition = intent
+        .get("partition")
+        .and_then(Value::as_i64)
+        .and_then(|p| i32::try_from(p).ok())
+        .ok_or_else(|| Error::codec("invalid intent partition"))?;
+    let offset = intent
+        .get("offset")
+        .and_then(Value::as_i64)
+        .ok_or_else(|| Error::codec("invalid intent offset"))?;
+    Ok(m.active
+        && m.cutoffs.get(&partition).is_some_and(|start| offset >= *start)
+        && (!m.frozen || m.upper.get(&partition).is_some_and(|end| offset < *end)))
+}
+
+fn partition_map<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<BTreeMap<i32, i64>, D::Error> {
+    let raw = BTreeMap::<String, i64>::deserialize(deserializer)?;
+    raw.into_iter()
+        .map(|(key, value)| {
+            let partition = key.parse::<i32>().map_err(serde::de::Error::custom)?;
+            if partition < 0 || partition.to_string() != key {
+                return Err(serde::de::Error::custom("invalid partition key"));
+            }
+            Ok((partition, value))
+        })
+        .collect()
+}

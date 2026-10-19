@@ -3,8 +3,10 @@
 How to plug your own database or broker into edax, and what each seam demands in return.
 
 Postgres ships for every durable seam, in Python; see [postgres](./postgres.md). For any other
-database you supply the adapter. Every seam is a `Protocol` in the Python software development
-kit (SDK) and a trait in the Rust SDK. That docstring is the specification. This page indexes the
+database you supply the adapter. The Python software development kit (SDK) defines store protocols
+and the `ProjectionStateStore` transaction interface. The Rust reference SDK covers the older store seams;
+ingestion and projection state decisions are available directly from their kernels. Each seam's docstring is
+the specification. This page indexes the
 seams and adds the checklist for writing one. A backend supplies the I/O and nothing else; the
 decisions stay in the [kernels](../kernels/README.md).
 
@@ -101,6 +103,21 @@ Specification: `edax.projection.ProjectionStore`.
 - `get_many` returns each row with its row key as `"id"`, as `get` does: the tiebreak paging sorts on.
 - Nothing in the SDK calls this store. Only your handlers do.
 
+### `BatchSink` and `ProjectionStateStore`
+
+These Python interfaces own their transactions. The PostgreSQL implementations refuse an ambient
+unit of work. A successful call means storage committed; the runner can then advance source progress.
+
+| Interface | Required atomic work | Implementations |
+|---|---|---|
+| `edax.ingestion.BatchSink` | Accepted append/upsert rows and durable rejection decisions | `MemoryIngestionSink`, `PostgresIngestionSink` |
+| `edax.projection.ProjectionStateStore`, using `ProjectionSession` | Projection state, both receipt indexes, intents and source checkpoint under the generation lock | `MemoryProjectionStateStore`, `PostgresProjectionStateStore` |
+
+The kernel validates identities and computes writes. A custom adapter must preserve the lock and
+commit boundaries, expose unresolved failures, and never acknowledge source work before commit.
+See [ingestion](ingestion.md) and [projection processing](../sdk/projection-processing.md) for replay, recovery and publication contracts.
+Their optional tables are separate from `ProjectionStore` and have no `ProjectionQuery` API.
+
 ### `SagaStore`
 
 Specification: `edax.saga.SagaStore`.
@@ -185,9 +202,10 @@ Two more rules cut across the table.
 - **Errors are part of the contract.** `ConcurrencyError` is for a version mismatch and nothing
   else. A marshal failure is `CodecError`. Everything else is `StoreError`. See
   [errors](#3-map-your-clients-errors-onto-the-taxonomy).
-- **Transaction enlistment is uniform.** A store method given `tx=None` reads
+- **Participant stores join the caller's transaction.** A store method given `tx=None` reads
   `edax.unit_of_work.current_tx(transactor)` for its own transactor and joins that ambient unit of work.
-  With no handle and no ambient one, it runs standalone.
+  With no handle and no ambient one, it runs standalone. The owned ingestion/projection operations above
+  require their own commit boundary and refuse an ambient transaction.
 
 ### Rust parity
 

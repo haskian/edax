@@ -25,20 +25,31 @@
 mod broker;
 mod event;
 mod idempotency;
+mod ingest;
 mod outbox;
 mod outbox_rows;
 mod projection;
+mod projection_state;
 mod saga;
 #[cfg(test)]
 mod testkit;
 mod tx;
 mod versioned;
 
+/// Delete the keys of `map` in `[start, end)`, an erasure scope's key range; return how many.
+pub(crate) fn delete_range<V>(map: &mut std::collections::BTreeMap<String, V>, start: &str, end: &str) -> usize {
+    let before = map.len();
+    map.retain(|key, _| key.as_str() < start || key.as_str() >= end);
+    before - map.len()
+}
+
 pub use broker::{LogMessage, MemoryBroker, PolledDelivery};
 pub use event::{MemoryEventStore, Snapshot};
 pub use idempotency::MemoryIdempotencyStore;
+pub use ingest::MemoryIngest;
 pub use outbox::MemoryCommandOutbox;
 pub use projection::{Document, MemoryProjectionStore};
+pub use projection_state::{MemoryProjectionState, Read, Writes};
 pub use saga::{MemorySagaStore, SagaRow};
 pub use tx::{MemoryTransactor, Tx};
 pub use versioned::Versioned;

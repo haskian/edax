@@ -2131,8 +2131,221 @@ fn saga_cases() -> Vec<Value> {
     cases
 }
 
+fn event_batch_cases() -> Vec<Value> {
+    use edax_event::batch::{admit, check, cut, recover, Attempt, Config};
+
+    let mut cases = Vec::new();
+    for (name, config) in [
+        ("default_limits", json!({})),
+        ("partial_limits", json!({"concurrency": 2, "flush_ms": 100})),
+        ("zero_records", json!({"max_records": 0})),
+        ("zero_bytes", json!({"max_bytes": 0})),
+        ("zero_age", json!({"flush_ms": 0})),
+        ("zero_concurrency", json!({"concurrency": 0})),
+        ("zero_retained_records", json!({"retained_records": 0})),
+        ("zero_retained_bytes", json!({"retained_bytes": 0})),
+        ("zero_record_bytes", json!({"max_record_bytes": 0})),
+        ("zero_mapped_bytes", json!({"max_mapped_bytes": 0})),
+        ("zero_attempts", json!({"max_attempts": 0})),
+        ("record_larger_than_batch", json!({"max_record_bytes": 1_048_577})),
+        ("missing_record_headroom", json!({"retained_records": 500})),
+        ("insufficient_byte_headroom", json!({"retained_bytes": 4_194_303})),
+        ("below_minimum_byte_headroom", json!({"retained_bytes": 12_582_911})),
+        ("minimum_byte_headroom_accepted", json!({"retained_bytes": 12_582_912})),
+        ("byte_addition_overflow", json!({"max_mapped_bytes": usize::MAX})),
+        (
+            "byte_multiplication_overflow",
+            json!({"max_mapped_bytes": usize::MAX / 2}),
+        ),
+    ] {
+        let parsed: Config = serde_json::from_value(config.clone()).unwrap();
+        let result = check(&parsed).map(|()| parsed);
+        cases.push(json!({
+            "name": name, "op": "config", "config": config,
+            "want": result.as_ref().ok(), "error": refusal(&result),
+        }));
+    }
+    let config = Config::default();
+    for (name, records, bytes, age_ms) in [
+        ("empty_fresh_batch", 0, 0, 0),
+        ("below_all_flush_thresholds", 499, 1_048_575, 49),
+        ("record_flush_threshold", 500, 1, 0),
+        ("byte_flush_threshold", 1, 1_048_576, 0),
+        ("age_flush_threshold", 1, 1, 50),
+        ("past_all_flush_thresholds", 501, 1_048_577, 51),
+    ] {
+        cases.push(json!({
+            "name": name, "op": "cut", "config": {}, "records": records,
+            "bytes": bytes, "age_ms": age_ms,
+            "want": cut(records, bytes, age_ms, &config), "error": null,
+        }));
+    }
+    for (name, used_records, used_bytes, records, bytes) in [
+        ("empty_admission", 0, 0, 0, 0),
+        ("first_record", 0, 0, 1, 1),
+        ("exact_caps", 1_999, 16_777_215, 1, 1),
+        ("record_cap_exceeded", 2_000, 0, 1, 0),
+        ("byte_cap_exceeded", 0, 16_777_216, 0, 1),
+        ("record_sum_overflow", usize::MAX, 0, 1, 0),
+        ("byte_sum_overflow", 0, usize::MAX, 0, 1),
+    ] {
+        cases.push(json!({
+            "name": name, "op": "admit", "config": {},
+            "used_records": used_records, "used_bytes": used_bytes,
+            "records": records, "bytes": bytes,
+            "want": admit(used_records, used_bytes, records, bytes, &config), "error": null,
+        }));
+    }
+    // (name, code, attempt, waits, count, max_attempts, rolled_back, isolable)
+    for (name, code, attempt, waits, count, max_attempts, rolled_back, isolable) in [
+        ("fatal_stops", Some("bad_handle"), 1, 0, 500, 5, true, true),
+        (
+            "uncertain_terminal_without_isolation_retries",
+            Some("codec"),
+            1,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
+            "transient_without_isolation_retries",
+            Some("store"),
+            1,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
+            "contention_first_wait_saturates",
+            Some("in_progress"),
+            9,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
+            "contention_waits_uncounted",
+            Some("in_progress"),
+            9,
+            1,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("contention_backs_off", Some("in_progress"), 9, 4, 500, 5, false, false),
+        ("retry_initial_step", Some("store"), 0, 0, 500, 5, true, true),
+        ("retry_first_failure", Some("store"), 1, 0, 500, 5, true, true),
+        ("retry_later_failure", Some("concurrency"), 4, 0, 500, 5, true, true),
+        (
+            "outage_exhaustion_stops_without_rejection",
+            Some("store"),
+            5,
+            0,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("uncoded_failure_is_transient", None, 1, 0, 500, 5, true, true),
+        (
+            "uncertain_commit_retries_original_batch",
+            Some("codec"),
+            1,
+            0,
+            500,
+            5,
+            false,
+            true,
+        ),
+        (
+            "uncertain_commit_exhaustion_stops",
+            Some("codec"),
+            5,
+            0,
+            500,
+            5,
+            false,
+            true,
+        ),
+        (
+            "split_even_originals_left_first",
+            Some("codec"),
+            1,
+            0,
+            500,
+            5,
+            true,
+            true,
+        ),
+        ("split_odd_originals_left_first", Some("codec"), 1, 0, 5, 5, true, true),
+        ("split_two_originals", Some("codec"), 1, 0, 2, 5, true, true),
+        (
+            "single_record_isolated_rejection",
+            Some("codec"),
+            1,
+            0,
+            1,
+            5,
+            true,
+            true,
+        ),
+        ("rejected_record_rejection", Some("rejected"), 1, 0, 1, 5, true, true),
+        (
+            "terminal_without_isolation_stops",
+            Some("codec"),
+            1,
+            0,
+            1,
+            5,
+            true,
+            false,
+        ),
+        ("unknown_code_is_refused", Some("unrecognized"), 1, 0, 1, 5, true, true),
+        ("empty_recovery_is_refused", Some("store"), 1, 0, 0, 5, true, true),
+        ("zero_retry_limit_is_refused", Some("store"), 1, 0, 1, 0, true, true),
+    ] {
+        let result = recover(
+            code,
+            Attempt {
+                attempt,
+                waits,
+                count,
+                max_attempts,
+                rolled_back,
+                isolable,
+            },
+        );
+        cases.push(json!({
+            "name": name, "op": "recover", "code": code, "attempt": attempt, "waits": waits,
+            "count": count, "max_attempts": max_attempts, "rolled_back": rolled_back, "isolable": isolable,
+            "want": result.as_ref().ok(), "error": refusal(&result),
+        }));
+    }
+    cases.push(json!({"name":"default_reservation", "op":"reserve", "config":{}, "want":edax_event::batch::reserve(&config).unwrap(), "error":null}));
+    let reserve = edax_event::batch::reserve(&config).unwrap();
+    for (name, bytes) in [
+        ("charge_empty", 0),
+        ("charge_counts_three_copies", 1_000usize),
+        ("charge_at_the_reserve", reserve / 3),
+        ("charge_past_the_reserve", reserve / 3 + 1),
+    ] {
+        let result = edax_event::batch::charge(bytes, &config);
+        cases.push(json!({"name": name, "op":"charge", "config":{}, "bytes":bytes, "want":result.as_ref().ok(), "error":refusal(&result)}));
+    }
+    cases.push(json!({"name":"batch_action_names", "op":"names", "set":"batch_action", "want":edax_event::batch::Action::NAMES, "error":null}));
+    cases
+}
+
 #[test]
 fn golden() {
+    write_or_check("event_batch.json", event_batch_cases());
     write_or_check("partition.json", partition_cases());
     write_or_check("envelopes.json", envelope_cases());
     write_or_check("upcast.json", upcast_cases());

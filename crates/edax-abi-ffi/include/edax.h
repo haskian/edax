@@ -160,10 +160,19 @@ typedef uint64_t EDAXMemoryEventStore;
  */
 typedef uint64_t EDAXMemoryIdempotencyStore;
 /**
+ * An atomic in-memory ingestion database. Persist this handle across runner restarts in tests.
+ */
+typedef uint64_t EDAXMemoryIngestion;
+/**
  * In-memory reference provider. One mutex serializes all reservations and revocations.
  * Restarting the process loses keys and tombstones; this is not a durable production provider.
  */
 typedef uint64_t EDAXMemoryKeys;
+/**
+ * An atomic in-memory projection state database: records and effect intents. Keep this handle for
+ * as long as the state should live.
+ */
+typedef uint64_t EDAXMemoryProjectionDatabase;
 /**
  * The projection store seam of a `MemoryTransactor`: versioned read-model documents, queried by the
  * kernel. See `edax_memory.MemoryProjectionStore`.
@@ -1622,6 +1631,13 @@ int32_t edax_kafka_due_partition(EDAXAlefHandle handle);
 int64_t edax_kafka_due_offset(EDAXAlefHandle handle);
 
 /**
+ * Get the `generation` field from a `KafkaDue`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+int64_t edax_kafka_due_generation(EDAXAlefHandle handle);
+
+/**
  * Create a `KafkaHeader` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -2236,6 +2252,65 @@ int32_t edax_memory_idempotency_store_put_raw(EDAXAlefHandle this_,
                                               const char *record_json);
 
 /**
+ * Free a `MemoryIngestion` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_memory_ingestion_free(EDAXAlefHandle handle);
+
+/**
+ * Commit original records and durable rejection decisions together.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_ingestion_commit(EDAXAlefHandle this_,
+                                   const char *manifest,
+                                   const char *inputs);
+
+/**
+ * Read a committed row as JSON, or JSON null.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_ingestion_get(EDAXAlefHandle this_,
+                                const char *key);
+
+/**
+ * Read pending rejections as a JSON map, scoped to a target prefix.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_ingestion_pending(EDAXAlefHandle this_,
+                                    const char *prefix,
+                                    uint32_t limit);
+
+/**
+ * Delete every row in the erasure key range `[start, end)`; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_ingestion_delete_scope(EDAXAlefHandle this_,
+                                            const char *start,
+                                            const char *end);
+
+/**
+ * Confirm publication of a rejection whose original fingerprint still matches.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_ingestion_published(EDAXAlefHandle this_,
+                                        const char *source,
+                                        const char *fingerprint);
+
+/**
+ * Confirm a JSON map of source fingerprints atomically; invalid entries mark nothing.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_ingestion_published_many(EDAXAlefHandle this_,
+                                             const char *confirmed);
+
+/**
  * Free a `MemoryKeys` handle.
  * # Safety
  * Handle must have been returned by this library, or be zero.
@@ -2243,13 +2318,14 @@ int32_t edax_memory_idempotency_store_put_raw(EDAXAlefHandle this_,
 void edax_memory_keys_free(EDAXAlefHandle handle);
 
 /**
- * Reserve one write before encrypting; failed writes still consume the reservation.
+ * Reserve `count` writes under one generation before encrypting; failed writes still consume them.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_memory_keys_reserve(EDAXAlefHandle this_,
                                         EDAXAlefHandle scope,
-                                        const char *cipher);
+                                        const char *cipher,
+                                        uint64_t count);
 
 /**
  * Resolve only the requested existing generation, exact scope, and encryption purpose.
@@ -2307,6 +2383,70 @@ char *edax_memory_keys_destroy(EDAXAlefHandle this_,
  */
 char *edax_memory_keys_status(EDAXAlefHandle this_,
                               EDAXAlefHandle scope);
+
+/**
+ * Free a `MemoryProjectionDatabase` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_memory_projection_database_free(EDAXAlefHandle handle);
+
+/**
+ * Read the JSON list `keys`: `{"records": {key: value}, "versions": {key: version}}`, an absent key
+ * at version zero with no record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_projection_database_read(EDAXAlefHandle this_,
+                                           const char *keys);
+
+/**
+ * Commit `writes`, `{"inserts", "updates", "intents"}`, if every record in `versions` is unchanged.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_projection_database_commit(EDAXAlefHandle this_,
+                                               const char *versions,
+                                               const char *writes);
+
+/**
+ * Up to `limit` deliverable intents of `generation`, as a JSON list in delivery order.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_projection_database_unpublished(EDAXAlefHandle this_,
+                                                  const char *manifest_key,
+                                                  const char *generation,
+                                                  uint32_t limit);
+
+/**
+ * Delete each still-eligible intent the JSON list `keys` names; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_mark_published(EDAXAlefHandle this_,
+                                                        const char *manifest_key,
+                                                        const char *generation,
+                                                        const char *keys);
+
+/**
+ * Delete every record in the erasure key range `[start, end)`; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_delete_scope(EDAXAlefHandle this_,
+                                                      const char *start,
+                                                      const char *end);
+
+/**
+ * Delete up to `limit` intents a cutover made permanently ineligible; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_prune(EDAXAlefHandle this_,
+                                               const char *manifest_key,
+                                               const char *generation,
+                                               uint32_t limit);
 
 /**
  * Free a `MemoryProjectionStore` handle.
@@ -2628,6 +2768,17 @@ void edax_offset_tracker_committed(EDAXAlefHandle this_,
                                    const char *topic,
                                    int32_t partition,
                                    int64_t offset);
+
+/**
+ * Report a commit only to the generation that issued its watermark.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+void edax_offset_tracker_committed_generation(EDAXAlefHandle this_,
+                                              const char *topic,
+                                              int32_t partition,
+                                              int64_t offset,
+                                              int64_t generation);
 
 /**
  * Settle `token` as failed: rewind its partition, retire every token of it, and report the
@@ -4156,6 +4307,23 @@ int32_t edax_advance_has_result(int32_t stored_present,
                                 uint64_t incoming);
 
 /**
+ * Every ingestion target mode, in the kernel's order.
+ * How a generation stores a subject's private part.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_at_rest_names(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_at_rest_names` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_at_rest_names`.
+ */
+uintptr_t edax_at_rest_names_len(void);
+
+/**
  * The wait in milliseconds before retry `attempt` (0-based) under the policy `(base_millis,
  * cap_millis)`: full jitter, `entropy` (a random `u64` the host draws per wait) reduced into
  * `0 ..= ceiling`. Flat arguments rather than a `BackoffPolicy`, so a host calls it without
@@ -4167,6 +4335,102 @@ uint64_t edax_backoff_millis(uint64_t base_millis,
                              uint64_t cap_millis,
                              uint64_t attempt,
                              uint64_t entropy);
+
+/**
+ * Every microbatch recovery action, in the kernel's order.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_batch_action_names(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_batch_action_names` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_batch_action_names`.
+ */
+uintptr_t edax_batch_action_names_len(void);
+
+/**
+ * Whether the requested retained data fits all admission caps.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_batch_admit(uint64_t used_records,
+                         uint64_t used_bytes,
+                         uint64_t records,
+                         uint64_t bytes,
+                         const char *config);
+
+/**
+ * Retained bytes for one prepared input. See `edax_event.batch.charge`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_batch_charge(uint64_t serialized_bytes,
+                           const char *config);
+
+/**
+ * Validate and resolve the microbatch limits, including omitted defaults.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_batch_config(const char *config);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_batch_config` on this thread.
+ * Returns 0 when the primary call returned null or failed before producing a string. Enables safe
+ * slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_batch_config`.
+ */
+uintptr_t edax_batch_config_len(const char *_config);
+
+/**
+ * Whether a batch has reached its record, byte, or age flush threshold.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_batch_cut(uint64_t records,
+                       uint64_t bytes,
+                       uint64_t age_ms,
+                       const char *config);
+
+/**
+ * The recovery after a failed microbatch attempt with error `code`. See `edax_event.batch.recover`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_batch_recover(uint32_t attempt,
+                         uint32_t waits,
+                         uint64_t count,
+                         uint32_t max_attempts,
+                         int32_t rolled_back,
+                         int32_t isolable,
+                         const char *code);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_batch_recover` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_batch_recover`.
+ */
+uintptr_t edax_batch_recover_len(uint32_t _attempt,
+                                 uint32_t _waits,
+                                 uint64_t _count,
+                                 uint32_t _max_attempts,
+                                 int32_t _rolled_back,
+                                 int32_t _isolable,
+                                 const char *_code);
+
+/**
+ * Serialization headroom for fetching and preparing one original.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_batch_reserve(const char *config);
 
 /**
  * The canonical text of decimal text (`"9.50"` â `"9.5"`, `"1E+2"` â `"100"`): the one
@@ -4770,6 +5034,13 @@ int32_t edax_erasure_provider_confirmed(const char *action,
                                         const char *status);
 
 /**
+ * Whether the operation's scope is revoked: a cleanup sweep deletes for it.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_erasure_scope_revoked(const char *record);
+
+/**
  * Every durable erasure stage.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4906,6 +5177,40 @@ EDAXAlefHandle edax_fresh_encryption_info(const char *key_namespace,
                                           const char *cipher);
 
 /**
+ * A generation-scoped canonical key; parts must be a JSON array. See `edax_cqrs.namespace.key`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_generation_key(const char *generation,
+                          const char *parts);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_generation_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_generation_key`.
+ */
+uintptr_t edax_generation_key_len(const char *_generation,
+                                  const char *_parts);
+
+/**
+ * The unambiguous key prefix of a generation. See `edax_cqrs.namespace.prefix`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_generation_prefix(const char *generation);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_generation_prefix` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_generation_prefix`.
+ */
+uintptr_t edax_generation_prefix_len(const char *_generation);
+
+/**
  * A fresh time-ordered globally-unique id (UUID v7), as a string. Non-deterministic.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4988,6 +5293,261 @@ char *edax_idempotency_states(void);
  * with `edax_idempotency_states`.
  */
 uintptr_t edax_idempotency_states_len(void);
+
+/**
+ * Refuse a changed interpretation of an existing ingestion target.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_ingest_bind_contract(const char *previous,
+                                  const char *expected);
+
+/**
+ * Validate the inputs, then refuse what a sealed target would store as plaintext. A sink calls it
+ * after sealing and before its transaction.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_ingest_check_sealed(const char *manifest,
+                                 const char *inputs);
+
+/**
+ * The keyed fingerprint of a sealed ingestion record, from the subject's fingerprint key. `state` is
+ * the JSON `{"content", "private", "public"}` before `private` is sealed.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_keyed_fingerprint(const uint8_t *key,
+                                    uintptr_t key_len,
+                                    const char *state);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_keyed_fingerprint` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_keyed_fingerprint`.
+ */
+uintptr_t edax_ingest_keyed_fingerprint_len(const uint8_t *_key,
+                                            uintptr_t _key_len,
+                                            const char *_state);
+
+/**
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_mode_names(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_mode_names` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_mode_names`.
+ */
+uintptr_t edax_ingest_mode_names_len(void);
+
+/**
+ * What a sink opens in the row it read at `key`: a JSON part, or `null`. See
+ * `edax_cqrs.ingest.open_plan`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_open_plan(const char *manifest,
+                            const char *key,
+                            const char *stored);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_open_plan` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_open_plan`.
+ */
+uintptr_t edax_ingest_open_plan_len(const char *_manifest,
+                                    const char *_key,
+                                    const char *_stored);
+
+/**
+ * Every original input outcome, in the kernel's order.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_outcome_names(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_outcome_names` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_outcome_names`.
+ */
+uintptr_t edax_ingest_outcome_names_len(void);
+
+/**
+ * Compute atomic ingestion decisions from original inputs and locked durable state.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_plan(const char *mode,
+                       const char *inputs,
+                       const char *stored,
+                       const char *rejected);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_plan` on this thread.
+ * Returns 0 when the primary call returned null or failed before producing a string. Enables safe
+ * slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_plan`.
+ */
+uintptr_t edax_ingest_plan_len(const char *_mode,
+                               const char *_inputs,
+                               const char *_stored,
+                               const char *_rejected);
+
+/**
+ * The raw fingerprint of a source record whose `raw` text is the whole record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_raw_fingerprint(const char *raw);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_raw_fingerprint` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_raw_fingerprint`.
+ */
+uintptr_t edax_ingest_raw_fingerprint_len(const char *_raw);
+
+/**
+ * Scope an opaque source. `identity` is JSON {"incarnation", "source_id"}; JSON preserves
+ * invalid NUL input across C string boundaries so the kernel gives every SDK the same verdict.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_record_source_key(const char *target,
+                                    const char *identity);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_record_source_key` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_record_source_key`.
+ */
+uintptr_t edax_ingest_record_source_key_len(const char *_target,
+                                            const char *_identity);
+
+/**
+ * Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_row_key(const char *manifest,
+                          const char *identity);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_row_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_row_key`.
+ */
+uintptr_t edax_ingest_row_key_len(const char *_manifest,
+                                  const char *_identity);
+
+/**
+ * The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair; without
+ * a subject, of the whole tenant.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_scope_range(const char *manifest,
+                              const char *subject,
+                              const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_scope_range` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_scope_range`.
+ */
+uintptr_t edax_ingest_scope_range_len(const char *_manifest,
+                                      const char *_subject,
+                                      const char *_tenant);
+
+/**
+ * What a sink seals before it writes, as a JSON list of `[input index, part]`. See
+ * `edax_cqrs.ingest.seal_plan`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_seal_plan(const char *manifest,
+                            const char *inputs);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_seal_plan` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_seal_plan`.
+ */
+uintptr_t edax_ingest_seal_plan_len(const char *_manifest,
+                                    const char *_inputs);
+
+/**
+ * Source coordinates preserve the full signed 64-bit offset range.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_source_key(const char *target,
+                             const char *incarnation,
+                             const char *topic,
+                             int32_t partition,
+                             int64_t offset);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_source_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_source_key`.
+ */
+uintptr_t edax_ingest_source_key_len(const char *_target,
+                                     const char *_incarnation,
+                                     const char *_topic,
+                                     int32_t _partition,
+                                     int64_t _offset);
+
+/**
+ * Validate all source and target identities before a sink acquires locks.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_ingest_validate_inputs(const char *manifest,
+                                    const char *inputs);
+
+/**
+ * Validated tenant and subject scopes that a direct ingestion write must fence.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_write_scopes(const char *manifest,
+                               const char *inputs);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_write_scopes` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_write_scopes`.
+ */
+uintptr_t edax_ingest_write_scopes_len(const char *_manifest,
+                                       const char *_inputs);
 
 /**
  * Whether an event with sequence `incoming` is older than the watermark `stored`, so an ordered
@@ -5153,6 +5713,41 @@ EDAXAlefHandle edax_kafka_event_record(const char *tenancy,
                                        const char *key);
 
 /**
+ * Kernel-owned durable source encoding, including a stable digest and oversize stub policy.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_kafka_ingestion_raw(EDAXAlefHandle record,
+                               const char *source,
+                               uint64_t limit);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_kafka_ingestion_raw` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_kafka_ingestion_raw`.
+ */
+uintptr_t edax_kafka_ingestion_raw_len(EDAXAlefHandle _record,
+                                       const char *_source,
+                                       uint64_t _limit);
+
+/**
+ * Decode the bytes of a persisted ingestion original (empty for a stub).
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_kafka_ingestion_record(const char *raw);
+
+/**
+ * Restore an ingestion rejection with its immutable source identity and provenance headers.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_kafka_ingestion_rejection_record(const char *raw,
+                                                     const char *source);
+
+/**
  * The partition a record keyed `key` lands on in a topic of `partitions` partitions: Java's default
  * partitioner, `(murmur2(key) & 0x7fffffff) % partitions`, so an edax producer places a key where a
  * Java producer, Kafka Connect or aiokafka would. Pass the result as the producer's partition
@@ -5185,6 +5780,14 @@ char *edax_kafka_poison_id(const char *topic,
 uintptr_t edax_kafka_poison_id_len(const char *_topic,
                                    int32_t _partition,
                                    int64_t _offset);
+
+/**
+ * The bytes a fetched record counts against `max_record_bytes`. See `edax_kafka.record.record_bytes`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_kafka_record_bytes(EDAXAlefHandle record,
+                                 const char *topic);
 
 /**
  * Route a fetched record by `headers` against the media types the host registered, in its order.
@@ -5269,11 +5872,25 @@ EDAXAlefHandle edax_memory_broker(uint32_t partitions,
                                   const char *tenancy);
 
 /**
+ * Build an independent in-memory ingestion database.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_ingestion(void);
+
+/**
  * Create a process-local provider with no reusable host-side cache.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_memory_keys(void);
+
+/**
+ * Build an independent in-memory projection state database.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_projection_database(void);
 
 /**
  * A fresh in-memory database with every seam behind one transaction boundary.
@@ -5954,6 +6571,42 @@ int32_t edax_postgres_forget_write(const char *key,
                                    const char *row);
 
 /**
+ * SQL and reference DDL for the optional ingestion tables.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_ingest_statements(const char *config);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_ingest_statements`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_ingest_statements`.
+ */
+uintptr_t edax_postgres_ingest_statements_len(const char *_config);
+
+/**
+ * Exact-number SQL parameters for a decided ingestion plan and its locked snapshot.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_ingest_write_plan(const char *plan,
+                                      const char *stored,
+                                      const char *rejected);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_ingest_write_plan`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_ingest_write_plan`.
+ */
+uintptr_t edax_postgres_ingest_write_plan_len(const char *_plan,
+                                              const char *_stored,
+                                              const char *_rejected);
+
+/**
  * The parameters of `ledger_hold` and `ledger_delete`. See `edax_postgres.ledger.key_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -6108,6 +6761,23 @@ EDAXAlefHandle edax_postgres_projection_save(const char *projection,
                                              const char *id,
                                              uint64_t expected,
                                              const char *document_json);
+
+/**
+ * Statements and host-owned DDL for atomic projection state, receipts, checkpoints and intents.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_projection_statements(const char *config_json);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_projection_statements` on this thread. Returns 0 when the primary call returned null
+ * or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_projection_statements`.
+ */
+uintptr_t edax_postgres_projection_statements_len(const char *_config_json);
 
 /**
  * Parameters preserving ownership and encryption on stored aggregate state.
@@ -6347,6 +7017,243 @@ uintptr_t edax_postgres_verdict_len(const char *_op,
                                     const char *_sqlstate,
                                     const char *_unique,
                                     const char *_message);
+
+/**
+ * Verify source incarnation/history and retained/readable boundaries, including empty fetches.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_projection_check_source(const char *contract_json,
+                                     const char *proof_json,
+                                     int64_t cursor);
+
+/**
+ * Generation cutoffs gate outbox dispatch even after replay or snapshot restore.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_projection_intent_eligible(const char *manifest_json,
+                                        const char *intent_json);
+
+/**
+ * The storage key of effect intent `intent_id` in the generation `contract_json` names.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_intent_key(const char *contract_json,
+                                 const char *intent_id);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_intent_key` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_intent_key`.
+ */
+uintptr_t edax_projection_intent_key_len(const char *_contract_json,
+                                         const char *_intent_id);
+
+/**
+ * The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_keyed_fingerprint(const uint8_t *key,
+                                        uintptr_t key_len,
+                                        const char *event_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_keyed_fingerprint`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_keyed_fingerprint`.
+ */
+uintptr_t edax_projection_keyed_fingerprint_len(const uint8_t *_key,
+                                                uintptr_t _key_len,
+                                                const char *_event_json);
+
+/**
+ * Keys of the state records the projection operation reads, the manifest first.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_keys(const char *request_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_keys` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_keys`.
+ */
+uintptr_t edax_projection_keys_len(const char *_request_json);
+
+/**
+ * What a host opens in a stored intent record before delivery: a JSON part, or `null`. See
+ * `edax_cqrs.projection.open_intent`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_open_intent(const char *contract_json,
+                                  const char *record_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_open_intent` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_open_intent`.
+ */
+uintptr_t edax_projection_open_intent_len(const char *_contract_json,
+                                          const char *_record_json);
+
+/**
+ * What a host opens in one aggregate's state record: a JSON part, or `null`. See
+ * `edax_cqrs.projection.open_state`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_open_state(const char *contract_json,
+                                 const char *record_json,
+                                 const char *aggregate,
+                                 const char *subject,
+                                 const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_open_state` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_open_state`.
+ */
+uintptr_t edax_projection_open_state_len(const char *_contract_json,
+                                         const char *_record_json,
+                                         const char *_aggregate,
+                                         const char *_subject,
+                                         const char *_tenant);
+
+/**
+ * What a store does before the projection transition: the locks to take, then the keys to read.
+ * One parse of the request for both. See `edax_cqrs.projection.lock` and
+ * `edax_cqrs.projection.keys`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_reads(const char *request_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_reads` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_reads`.
+ */
+uintptr_t edax_projection_reads_len(const char *_request_json);
+
+/**
+ * What a host seals in a batch's reducer results before `ApplyBatch`, as JSON. See
+ * `edax_cqrs.projection.seal_plan`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_seal_plan(const char *contract_json,
+                                const char *reductions_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_seal_plan` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_seal_plan`.
+ */
+uintptr_t edax_projection_seal_plan_len(const char *_contract_json,
+                                        const char *_reductions_json);
+
+/**
+ * The batch input of a sealed record: `event_json`, the host's decoding of the opened record, checked
+ * against `envelope_json` and owned by its subject; or, without it, the erased input of a record whose
+ * key was destroyed. See `edax_cqrs.projection.sealed_input`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_sealed_input(int64_t offset,
+                                   const char *envelope_json,
+                                   const char *event_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_sealed_input` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_sealed_input`.
+ */
+uintptr_t edax_projection_sealed_input_len(int64_t _offset,
+                                           const char *_envelope_json,
+                                           const char *_event_json);
+
+/**
+ * The storage key of one aggregate's state: the identity sealing its private part binds.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_state_key(const char *contract_json,
+                                const char *aggregate,
+                                const char *subject,
+                                const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_state_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_state_key`.
+ */
+uintptr_t edax_projection_state_key_len(const char *_contract_json,
+                                        const char *_aggregate,
+                                        const char *_subject,
+                                        const char *_tenant);
+
+/**
+ * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair;
+ * without a subject, of the whole tenant.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_state_scope_range(const char *contract_json,
+                                        const char *subject,
+                                        const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_state_scope_range`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_state_scope_range`.
+ */
+uintptr_t edax_projection_state_scope_range_len(const char *_contract_json,
+                                                const char *_subject,
+                                                const char *_tenant);
+
+/**
+ * Pure projection transition. Persist every returned write atomically under the generation lock.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_transition(const char *request_json,
+                                 const char *records_json,
+                                 int64_t now_ms);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_transition` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_transition`.
+ */
+uintptr_t edax_projection_transition_len(const char *_request_json,
+                                         const char *_records_json,
+                                         int64_t _now_ms);
 
 /**
  * The lineage of a child of the message `parent_id`: its causation is the parent's id, and it
@@ -7069,6 +7976,17 @@ int32_t edax_state_encryption_context(const char *kind,
                                       uint8_t **out_ptr,
                                       uintptr_t *out_len,
                                       uintptr_t *out_cap);
+
+/**
+ * The complete authenticated context of a kernel-planned stored part.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_stored_encryption_context(const char *part_json,
+                                       EDAXAlefHandle info,
+                                       uint8_t **out_ptr,
+                                       uintptr_t *out_len,
+                                       uintptr_t *out_cap);
 
 /**
  * A streak with no failure yet.

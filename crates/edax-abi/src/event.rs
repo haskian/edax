@@ -495,6 +495,77 @@ pub fn own_command(command: CommandMessage, tenant: Option<String>) -> Result<Co
     .map_err(to_wire)
 }
 
+/// Every microbatch recovery action, in the kernel's order.
+pub fn batch_action_names() -> Vec<String> {
+    names(edax_event::batch::Action::NAMES)
+}
+
+/// Validate and resolve the microbatch limits, including omitted defaults.
+pub fn batch_config(config: &str) -> Result<String, String> {
+    let config: edax_event::batch::Config = crate::read_json(config)?;
+    edax_event::batch::check(&config).map_err(crate::to_wire)?;
+    crate::write_json(&config)
+}
+
+/// Serialization headroom for fetching and preparing one original.
+pub fn batch_reserve(config: &str) -> Result<u64, String> {
+    edax_event::batch::reserve(&crate::read_json(config)?)
+        .map(crate::count)
+        .map_err(crate::to_wire)
+}
+
+/// Retained bytes for one prepared input. See [`edax_event::batch::charge`].
+pub fn batch_charge(serialized_bytes: u64, config: &str) -> Result<u64, String> {
+    let config = crate::read_json(config)?;
+    edax_event::batch::charge(crate::host_count(serialized_bytes), &config)
+        .map(crate::count)
+        .map_err(to_wire)
+}
+
+/// Whether a batch has reached its record, byte, or age flush threshold.
+pub fn batch_cut(records: u64, bytes: u64, age_ms: u64, config: &str) -> Result<bool, String> {
+    let config = crate::read_json(config)?;
+    Ok(edax_event::batch::cut(
+        crate::host_count(records),
+        crate::host_count(bytes),
+        age_ms,
+        &config,
+    ))
+}
+
+/// Whether the requested retained data fits all admission caps.
+pub fn batch_admit(used_records: u64, used_bytes: u64, records: u64, bytes: u64, config: &str) -> Result<bool, String> {
+    let config = crate::read_json(config)?;
+    Ok(edax_event::batch::admit(
+        crate::host_count(used_records),
+        crate::host_count(used_bytes),
+        crate::host_count(records),
+        crate::host_count(bytes),
+        &config,
+    ))
+}
+
+/// The recovery after a failed microbatch attempt with error `code`. See [`edax_event::batch::recover`].
+pub fn batch_recover(
+    attempt: u32,
+    waits: u32,
+    count: u64,
+    max_attempts: u32,
+    rolled_back: bool,
+    isolable: bool,
+    code: Option<String>,
+) -> Result<String, String> {
+    let attempt = edax_event::batch::Attempt {
+        attempt,
+        waits,
+        count: crate::host_count(count),
+        max_attempts,
+        rolled_back,
+        isolable,
+    };
+    crate::write_json(&edax_event::batch::recover(code.as_deref(), attempt).map_err(to_wire)?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -723,6 +794,10 @@ pub fn erasure_apply(record: &str, action: &str, participant: Option<String>) ->
 /// Whether every required cleanup participant acknowledged this notification.
 pub fn erasure_can_destroy(record: &str) -> Result<bool, String> {
     Ok(erasure_record(record)?.can_destroy())
+}
+/// Whether the operation's scope is revoked: a cleanup sweep deletes for it.
+pub fn erasure_scope_revoked(record: &str) -> Result<bool, String> {
+    Ok(erasure_record(record)?.scope_revoked())
 }
 /// Validate request idempotency and its frozen participants.
 pub fn erasure_check_request(existing: &str, candidate: &str) -> Result<(), String> {

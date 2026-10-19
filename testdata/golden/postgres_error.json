@@ -152,11 +152,43 @@
     "unique": null
   },
   {
+    "error": "codec: postgres append failed with 23514: server text",
+    "message": "server text",
+    "name": "append_23514_none",
+    "op": "append",
+    "sqlstate": "23514",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres append failed with 22012: server text",
+    "message": "server text",
+    "name": "append_22012_none",
+    "op": "append",
+    "sqlstate": "22012",
+    "unique": null
+  },
+  {
     "error": "bad_handle: postgres append failed with 42P01: server text",
     "message": "server text",
     "name": "append_42P01_none",
     "op": "append",
     "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres append failed with 3D000: server text",
+    "message": "server text",
+    "name": "append_3D000_none",
+    "op": "append",
+    "sqlstate": "3D000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres append failed with 28P01: server text",
+    "message": "server text",
+    "name": "append_28P01_none",
+    "op": "append",
+    "sqlstate": "28P01",
     "unique": null
   },
   {
@@ -376,11 +408,43 @@
     "unique": null
   },
   {
+    "error": "codec: postgres projection_save failed with 23514: server text",
+    "message": "server text",
+    "name": "projection_save_23514_none",
+    "op": "projection_save",
+    "sqlstate": "23514",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_save failed with 22012: server text",
+    "message": "server text",
+    "name": "projection_save_22012_none",
+    "op": "projection_save",
+    "sqlstate": "22012",
+    "unique": null
+  },
+  {
     "error": "bad_handle: postgres projection_save failed with 42P01: server text",
     "message": "server text",
     "name": "projection_save_42P01_none",
     "op": "projection_save",
     "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 3D000: server text",
+    "message": "server text",
+    "name": "projection_save_3D000_none",
+    "op": "projection_save",
+    "sqlstate": "3D000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_save failed with 28P01: server text",
+    "message": "server text",
+    "name": "projection_save_28P01_none",
+    "op": "projection_save",
+    "sqlstate": "28P01",
     "unique": null
   },
   {
@@ -520,11 +584,43 @@
     "unique": null
   },
   {
+    "error": "codec: postgres claim failed with 23514: server text",
+    "message": "server text",
+    "name": "claim_23514_none",
+    "op": "claim",
+    "sqlstate": "23514",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres claim failed with 22012: server text",
+    "message": "server text",
+    "name": "claim_22012_none",
+    "op": "claim",
+    "sqlstate": "22012",
+    "unique": null
+  },
+  {
     "error": "bad_handle: postgres claim failed with 42P01: server text",
     "message": "server text",
     "name": "claim_42P01_none",
     "op": "claim",
     "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres claim failed with 3D000: server text",
+    "message": "server text",
+    "name": "claim_3D000_none",
+    "op": "claim",
+    "sqlstate": "3D000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres claim failed with 28P01: server text",
+    "message": "server text",
+    "name": "claim_28P01_none",
+    "op": "claim",
+    "sqlstate": "28P01",
     "unique": null
   },
   {
@@ -588,6 +684,374 @@
     "message": "server text",
     "name": "saga_write_57014_none",
     "op": "saga_write",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres projection_state failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "projection_state_23505_events_stream_sequence",
+    "op": "projection_state",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "concurrency: postgres projection_state failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "projection_state_23505_events_id",
+    "op": "projection_state",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "concurrency: postgres projection_state failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "projection_state_23505_command_outbox_id",
+    "op": "projection_state",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "concurrency: postgres projection_state failed with 23505: server text",
+    "message": "server text",
+    "name": "projection_state_23505_none",
+    "op": "projection_state",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres projection_state failed with 55P03: server text",
+    "message": "server text",
+    "name": "projection_state_55P03_none",
+    "op": "projection_state",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 57014: server text",
+    "message": "server text",
+    "name": "projection_state_57014_none",
+    "op": "projection_state",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 40001: server text",
+    "message": "server text",
+    "name": "projection_state_40001_none",
+    "op": "projection_state",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 40P01: server text",
+    "message": "server text",
+    "name": "projection_state_40P01_none",
+    "op": "projection_state",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 25006: server text",
+    "message": "server text",
+    "name": "projection_state_25006_none",
+    "op": "projection_state",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 25P02: server text",
+    "message": "server text",
+    "name": "projection_state_25P02_none",
+    "op": "projection_state",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 08006: server text",
+    "message": "server text",
+    "name": "projection_state_08006_none",
+    "op": "projection_state",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with 53300: server text",
+    "message": "server text",
+    "name": "projection_state_53300_none",
+    "op": "projection_state",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_state failed with 22P05: server text",
+    "message": "server text",
+    "name": "projection_state_22P05_none",
+    "op": "projection_state",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_state failed with 22021: server text",
+    "message": "server text",
+    "name": "projection_state_22021_none",
+    "op": "projection_state",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_state failed with 54000: server text",
+    "message": "server text",
+    "name": "projection_state_54000_none",
+    "op": "projection_state",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_state failed with 23514: server text",
+    "message": "server text",
+    "name": "projection_state_23514_none",
+    "op": "projection_state",
+    "sqlstate": "23514",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres projection_state failed with 22012: server text",
+    "message": "server text",
+    "name": "projection_state_22012_none",
+    "op": "projection_state",
+    "sqlstate": "22012",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_state failed with 42P01: server text",
+    "message": "server text",
+    "name": "projection_state_42P01_none",
+    "op": "projection_state",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_state failed with 3D000: server text",
+    "message": "server text",
+    "name": "projection_state_3D000_none",
+    "op": "projection_state",
+    "sqlstate": "3D000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_state failed with 28P01: server text",
+    "message": "server text",
+    "name": "projection_state_28P01_none",
+    "op": "projection_state",
+    "sqlstate": "28P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres projection_state failed with 42501: server text",
+    "message": "server text",
+    "name": "projection_state_42501_none",
+    "op": "projection_state",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres projection_state failed with XX000: server text",
+    "message": "server text",
+    "name": "projection_state_XX000_none",
+    "op": "projection_state",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "concurrency: postgres ingest failed with 23505 on events_stream_sequence: server text",
+    "message": "server text",
+    "name": "ingest_23505_events_stream_sequence",
+    "op": "ingest",
+    "sqlstate": "23505",
+    "unique": "events_stream_sequence"
+  },
+  {
+    "error": "concurrency: postgres ingest failed with 23505 on events_id: server text",
+    "message": "server text",
+    "name": "ingest_23505_events_id",
+    "op": "ingest",
+    "sqlstate": "23505",
+    "unique": "events_id"
+  },
+  {
+    "error": "concurrency: postgres ingest failed with 23505 on command_outbox_id: server text",
+    "message": "server text",
+    "name": "ingest_23505_command_outbox_id",
+    "op": "ingest",
+    "sqlstate": "23505",
+    "unique": "command_outbox_id"
+  },
+  {
+    "error": "concurrency: postgres ingest failed with 23505: server text",
+    "message": "server text",
+    "name": "ingest_23505_none",
+    "op": "ingest",
+    "sqlstate": "23505",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres ingest failed with 55P03: server text",
+    "message": "server text",
+    "name": "ingest_55P03_none",
+    "op": "ingest",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 57014: server text",
+    "message": "server text",
+    "name": "ingest_57014_none",
+    "op": "ingest",
+    "sqlstate": "57014",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 40001: server text",
+    "message": "server text",
+    "name": "ingest_40001_none",
+    "op": "ingest",
+    "sqlstate": "40001",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 40P01: server text",
+    "message": "server text",
+    "name": "ingest_40P01_none",
+    "op": "ingest",
+    "sqlstate": "40P01",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 25006: server text",
+    "message": "server text",
+    "name": "ingest_25006_none",
+    "op": "ingest",
+    "sqlstate": "25006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 25P02: server text",
+    "message": "server text",
+    "name": "ingest_25P02_none",
+    "op": "ingest",
+    "sqlstate": "25P02",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 08006: server text",
+    "message": "server text",
+    "name": "ingest_08006_none",
+    "op": "ingest",
+    "sqlstate": "08006",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with 53300: server text",
+    "message": "server text",
+    "name": "ingest_53300_none",
+    "op": "ingest",
+    "sqlstate": "53300",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres ingest failed with 22P05: server text",
+    "message": "server text",
+    "name": "ingest_22P05_none",
+    "op": "ingest",
+    "sqlstate": "22P05",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres ingest failed with 22021: server text",
+    "message": "server text",
+    "name": "ingest_22021_none",
+    "op": "ingest",
+    "sqlstate": "22021",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres ingest failed with 54000: server text",
+    "message": "server text",
+    "name": "ingest_54000_none",
+    "op": "ingest",
+    "sqlstate": "54000",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres ingest failed with 23514: server text",
+    "message": "server text",
+    "name": "ingest_23514_none",
+    "op": "ingest",
+    "sqlstate": "23514",
+    "unique": null
+  },
+  {
+    "error": "codec: postgres ingest failed with 22012: server text",
+    "message": "server text",
+    "name": "ingest_22012_none",
+    "op": "ingest",
+    "sqlstate": "22012",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres ingest failed with 42P01: server text",
+    "message": "server text",
+    "name": "ingest_42P01_none",
+    "op": "ingest",
+    "sqlstate": "42P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres ingest failed with 3D000: server text",
+    "message": "server text",
+    "name": "ingest_3D000_none",
+    "op": "ingest",
+    "sqlstate": "3D000",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres ingest failed with 28P01: server text",
+    "message": "server text",
+    "name": "ingest_28P01_none",
+    "op": "ingest",
+    "sqlstate": "28P01",
+    "unique": null
+  },
+  {
+    "error": "bad_handle: postgres ingest failed with 42501: server text",
+    "message": "server text",
+    "name": "ingest_42501_none",
+    "op": "ingest",
+    "sqlstate": "42501",
+    "unique": null
+  },
+  {
+    "error": "store: postgres ingest failed with XX000: server text",
+    "message": "server text",
+    "name": "ingest_XX000_none",
+    "op": "ingest",
+    "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres erasure_fence failed with 55P03: server text",
+    "message": "server text",
+    "name": "erasure_fence_55P03_none",
+    "op": "erasure_fence",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres erasure_fence failed with 57014: server text",
+    "message": "server text",
+    "name": "erasure_fence_57014_none",
+    "op": "erasure_fence",
     "sqlstate": "57014",
     "unique": null
   },

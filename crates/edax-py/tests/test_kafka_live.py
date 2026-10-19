@@ -165,9 +165,22 @@ class Member:
         if self.task is not None:
             self.task.cancel()
             await asyncio.gather(self.task, return_exceptions=True)
-        await self.dispatcher.stop(timeout=5)
-        await self.consumer.flush()
-        await self.client.stop()
+
+        async def flush() -> None:
+            while True:
+                try:
+                    await self.consumer.flush()
+                    return
+                except edax.StoreError:
+                    # Cancelling the periodic committer does not cancel its shielded client call.
+                    # Its transient fence clears only when that real request finishes.
+                    await asyncio.sleep(0.01)
+
+        try:
+            await self.dispatcher.stop(timeout=5)
+            await asyncio.wait_for(flush(), 5)
+        finally:
+            await self.client.stop()
 
 
 async def test_a_nack_on_a_real_fetcher_keeps_the_key_in_order(
@@ -205,6 +218,52 @@ async def test_a_nack_on_a_real_fetcher_keeps_the_key_in_order(
     assert applied == [1, 2, 3]
     assert runs[:2] == [1, 1], f"a later event ran between the failure and the redelivery: {runs}"
     assert [s for s in runs if s == 2] == [2], "seq 2 ran twice: a stale copy was not skipped"
+
+
+async def test_member_stop_waits_for_its_interrupted_commit(
+    topic: Any, producer: AIOKafkaProducer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name, group = await topic(1), f"g-{uuid.uuid4().hex[:8]}"
+    await publish_all(producer, name, SeqSerializer(), [build_message("account-42", "Tick", 1)])
+    applied: list[int] = []
+
+    async def handler(message: edax.EventMessage) -> None:
+        applied.append(sequence_of(message))
+
+    member = Member(name, group, handler)
+    entered, release = asyncio.Event(), asyncio.Event()
+    commit = member.client.commit
+    calls = 0
+
+    async def held_commit(offsets: Any = None) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        await commit(offsets)
+
+    monkeypatch.setattr(member.client, "commit", held_commit)
+    await member.start()
+    stopping: asyncio.Task[None] | None = None
+    try:
+        await asyncio.wait_for(entered.wait(), 10)
+        assert applied == [1]
+        stopping = asyncio.create_task(member.stop())
+        await _wait(lambda: member.task is not None and member.task.done(), 2, "consumer loop cancelled")
+        assert not stopping.done() and not member.client._closed
+        assert member.consumer._offsets.unfinished() is not None
+        release.set()
+        await asyncio.wait_for(stopping, 5)
+        assert await _group_offsets(group, name, 1) == {0: 1}
+        assert member.consumer._offsets.unfinished() is None
+        assert member.client._closed
+    finally:
+        release.set()
+        if stopping is None:
+            await member.stop()
+        else:
+            await asyncio.gather(stopping, return_exceptions=True)
 
 
 async def test_a_consumer_killed_mid_batch_redelivers_from_the_commit(

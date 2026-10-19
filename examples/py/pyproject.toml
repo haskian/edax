@@ -9,7 +9,7 @@ requires-python = ">=3.10"
 dependencies = [
     # The local edax SDK. `test` brings pytest for 18 and 19. `redis` and `kafka` bring the clients
     # 16 and 17 use when EDAX_REDIS_URL or EDAX_KAFKA_BOOTSTRAP is set.
-    "edax[kafka,redis,test]",
+    "edax[kafka,postgres,redis,test]",
 ]
 
 [tool.uv.sources]

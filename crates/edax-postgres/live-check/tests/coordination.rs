@@ -201,7 +201,15 @@ fn racing_saga_write_does_not_report_a_stale_stored_version() {
         client
             .query_one(
                 &update,
-                &[&"ship", &"order-7", &"1", &r#"{"step":"shipped"}"#, &"", &"[]", &"false"],
+                &[
+                    &"ship",
+                    &"order-7",
+                    &"1",
+                    &r#"{"step":"shipped"}"#,
+                    &"",
+                    &"[]",
+                    &"false",
+                ],
             )
             .unwrap()
             .get::<_, String>(0)

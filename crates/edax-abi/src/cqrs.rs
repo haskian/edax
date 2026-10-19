@@ -357,6 +357,297 @@ pub fn keyed_projection_document(id: &str, document_json: &str) -> Result<String
     edax_cqrs::keyed_document_json(id, document_json.as_bytes()).map_err(to_wire)
 }
 
+/// Every ingestion target mode, in the kernel's order.
+/// How a generation stores a subject's private part.
+pub fn at_rest_names() -> Vec<String> {
+    names(edax_cqrs::namespace::AtRest::NAMES)
+}
+
+pub fn ingest_mode_names() -> Vec<String> {
+    names(edax_cqrs::ingest::Mode::NAMES)
+}
+
+/// Every original input outcome, in the kernel's order.
+pub fn ingest_outcome_names() -> Vec<String> {
+    names(edax_cqrs::ingest::Outcome::NAMES)
+}
+
+/// Compute atomic ingestion decisions from original inputs and locked durable state.
+pub fn ingest_plan(mode: &str, inputs: &str, stored: &str, rejected: &str) -> Result<String, String> {
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    let stored = crate::read_json(stored)?;
+    let rejected = crate::read_json(rejected)?;
+    crate::write_json(&edax_cqrs::ingest::plan(mode, &inputs, &stored, &rejected).map_err(crate::to_wire)?)
+}
+
+/// The unambiguous key prefix of a generation. See [`edax_cqrs::namespace::prefix`].
+pub fn generation_prefix(generation: &str) -> Result<String, String> {
+    edax_cqrs::namespace::prefix(generation).map_err(crate::to_wire)
+}
+
+/// A generation-scoped canonical key; parts must be a JSON array. See [`edax_cqrs::namespace::key`].
+pub fn generation_key(generation: &str, parts: &str) -> Result<String, String> {
+    edax_cqrs::namespace::key(generation, parts).map_err(crate::to_wire)
+}
+
+/// The raw fingerprint of a source record whose `raw` text is the whole record.
+pub fn ingest_raw_fingerprint(raw: &str) -> String {
+    edax_cqrs::ingest::raw_fingerprint(raw.as_bytes())
+}
+
+/// Source coordinates preserve the full signed 64-bit offset range.
+pub fn ingest_source_key(
+    target: &str,
+    incarnation: &str,
+    topic: &str,
+    partition: i32,
+    offset: i64,
+) -> Result<String, String> {
+    edax_cqrs::ingest::source_key(target, incarnation, topic, partition, offset).map_err(crate::to_wire)
+}
+
+/// Scope an opaque source. `identity` is JSON {"incarnation", "source_id"}; JSON preserves
+/// invalid NUL input across C string boundaries so the kernel gives every SDK the same verdict.
+pub fn ingest_record_source_key(target: &str, identity: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Identity {
+        incarnation: String,
+        source_id: String,
+    }
+    let identity: Identity = crate::read_json(identity)?;
+    edax_cqrs::ingest::record_source_key(target, &identity.incarnation, &identity.source_id).map_err(to_wire)
+}
+
+/// Validated tenant and subject scopes that a direct ingestion write must fence.
+pub fn ingest_write_scopes(manifest: &str, inputs: &str) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::ingest::write_scopes(&contract, &inputs).map_err(to_wire)?)
+}
+
+/// Refuse a changed interpretation of an existing ingestion target.
+pub fn ingest_bind_contract(previous: &str, expected: &str) -> Result<(), String> {
+    let previous: Option<edax_cqrs::ingest::Contract> = crate::read_json(previous)?;
+    let expected = crate::read_json(expected)?;
+    edax_cqrs::ingest::bind_contract(previous.as_ref(), &expected).map_err(crate::to_wire)
+}
+
+/// Validate all source and target identities before a sink acquires locks.
+pub fn ingest_validate_inputs(manifest: &str, inputs: &str) -> Result<(), String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    edax_cqrs::ingest::validate_inputs(&contract, &inputs).map_err(crate::to_wire)
+}
+
+/// Validate the inputs, then refuse what a sealed target would store as plaintext. A sink calls it
+/// after sealing and before its transaction.
+pub fn ingest_check_sealed(manifest: &str, inputs: &str) -> Result<(), String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    edax_cqrs::ingest::check_sealed(&contract, &inputs).map_err(crate::to_wire)
+}
+
+/// What a sink seals before it writes, as a JSON list of `[input index, part]`. See
+/// [`edax_cqrs::ingest::seal_plan`].
+pub fn ingest_seal_plan(manifest: &str, inputs: &str) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::ingest::seal_plan(&contract, &inputs).map_err(to_wire)?)
+}
+
+/// What a sink opens in the row it read at `key`: a JSON part, or `null`. See
+/// [`edax_cqrs::ingest::open_plan`].
+pub fn ingest_open_plan(manifest: &str, key: &str, stored: &str) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let stored = crate::read_json(stored)?;
+    crate::write_json(&edax_cqrs::ingest::open_plan(&contract, key, &stored).map_err(to_wire)?)
+}
+
+/// Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
+pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Identity {
+        row_id: String,
+        tenant: Option<String>,
+        #[serde(default)]
+        subject: Option<String>,
+    }
+    let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
+    let identity: Identity = crate::read_json(identity)?;
+    edax_cqrs::ingest::row_key(
+        &contract.generation,
+        &contract.mode,
+        identity.tenant.as_deref(),
+        identity.subject.as_deref(),
+        &identity.row_id,
+    )
+    .map_err(crate::to_wire)
+}
+
+/// The erasure key range `[start, end)` of one tenant and subject in a target, as a JSON pair; without
+/// a subject, of the whole tenant.
+pub fn ingest_scope_range(manifest: &str, subject: Option<String>, tenant: Option<String>) -> Result<String, String> {
+    let contract: edax_cqrs::ingest::Contract = crate::read_json(manifest)?;
+    let range = edax_cqrs::ingest::scope_range(
+        &contract.generation,
+        &contract.mode,
+        tenant.as_deref(),
+        subject.as_deref(),
+    )
+    .map_err(crate::to_wire)?;
+    crate::write_json(&range)
+}
+
+/// The keyed fingerprint of a sealed ingestion record, from the subject's fingerprint key. `state` is
+/// the JSON `{"content", "private", "public"}` before `private` is sealed.
+pub fn ingest_keyed_fingerprint(key: Vec<u8>, state: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct State {
+        content: serde_json::Value,
+        private: Option<serde_json::Value>,
+        public: Option<serde_json::Value>,
+    }
+    let state: State = crate::read_json(state)?;
+    edax_cqrs::ingest::keyed_fingerprint(&key, &state.content, state.private.as_ref(), state.public.as_ref())
+        .map_err(crate::to_wire)
+}
+
+/// Parse a projection value as `codec`, through `Value` so integer tokens decode as the kernel's do.
+fn projection_value<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, String> {
+    serde_json::from_str::<serde_json::Value>(text)
+        .and_then(serde_json::from_value)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)
+}
+
+/// Parse and validate a projection contract.
+fn projection_contract(text: &str) -> Result<edax_cqrs::projection::Contract, String> {
+    let contract: edax_cqrs::projection::Contract = projection_value(text)?;
+    contract.validate().map_err(to_wire)?;
+    Ok(contract)
+}
+
+/// Keys of the state records the projection operation reads, the manifest first.
+pub fn projection_keys(request_json: &str) -> Result<String, String> {
+    let request = edax_cqrs::projection::request_json(request_json).map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::projection::keys(&request).map_err(to_wire)?)
+}
+
+/// What a store does before the projection transition: the locks to take, then the keys to read.
+/// One parse of the request for both. See [`edax_cqrs::projection::lock`] and
+/// [`edax_cqrs::projection::keys`].
+pub fn projection_reads(request_json: &str) -> Result<String, String> {
+    let request = edax_cqrs::projection::request_json(request_json).map_err(to_wire)?;
+    let lock = edax_cqrs::projection::lock(&request).map_err(to_wire)?;
+    let keys = edax_cqrs::projection::keys(&request).map_err(to_wire)?;
+    crate::write_json(&serde_json::json!({"lock": lock, "keys": keys}))
+}
+
+/// The storage key of effect intent `intent_id` in the generation `contract_json` names.
+pub fn projection_intent_key(contract_json: &str, intent_id: &str) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    contract.intent_key(intent_id).map_err(to_wire)
+}
+
+/// The storage key of one aggregate's state: the identity sealing its private part binds.
+pub fn projection_state_key(
+    contract_json: &str,
+    aggregate: &str,
+    subject: Option<String>,
+    tenant: Option<String>,
+) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    contract.state_key(&tenant, &subject, aggregate).map_err(to_wire)
+}
+
+/// The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair;
+/// without a subject, of the whole tenant.
+pub fn projection_state_scope_range(
+    contract_json: &str,
+    subject: Option<String>,
+    tenant: Option<String>,
+) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    crate::write_json(
+        &contract
+            .state_scope_range(&tenant, subject.as_deref())
+            .map_err(to_wire)?,
+    )
+}
+
+/// The batch input of a sealed record: `event_json`, the host's decoding of the opened record, checked
+/// against `envelope_json` and owned by its subject; or, without it, the erased input of a record whose
+/// key was destroyed. See [`edax_cqrs::projection::sealed_input`].
+pub fn projection_sealed_input(offset: i64, envelope_json: &str, event_json: Option<String>) -> Result<String, String> {
+    let envelope: edax_cqrs::projection::Envelope = projection_value(envelope_json)?;
+    let event = event_json
+        .map(|text| edax_cqrs::projection::event_json(&text))
+        .transpose()
+        .map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::projection::sealed_input(offset, &envelope, event).map_err(to_wire)?)
+}
+
+/// The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
+pub fn projection_keyed_fingerprint(key: Vec<u8>, event_json: &str) -> Result<String, String> {
+    let event = edax_cqrs::projection::event_json(event_json).map_err(to_wire)?;
+    edax_cqrs::projection::keyed_fingerprint(&key, &event).map_err(to_wire)
+}
+
+/// What a host seals in a batch's reducer results before `ApplyBatch`, as JSON. See
+/// [`edax_cqrs::projection::seal_plan`].
+pub fn projection_seal_plan(contract_json: &str, reductions_json: &str) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    let reductions: Vec<edax_cqrs::projection::Reduction> = projection_value(reductions_json)?;
+    crate::write_json(&edax_cqrs::projection::seal_plan(&contract, &reductions).map_err(to_wire)?)
+}
+
+/// What a host opens in one aggregate's state record: a JSON part, or `null`. See
+/// [`edax_cqrs::projection::open_state`].
+pub fn projection_open_state(
+    contract_json: &str,
+    record_json: &str,
+    aggregate: &str,
+    subject: Option<String>,
+    tenant: Option<String>,
+) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    let record = projection_value(record_json)?;
+    let part = edax_cqrs::projection::open_state(&contract, &tenant, &subject, aggregate, &record).map_err(to_wire)?;
+    crate::write_json(&part)
+}
+
+/// What a host opens in a stored intent record before delivery: a JSON part, or `null`. See
+/// [`edax_cqrs::projection::open_intent`].
+pub fn projection_open_intent(contract_json: &str, record_json: &str) -> Result<String, String> {
+    let contract = projection_contract(contract_json)?;
+    let record = projection_value(record_json)?;
+    crate::write_json(&edax_cqrs::projection::open_intent(&contract, &record).map_err(to_wire)?)
+}
+
+/// Pure projection transition. Persist every returned write atomically under the generation lock.
+pub fn projection_transition(request_json: &str, records_json: &str, now_ms: i64) -> Result<String, String> {
+    let request = edax_cqrs::projection::request_json(request_json).map_err(to_wire)?;
+    let records = projection_value(records_json)?;
+    crate::write_json(&edax_cqrs::projection::transition(&request, &records, now_ms).map_err(to_wire)?)
+}
+
+/// Generation cutoffs gate outbox dispatch even after replay or snapshot restore.
+pub fn projection_intent_eligible(manifest_json: &str, intent_json: &str) -> Result<bool, String> {
+    let manifest = projection_value(manifest_json)?;
+    let intent = projection_value(intent_json)?;
+    edax_cqrs::projection::eligible(&manifest, &intent).map_err(to_wire)
+}
+
+/// Verify source incarnation/history and retained/readable boundaries, including empty fetches.
+pub fn projection_check_source(contract_json: &str, proof_json: &str, cursor: i64) -> Result<(), String> {
+    let contract = projection_contract(contract_json)?;
+    let proof = projection_value(proof_json)?;
+    contract.continuity(&proof, cursor).map_err(to_wire)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -884,4 +1175,11 @@ pub fn protected_failure(record: &str, owner: &str, code: &str) -> Result<String
 /// Authenticate a cached result after scoped provider resolution.
 pub fn protected_open(record: &str, key: &[u8]) -> Result<Vec<u8>, String> {
     protected_record(record)?.open_result(key).map_err(crate::to_wire)
+}
+
+/// The complete authenticated context of a kernel-planned stored part.
+pub fn stored_encryption_context(part_json: &str, info: crate::EncryptionInfo) -> Result<Vec<u8>, String> {
+    let part: edax_cqrs::namespace::Part = crate::read_json(part_json)?;
+    let info = edax_seal::EncryptionInfo::try_from(info).map_err(to_wire)?;
+    part.context(&info).map_err(to_wire)
 }

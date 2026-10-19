@@ -111,6 +111,9 @@ pub struct Statements {
     pub get_operation: String,
     /// `$1` limit, `$2` optional exclusive operation-ID cursor; reset after an empty page.
     pub pending_operations: String,
+    /// `$1` limit, `$2` optional exclusive operation-ID cursor: every operation past `persisted`, whose
+    /// scope is revoked, for a cleanup participant's sweep after a restore.
+    pub revoked_operations: String,
     /// `$1` operation ID, `$2` expected version, `$3` operation JSON, `$4` optional notification JSON.
     pub update_operation: String,
     /// `$1` canonical scope; shared fence held until transaction end.
@@ -323,6 +326,14 @@ pub fn statements(schema: &str) -> Result<Statements, Error> {
     let notifications = table(tables.schema(), "notifications");
     let revocations = table(tables.schema(), "revocations");
     let row = "json_build_object('version', version, 'operation', record::json)::text";
+    // The stages whose scope is revoked, as `ErasureOperation::scope_revoked` reads them: kernel names,
+    // so the literals hold no apostrophe.
+    let revoked = edax_event::erasure::ErasureStage::ALL
+        .iter()
+        .filter(|stage| **stage >= edax_event::erasure::ErasureStage::Revoked)
+        .map(|stage| format!("'{}'", stage.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
     Ok(Statements {
         check_schema: catalog_query(&tables),
         create_operation: format!(
@@ -334,6 +345,10 @@ pub fn statements(schema: &str) -> Result<Statements, Error> {
         get_operation: format!("SELECT {row} FROM {operations} WHERE operation_id = $1::text"),
         pending_operations: format!(
             "SELECT {row} FROM {operations} WHERE record::json->>'stage' <> 'complete' AND ($2::text IS NULL OR operation_id > $2::text) \
+             ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
+        ),
+        revoked_operations: format!(
+            "SELECT {row} FROM {operations} WHERE record::json->>'stage' IN ({revoked}) AND ($2::text IS NULL OR operation_id > $2::text) \
              ORDER BY operation_id COLLATE \"C\" LIMIT ($1::text)::bigint"
         ),
         update_operation: format!(
@@ -372,34 +387,48 @@ fn parent_scope(scope: &KeyScope) -> KeyScope {
     }
 }
 
-fn lock(scope_id: String, exclusive: bool) -> Call {
+fn lock(name: String, exclusive: bool) -> Call {
     Call {
         statement: if exclusive { "lock_exclusive" } else { "lock_shared" },
-        params: vec![Some(scope_id)],
+        params: vec![Some(name)],
     }
 }
 
-/// Shared fences for one transaction's writes to `scopes`: every tenant fence, then every subject fence,
-/// each set in scope-ID order and without repeats. One order for every writer keeps two writers that
+/// Fence buckets per kind. A writer takes at most this many tenant fences and this many subject
+/// fences, however many scopes its batch touches: one advisory lock per scope would fill the server's
+/// shared lock table (`max_locks_per_transaction * max_connections`) under concurrent batches. A
+/// revocation waits for every writer in its bucket, so a collision delays unrelated work; the
+/// revocation check after the lock still reads the exact scope, so no conflicting writer passes.
+pub const FENCE_BUCKETS: u64 = 32;
+
+fn bucket(kind: &str, id: &str) -> String {
+    format!("{kind}/{}", edax_core::payload_hash(id.as_bytes()) % FENCE_BUCKETS)
+}
+
+/// Shared fences for one transaction's writes to `scopes`: every tenant bucket, then every subject
+/// bucket, each in name order and without repeats. One order for every writer keeps two writers that
 /// fence the same scopes from waiting on each other behind a queued cleanup.
 pub fn writer_locks(scopes: &[KeyScope]) -> Result<Vec<Call>, Error> {
     let mut tenants = BTreeSet::new();
     let mut subjects = BTreeSet::new();
     for scope in scopes {
-        tenants.insert(scope_id(&parent_scope(scope))?);
+        tenants.insert(bucket("tenant", &scope_id(&parent_scope(scope))?));
         if scope.subject.is_some() {
-            subjects.insert(scope_id(scope)?);
+            subjects.insert(bucket("subject", &scope_id(scope)?));
         }
     }
     Ok(tenants.into_iter().chain(subjects).map(|id| lock(id, false)).collect())
 }
 
-/// Tenant cleanup takes the exclusive parent fence; subject cleanup shares the parent and excludes
-/// its subject. Hash collisions can delay unrelated work but never permit a conflicting writer.
+/// Tenant cleanup takes its tenant bucket exclusively; subject cleanup shares the tenant bucket and
+/// excludes its subject bucket.
 pub fn revocation_locks(scope: &KeyScope) -> Result<Vec<Call>, Error> {
-    let mut locks = vec![lock(scope_id(&parent_scope(scope))?, scope.subject.is_none())];
+    let mut locks = vec![lock(
+        bucket("tenant", &scope_id(&parent_scope(scope))?),
+        scope.subject.is_none(),
+    )];
     if scope.subject.is_some() {
-        locks.push(lock(scope_id(scope)?, true));
+        locks.push(lock(bucket("subject", &scope_id(scope)?), true));
     }
     Ok(locks)
 }

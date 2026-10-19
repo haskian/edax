@@ -61,6 +61,7 @@ from .messages import command, delivery, draft, drafted, event, event_of, messag
 
 if TYPE_CHECKING:
     from .contracts import (
+        BatchSinkContract,
         BrokerContract,
         BrokerRig,
         CommandOutboxContract,
@@ -71,9 +72,12 @@ if TYPE_CHECKING:
         ProjectionStoreContract,
         SagaOutboxContract,
         SagaStoreContract,
+        TransactionalBatchSinkContract,
     )
 
 __all__ = [
+    "BatchSinkContract",
+    "TransactionalBatchSinkContract",
     "BrokenCommit",
     "BrokerContract",
     "BrokerRig",
@@ -101,6 +105,8 @@ __all__ = [
 
 _CONTRACTS = frozenset(
     {
+        "BatchSinkContract",
+        "TransactionalBatchSinkContract",
         "BrokerContract",
         "BrokerRig",
         "CommandOutboxContract",

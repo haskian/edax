@@ -951,6 +951,8 @@ enum Step {
     IsLive(usize),
     IsLiveToken(i64),
     Due,
+    CaptureDue(usize),
+    CommittedGeneration(usize),
     Committed(&'static str, i32, i64),
     Reset(&'static str, i32),
     Revoke(&'static str, i32),
@@ -979,6 +981,7 @@ fn nack_step(tracker: &OffsetTracker, token: i64) -> Value {
 fn replay(steps: &[Step]) -> Value {
     let tracker = OffsetTracker::new();
     let mut tokens: Vec<i64> = Vec::new();
+    let mut captured: std::collections::BTreeMap<usize, edax_kafka::Due> = std::collections::BTreeMap::new();
     let mut out: Vec<Value> = Vec::new();
     for step in steps {
         out.push(match step {
@@ -1014,6 +1017,19 @@ fn replay(steps: &[Step]) -> Value {
             Step::Committed(topic, partition, offset) => {
                 tracker.committed(topic, *partition, *offset);
                 json!({ "op": "committed", "topic": topic, "partition": partition, "offset": offset, "want": {} })
+            }
+            Step::CaptureDue(slot) => {
+                let rows = tracker.due();
+                assert_eq!(rows.len(), 1, "capture_due requires exactly one watermark");
+                let due = rows.into_iter().next().unwrap();
+                let want = json!({ "due": { "topic": due.topic, "partition": due.partition, "offset": due.offset } });
+                captured.insert(*slot, due);
+                json!({ "op": "capture_due", "slot": slot, "want": want })
+            }
+            Step::CommittedGeneration(slot) => {
+                let due = captured.get(slot).unwrap();
+                tracker.committed_generation(&due.topic, due.partition, due.offset, due.generation);
+                json!({ "op": "committed_generation", "slot": slot, "want": {} })
             }
             Step::Reset(topic, partition) => {
                 tracker.reset(topic, *partition);
@@ -1195,6 +1211,61 @@ fn kafka_offsets_cases() -> Vec<Value> {
                 Ack(2),
                 Due,
                 Committed("t", 0, 6),
+                Stats,
+            ],
+        ),
+        (
+            "a_delayed_commit_after_reset_cannot_hide_the_new_generations_lower_watermark",
+            vec![
+                Book("t", 0, 100),
+                Ack(0),
+                CaptureDue(0),
+                Reset("t", 0),
+                Book("t", 0, 10),
+                Ack(1),
+                CommittedGeneration(0),
+                Due,
+                CaptureDue(1),
+                CommittedGeneration(1),
+                Due,
+                Stats,
+            ],
+        ),
+        (
+            "a_delayed_commit_after_revoke_cannot_hide_reassigned_progress",
+            vec![
+                Book("t", 0, 100),
+                Ack(0),
+                CaptureDue(0),
+                Revoke("t", 0),
+                CommittedGeneration(0),
+                Book("t", 0, 10),
+                Ack(1),
+                CommittedGeneration(0),
+                CaptureDue(1),
+                CommittedGeneration(1),
+                Due,
+                Stats,
+            ],
+        ),
+        (
+            "a_delayed_commit_after_nack_cannot_acknowledge_the_rewound_generation",
+            vec![
+                Book("t", 0, 10),
+                Ack(0),
+                CaptureDue(0),
+                Book("t", 0, 11),
+                Nack(1),
+                CommittedGeneration(0),
+                Due,
+                CaptureDue(1),
+                CommittedGeneration(1),
+                Due,
+                Book("t", 0, 11),
+                Ack(2),
+                CaptureDue(2),
+                CommittedGeneration(2),
+                Due,
                 Stats,
             ],
         ),
@@ -1423,6 +1494,269 @@ fn kafka_error_cases() -> Vec<Value> {
         .collect()
 }
 
+fn ingestion_record_json(record: &KafkaRecord) -> Value {
+    json!({
+        "key": record.key,
+        "value": record.value,
+        "headers": record.headers.iter().map(|header| {
+            json!({"key": header.key, "value": header.value})
+        }).collect::<Vec<_>>(),
+    })
+}
+
+fn kafka_ingestion_raw_cases() -> Vec<Value> {
+    use edax_kafka::record::{ingestion_raw, ingestion_rejection_record, IngestionRaw};
+
+    let original = KafkaRecord {
+        key: "café/訂單".as_bytes().to_vec(),
+        value: vec![0, 255, 128, 1, 42],
+        headers: vec![
+            KafkaHeader::new("trace-id", &[0, 255]),
+            KafkaHeader::new("équipe", "支払済み".as_bytes()),
+            KafkaHeader::new("trace-id", b"second"),
+            KafkaHeader::new("empty", b""),
+        ],
+    };
+    let baseline = ingestion_raw(&original, "orders", 7, i64::MAX, Some(0), Some(0), usize::MAX).unwrap();
+    let exact = serde_json::to_vec(&baseline).unwrap().len();
+    let mut reordered = original.clone();
+    reordered.headers.swap(0, 2);
+    let expanded = KafkaRecord {
+        key: b"order-7".to_vec(),
+        value: vec![255; 300],
+        headers: vec![],
+    };
+    let compact_headers = KafkaRecord {
+        key: vec![],
+        value: b"{}".to_vec(),
+        headers: vec![KafkaHeader::new("x", b""); 20],
+    };
+    let compact_full = ingestion_raw(&compact_headers, "orders", 0, 0, None, None, usize::MAX).unwrap();
+    let compact_exact = serde_json::to_vec(&compact_full).unwrap().len();
+    let cases = vec![
+        (
+            "compact_headers_exact_json_size_fits",
+            compact_headers.clone(),
+            "orders",
+            0,
+            0,
+            None,
+            None,
+            compact_exact,
+        ),
+        (
+            "compact_headers_one_byte_below_json_size_is_stub",
+            compact_headers,
+            "orders",
+            0,
+            0,
+            None,
+            None,
+            compact_exact - 1,
+        ),
+        (
+            "binary_unicode_ordered_duplicate_headers",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            exact,
+        ),
+        (
+            "one_byte_below_json_size_is_stub",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            exact - 1,
+        ),
+        (
+            "zero_limit_is_stub",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            0,
+        ),
+        (
+            "topic_changes_identity",
+            original.clone(),
+            "orders-v2",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            4096,
+        ),
+        (
+            "partition_changes_identity",
+            original.clone(),
+            "orders",
+            8,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            4096,
+        ),
+        (
+            "offset_changes_identity",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX - 1,
+            Some(0),
+            Some(0),
+            4096,
+        ),
+        (
+            "timestamp_changes_identity",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            Some(i64::MAX),
+            Some(0),
+            4096,
+        ),
+        (
+            "timestamp_type_changes_identity",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(1),
+            4096,
+        ),
+        (
+            "absent_timestamps_differ_from_zero",
+            original.clone(),
+            "orders",
+            7,
+            i64::MAX,
+            None,
+            None,
+            4096,
+        ),
+        (
+            "ordered_headers_change_identity",
+            reordered,
+            "orders",
+            7,
+            i64::MAX,
+            Some(0),
+            Some(0),
+            4096,
+        ),
+        (
+            "base64_expansion_exceeds_limit",
+            expanded.clone(),
+            "orders",
+            0,
+            0,
+            None,
+            None,
+            500,
+        ),
+        ("same_expanded_record_fits", expanded, "orders", 0, 0, None, None, 1024),
+        (
+            "empty_original",
+            KafkaRecord {
+                key: vec![],
+                value: vec![],
+                headers: vec![],
+            },
+            "orders",
+            0,
+            0,
+            None,
+            None,
+            1024,
+        ),
+    ];
+    let mut rows = Vec::new();
+    for (name, original, topic, partition, offset, timestamp, timestamp_type, limit) in cases {
+        let raw = ingestion_raw(&original, topic, partition, offset, timestamp, timestamp_type, limit).unwrap();
+        if name.starts_with("compact_headers_") {
+            assert_eq!(raw.oversized, limit < compact_exact);
+            assert_eq!(raw.sha256, compact_full.sha256);
+        } else if matches!(name, "zero_limit_is_stub" | "one_byte_below_json_size_is_stub") {
+            assert!(raw.oversized);
+            assert_eq!(
+                raw.sha256, baseline.sha256,
+                "retention limits cannot alter source identity"
+            );
+        } else if name == "binary_unicode_ordered_duplicate_headers" {
+            assert!(!raw.oversized, "the exact JSON boundary must fit");
+        } else if name == "base64_expansion_exceeds_limit" {
+            assert!(raw.oversized, "base64 and envelope bytes must count toward the limit");
+        } else if name.ends_with("identity") || name == "absent_timestamps_differ_from_zero" {
+            assert_ne!(raw.sha256, baseline.sha256, "all original metadata must bind identity");
+        }
+        let decoded = raw.record().unwrap();
+        if raw.oversized {
+            assert!(decoded.key.is_empty() && decoded.value.is_empty() && decoded.headers.is_empty());
+        } else {
+            assert_eq!(decoded, original);
+        }
+        rows.push(json!({
+            "name": name, "op": "encode", "record": ingestion_record_json(&original),
+            "topic": topic, "partition": partition, "offset": offset,
+            "timestamp": timestamp, "timestamp_type": timestamp_type, "limit": limit,
+            "want": raw, "decoded": ingestion_record_json(&decoded), "error": null,
+        }));
+    }
+    for field in ["key", "value", "header"] {
+        let mut invalid: IngestionRaw = baseline.clone();
+        match field {
+            "key" => invalid.key = "!".to_owned(),
+            "value" => invalid.value = "!".to_owned(),
+            _ => invalid.headers[0].1 = "!".to_owned(),
+        }
+        let error = invalid.record().unwrap_err();
+        // The decoder crate owns its wording; only the kernel taxonomy is a wire contract.
+        rows.push(json!({"name": format!("invalid_base64_{field}"), "op": "decode", "raw": invalid, "want": null, "error": format!("{}:", error.code.as_str())}));
+    }
+    let source = r#"9:orders-v1:["source","cluster-a/orders-1","orders",7,"9223372036854775807"]"#;
+    let replacement = r#"9:orders-v2:["source","cluster-a/orders-2","orders",7,"9223372036854775807"]"#;
+    let mut spoofed = original.clone();
+    spoofed.headers.extend([
+        KafkaHeader::new("edax-ingest-source", b"forged-source"),
+        KafkaHeader::new("edax-ingest-sha256", b"forged-digest"),
+        KafkaHeader::new("edax-ingest-oversized", b"true"),
+    ]);
+    let mut invalid = baseline.clone();
+    invalid.value = "!".to_owned();
+    for (name, raw, source) in [
+        ("rejection_keeps_original_and_source_identity", baseline.clone(), source),
+        ("rejection_distinguishes_replaced_source", baseline, replacement),
+        (
+            "rejection_stub_keeps_digest_and_identity",
+            ingestion_raw(&original, "orders", 7, i64::MAX, Some(0), Some(0), 0).unwrap(),
+            source,
+        ),
+        (
+            "rejection_appends_authoritative_headers_after_originals",
+            ingestion_raw(&spoofed, "orders", 7, i64::MAX, Some(0), Some(0), usize::MAX).unwrap(),
+            source,
+        ),
+        ("rejection_refuses_invalid_original", invalid, source),
+    ] {
+        let restored = ingestion_rejection_record(&raw, source);
+        rows.push(json!({
+            "name": name, "op": "rejection", "raw": raw, "source": source,
+            "want": restored.as_ref().ok().map(ingestion_record_json), "error": refusal(&restored),
+        }));
+    }
+    rows
+}
+
 #[test]
 fn golden() {
     write_or_check("kafka_config.json", kafka_config_cases());
@@ -1433,4 +1767,5 @@ fn golden() {
     write_or_check("kafka_route.json", kafka_route_cases());
     write_or_check("kafka_dead_letter.json", kafka_dead_letter_cases());
     write_or_check("kafka_offsets.json", kafka_offsets_cases());
+    write_or_check("kafka_ingestion_raw.json", kafka_ingestion_raw_cases());
 }

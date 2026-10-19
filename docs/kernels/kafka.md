@@ -11,7 +11,7 @@ consumer commits the same offsets whatever language runs it.
 
 | Module | Owns | Golden vector |
 |---|---|---|
-| `record` | the key rule, the `content-type` header, the media types, the route by it, the poison id, the dead-letter record and its stub | `kafka_record.json`, `kafka_decode.json`, `kafka_route.json`, `kafka_dead_letter.json` |
+| `record` | the key rule, the `content-type` header, the media types, the route by it, the poison id, the dead-letter record and its stub, ingestion raw encoding, stable source digest and rejection provenance | `kafka_record.json`, `kafka_decode.json`, `kafka_route.json`, `kafka_dead_letter.json`, `kafka_ingestion_raw.json` |
 | `client` | the durations a shell refuses at build, and the verdict on a broker's protocol error code | `kafka_config.json`, `kafka_error.json` |
 | `partition` | broker placement: the partition a keyed record lands on | `kafka_partition.json` |
 | `offsets` | the per-partition commit watermark, settled by token, the rewind a nack makes, and what is due | `kafka_offsets.json` |
@@ -255,8 +255,9 @@ instead: the lowest offset still in flight, or one past the highest delivered wh
 | `book(topic, partition, offset)` | a token | monotonic, starting at 1; booking an offset already in flight retires the old token; a negative offset is a `codec` error |
 | `is_live(token)` | bool | whether the token still settles its delivery; a dispatcher skips a delivery that is not live |
 | `ack(token)` | `AckDecision` | `Settled`, or `Stale` for a token that settles nothing |
-| `due()` | one row per partition | `{topic, partition, offset}` for every watermark above both the last commit and the first offset booked, ordered by topic then partition |
-| `committed(topic, partition, offset)` | nothing | the shell reports a commit the client confirmed; max-merge; a no-op for an unknown partition |
+| `due()` | one row per partition | `{topic, partition, offset, generation}` for every watermark above both the last commit and the first offset booked, ordered by topic then partition |
+| `committed_generation(topic, partition, offset, generation)` | nothing | max-merges a confirmed commit only into the generation that requested it |
+| `committed(topic, partition, offset)` | nothing | synchronous callers only; the partition must not change between reading the watermark and reporting completion |
 | `nack(token)` | `NackDecision` | `Seek(offset)` to the lowest offset in flight, retiring every token of the partition; `Stale` for a token that settles nothing |
 | `revoke(topic, partition)` | `Option<Due>` | gives up a revoked partition in one step: its last watermark still due, for the shell to commit while the partition is still its own, and the bookkeeping dropped with every token retired |
 | `reset(topic, partition)` | nothing | drops a partition's bookkeeping and retires its tokens, committing nothing: for a partition just assigned, in case a revoke was never announced |
@@ -292,18 +293,29 @@ offset and the first token goes stale.
 
 Settlement is data, not a callback. `ack` only settles, so a worker never waits on a commit round
 trip. A shell commits what `due` names, all partitions in one call, on its own schedule and under its
-own deadline. It then reports each commit back with `committed`, and only once the client's commit
-returned.
+own deadline. It reports each commit back with `committed_generation` after the client's commit returns.
+Each watermark carries an opaque generation local to its tracker. Reset, revoke, and nack invalidate
+old completions. An old response cannot suppress commits after a partition is assigned back.
 
 That keeps a failed client commit out of the record: a commit that raised is due again. If the
 tracker recorded the watermark itself, the commit that raised would count as committed, and the
 next, correct commit at that offset would be refused. Recording after the fact also keeps the record
-monotonic under out-of-order commits: `committed` max-merges, so two confirmations that returned out
-of order leave the higher watermark recorded.
+monotonic within a generation: two confirmations that return out of order leave the higher watermark recorded.
+The shell must still serialize broker requests. Generation checks protect local bookkeeping only.
+A timeout or cancellation of the waiter does not prove that the client's request has ended.
+The Python committer retains the actual client task until completion before sending another commit.
+Revocation retires tokens before waiting on that request. If it outlives the drain deadline, admission
+stays stopped while the unresolved request remains tracked.
 
 `due` also skips a watermark no higher than the first offset booked. A fresh tracker does not know the
 group's commit after a restart or a rebalance. But it fetched from there, so committing it again
 would be a round trip for nothing.
+
+The shell also captures assignment generation before fetching and checks it before booking returned
+records. Otherwise an old fetch could receive fresh delivery tokens after reassignment. Every
+rewind retires the previous generation. When a runner discards fetched results before booking, it
+resumes from the last proven contiguous completion frontier. The lowest retained record alone is
+not sufficient when earlier fetched records were discarded.
 
 ### Why `nack` seeks the lowest offset and rewinds the partition
 
@@ -349,6 +361,7 @@ diff before committing it.
 | placement | `edax_kafka::partition_for` | `_edax.kafka_partition_for`, which `KafkaProducer` passes as `partition=` |
 | media type | `edax_event::Format::media_type(kind)` | `_edax.media_type(format, kind)`, behind `KernelSerializer.media_type` |
 | poison id | `edax_kafka::poison_id` | `_edax.kafka_poison_id` |
+| ingestion originals and rejection provenance | `edax_kafka::record::ingestion_raw`, `IngestionRaw::record`, `ingestion_rejection_record` | `_edax.kafka_ingestion_raw`, `_edax.kafka_ingestion_record`, `_edax.kafka_ingestion_rejection_record`, used by `KafkaIngestion` |
 | offsets | `edax_kafka::OffsetTracker` | `_edax.offset_tracker()`; its `revoke` behind the rebalance listener |
 
 The Rust SDK ships the kernel and no client shell. The Kafka adapter lives in the Python SDK:

@@ -59,18 +59,10 @@ sequenceDiagram
     Note over Py,F: a binding that did not follow the kernel fails now
 ```
 
-Regenerate only when you mean to change the contract:
-
-```sh
-EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
-```
-
-A golden vector always wins over a disagreeing test (`AGENTS.md`). Presence of the environment
-variable alone selects regeneration; the value is not read.
+Regenerate only for a deliberate contract change, using the complete
+[commands in AGENTS.md](../../AGENTS.md#kernels-are-the-source-of-truth).
+A golden vector wins over a disagreeing test. Only `EDAX_REGEN=1` selects regeneration;
+unset or empty means assertion, and another nonempty value is refused.
 
 ## Layer 2: model-based property tests
 

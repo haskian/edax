@@ -1,8 +1,9 @@
 # Examples
 
 The [Python examples](../../examples/py/README.md) and
-[Go examples](../../crates/edax-go/examples/README.md) cover the same nineteen topics in learning order.
-Their READMEs list what each example teaches. This page explains how to run them and how continuous
+[Go examples](../../crates/edax-go/examples/README.md) cover the same twenty-one topics in learning order.
+Examples 20 and 21 use the public Python stores and internal Go kernel bindings. Go does not yet
+provide their runners or database adapters. Their READMEs list what each example teaches. This page explains how to run them and how continuous
 integration (CI) checks them.
 
 Each program checks the behavior it demonstrates and prints a final `ok:` line. Python uses
@@ -60,9 +61,25 @@ The Python and Go workflows call these same tasks.
 checks that no example command declares `type` as a hashed instance field. Both checks find a new
 file by its name, so a new example needs no registration.
 
+## Ingestion and projection processing
+
+Run the new examples from the repository root after building the bindings:
+
+```sh
+mise run examples:python 20_ingestion.py 21_projection_processing.py
+mise run examples:go 20_ingestion 21_projection_processing
+```
+
+Example 20 checks append replay, identity conflicts, stale upserts and retained deletion markers.
+The Python version also drains rejected records. Example 21 applies ordered deltas and refuses a
+sequence gap. The Python version also activates outbox delivery and demonstrates destination
+deduplication. Go calls the internal kernels with reference storage; it does not implement a
+production projection state store. These examples use no external services.
+
 ## Real backends
 
-Every example runs on the `memory` backend by default, so none needs a broker or a database. Two of
+Every example runs without external services by default. Stores use memory; Go example 21 applies
+kernel writes to a local map. Two of
 them switch to a real server when an environment variable names one:
 
 | Example | Variable | Real backend | In-memory stand-in |

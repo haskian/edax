@@ -9,7 +9,8 @@ The command bus itself is host-local ergonomics: handler registration, typed dis
 middleware chain. It has no cross-language requirement, so it lives in the software development kits
 (SDKs), not here. The table below lists its shared decisions and stored types.
 
-The query side is the half a read model answers with. [`filter`](./filter.md) is the backend-neutral
+The query side owns reading and maintaining derived state. `ingest` maintains append/upsert rows;
+`projection` maintains ordered stateful projections. [`filter`](./filter.md) is the backend-neutral
 match decision; `query` composes it with ordering and paging. Neither is an event-sourcing concern,
 and the two travel together because the query evaluates the filter.
 
@@ -28,6 +29,9 @@ and the two travel together because the query evaluates the filter.
 | `complete_fence` / `release_fence` | whether a claim owner may complete or release the record currently held by a ledger key |
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
+| `namespace` | the length-prefixed key namespace of a generation, its erasure key ranges, and `AtRest` with the sealed-part check, shared by `ingest` and `projection` |
+| `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts and exact source coordinates (`ingest.json`) |
+| `projection` | canonical ordered delta transitions, dual receipts, source continuity, scoped leases, checkpoint recovery and outbox activation |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
 | `query` | ordering, keyset cursors and paging over the documents a filter selects, and the `document` rule every stored read-model document meets |
 
@@ -495,6 +499,98 @@ The total order, the tiebreak and the cursor are documented from the host's side
 `Query`, `SortKey` and `Page` rather than defining its own, so the spec and the applier cannot drift.
 
 ---
+
+## `ingest` — append and complete-state upsert
+
+`record_source_key` scopes an opaque retry-stable original ID independently of Kafka coordinates.
+`write_scopes` derives each original's tenant/subject from validated row keys, in input order.
+SDK direct-write preparation uses those scopes for fences and keyed fingerprints before sealing.
+The Python `plan_ingestion` interface calls this same kernel for custom-schema sinks; staging changes
+transaction ownership, not append/upsert decisions. See [direct ingestion](../backends/ingestion.md#direct-ingestion-without-a-broker).
+
+
+`Contract` fixes a target generation's mode, source incarnation, mapper identity and `at_rest`. Key helpers
+scope row identities by generation, tenant and erasure subject, and source coordinates by source
+incarnation, topic, partition and offset. `scope_range` names the key range that holds every row of
+one subject, or of a whole tenant without a subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
+contract. `check_sealed` runs after the sink seals and before it writes. On a sealed target, every
+written input of a subject must carry a keyed fingerprint. Its `private` part must be absent or a
+protected-state envelope of the row key's tenant and subject. `seal_plan` names the parts a sink seals
+before that check, and `open_plan` the part it opens in a row it read: kind, storage key, version and
+scope. Every SDK seals exactly what they name, so a row one SDK writes opens in another.
+
+Unkeyed replay checks use the shared 64-bit FNV-1a `payload_hash`. Equality is hash equality,
+not a collision-resistant proof of identical content. Use the sealed/keyed fingerprint path for
+untrusted producers. Its HMAC-SHA-256 fingerprint protects replay identity. Changing the unkeyed
+algorithm requires an explicit persisted-state migration; it is not changed by this repair.
+
+`plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
+rejections before selecting owners. In append mode, identical event replay succeeds and changed
+content under the same identity is rejected. In upsert mode, one aggregate stream owns each row.
+A higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
+sequence is rejected. A row holds a `private` part, sealed unless the target is `plaintext`, and a
+plaintext `public` part. Both parts absent retain a deletion marker. An `erased` input,
+whose key was destroyed, is accepted without a write. A sealed input carries `keyed_fingerprint`, an
+HMAC under the subject's fingerprint key. Once the key is gone, no stored hash can test a guessed
+value. A sealed and an unsealed copy of one sequence conflict. The planner validates every original
+before compacting eligible replacements into the final writes.
+
+`inputs_json` checks original numeric tokens before decoding application values. Integer literals
+outside the canonical JSON safe range become record-local failures instead of rounded identities.
+Protocol offsets and sequences keep their full supported integer width. `ingest.json` and
+`ingestion_numbers.json` pin these contracts.
+
+The store must commit the plan's state writes and rejection records in one transaction.
+`edax-memory::ingest` provides the reference sink. `edax-postgres::ingest` supplies SQL and recovery
+verdicts; the Python adapter supplies the transaction. See [ingestion](../backends/ingestion.md).
+
+## `projection` — ordered state transitions
+
+A stateful projection folds events: it repeatedly applies a pure reducer to previous state and an event. The reducer implements
+application behavior. This kernel decides whether the event may run and which records must commit
+with its result. It maintains one state per tenant/aggregate; cross-aggregate state and external
+snapshot imports are outside this contract.
+
+`lock(request)` names the locks a store takes first: the generation lock, shared for partition
+work and exclusive for initialization, freeze and activation, and the partition's own lock.
+`keys(request)` names the records an operation reads, the manifest first.
+`transition(request, records, now_ms)` returns a result and a plan: `inserts` for records read as
+absent, `updates` for records read as present, and new `intents`. The store commits the plan
+atomically; an insert that meets a concurrent insert fails, so a race retries instead of
+overwriting. The kernel does no I/O and never invokes a reducer.
+
+| Operation | Decision |
+|---|---|
+| Initialize | Bind the immutable generation contract and complete partition/start vector |
+| Acquire, refresh, release, load | Fence checkpoint ownership, extend it, and recover authoritative progress |
+| PrepareBatch | Check source continuity, ownership, event identity and sequence for every input in order; return each input's novelty, canonical reducer input and the state the batch read |
+| ApplyBatch | Check one reducer result per novel input; save replacement states, both deduplication receipts, deterministic intents and the next source offset |
+| Freeze and activate | Retire old owners, capture cutoffs, and set the immutable cutoffs delivery reads |
+| Get | Read one aggregate's state |
+
+Two receipts bind each event to its event ID and aggregate sequence. Each holds a hash of the
+canonical event, not the event itself. For a sealed event the hash is `keyed_fingerprint`, an HMAC
+under the subject's fingerprint key. State keys carry the event's erasure subject, so an aggregate cannot change
+subjects. `state_scope_range` names one subject's state, or a whole tenant's, for a plaintext generation's cleanup. A reducer result holds a `private` and a `public` part. On a `sealed` generation (`Contract.at_rest`),
+`ApplyBatch` refuses a subject's `private` part unless the host sealed it under the event's scope. It
+refuses a subject's intent payload unless sealed whatever `at_rest` says. `seal_plan` names
+the parts a host seals in a batch's reducer results, and `open_state` and `open_intent` the parts it
+opens after a read, with the identity and version each binds. An
+`erased` input, whose key was destroyed, writes its receipts and advances the cursor. It calls no
+reducer and changes no state. An erased replay matches a receipt from before erasure. Identical replay skips the reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
+checks cover physical source identity, history and retained/readable boundaries. These checks
+cannot establish that a restored database contains every previously created aggregate; the host
+must restore a consistent generation and terminate every previous writer before recovery.
+
+`request_json` validates application number tokens before decoding. Reducer input, replacement state
+and intent payloads use canonical JSON. The reducer cannot observe source offset or attempt number.
+`intent_id` provides stable effect identity and `eligible` applies activation cutoffs when an
+intent is read for delivery. Each intent
+record carries its tenant, aggregate and a generation-wide commit `position`, the outbox order. Delivery is
+at least once, so the destination must deduplicate intent IDs, including after backup restore.
+
+`projection_state.json`, `projection_state_boundaries.json` and `ingestion_numbers.json` pin these decisions. The
+[projection processing guide](../sdk/projection-processing.md) covers leases, transactions, rebuilds and offline restore.
 
 ## What the kernel does not own
 

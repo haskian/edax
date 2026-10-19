@@ -1,7 +1,7 @@
 //! The one home of the golden-vector harness.
 //!
 //! `testdata/golden/*.json` is the cross-language contract. Every kernel derives its vectors in a
-//! `tests/golden.rs` and hands them to [`write_or_check`]. The harness then either regenerates the
+//! Rust integration test and hands them to [`write_or_check`]. The harness then either regenerates the
 //! file (`EDAX_REGEN=1`) or asserts the committed one still matches.
 //!
 //! This crate is `publish = false` and only ever a `[dev-dependency]`. It exists as a crate rather

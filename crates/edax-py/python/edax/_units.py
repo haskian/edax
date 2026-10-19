@@ -18,7 +18,9 @@ from .observe import Observer, TransactionOutcome
 from .sealing import (
     KeyScope,
     PendingFence,
+    ScopeGuard,
     TransactionFence,
+    active_scope_guards,
     detach_sealing_context,
     pending_fences,
     sealing_context,
@@ -47,6 +49,12 @@ class _Unit:
     resources: AsyncExitStack
     task: asyncio.Task[Any] | None
     fenced: set[tuple[int, KeyScope]] = field(default_factory=set)
+    guards: set[ScopeGuard] = field(default_factory=set)
+    outer_guards: frozenset[ScopeGuard] = field(
+        default_factory=lambda: frozenset(
+            guard for guard in active_scope_guards() if guard.task is asyncio.current_task()
+        )
+    )
 
 
 # The open units of work in this task, keyed by database as AMBIENT is.
@@ -82,14 +90,19 @@ async def _admit(database: int, unit: _Unit, pending: Sequence[PendingFence], tx
 
 
 @asynccontextmanager
-async def _begun(transactor: Transactor[TxT], database: int, unit: _Unit) -> AsyncIterator[TxT]:
+async def _begun(
+    transactor: Transactor[TxT],
+    database: int,
+    unit: _Unit,
+    opened: AbstractAsyncContextManager[TxT] | None = None,
+) -> AsyncIterator[TxT]:
     """Begin ``transactor``'s transaction for ``unit`` with this task's pending fences: a guard on another
     database is held from before ``begin``, as an eager write guard is; a fence on the provider's database
     goes inside, before the caller's first statement."""
     pending = pending_fences()
     if pending:
         await _admit(database, unit, pending, None)
-    async with transactor.begin() as tx:
+    async with transactor.begin() if opened is None else opened as tx:
         if pending:
             await _admit(database, unit, pending, tx)
         yield tx
@@ -107,17 +120,23 @@ async def _fenced(fence: PendingFence) -> AsyncIterator[None]:
 
 
 @asynccontextmanager
-async def _own_transaction(transactor: Transactor[TxT]) -> AsyncIterator[TxT]:
+async def _own_transaction(
+    transactor: Transactor[TxT], opened: AbstractAsyncContextManager[TxT]
+) -> AsyncIterator[TxT]:
     async with AsyncExitStack() as resources:
         unit = _Unit(resources, asyncio.current_task())
-        async with _begun(transactor, id(database_of(transactor)), unit) as tx:
+        async with _begun(transactor, id(database_of(transactor)), unit, opened) as tx:
             yield tx
 
 
-def own_transaction(transactor: Transactor[TxT]) -> AbstractAsyncContextManager[TxT]:
+def own_transaction(
+    transactor: Transactor[TxT], *, opened: AbstractAsyncContextManager[TxT] | None = None
+) -> AbstractAsyncContextManager[TxT]:
     """A store's own short transaction, outside any unit of work: it takes this task's pending fences as a
-    unit of work does, so a write a handler makes through a store alone is fenced too."""
-    return _own_transaction(transactor) if pending_fences() else transactor.begin()
+    unit of work does, so a write a handler makes through a store alone is fenced too. ``opened`` lets an
+    adapter retain its own commit/rollback evidence while using the same fence admission."""
+    opened = transactor.begin() if opened is None else opened
+    return _own_transaction(transactor, opened) if pending_fences() else opened
 
 
 @asynccontextmanager
@@ -143,7 +162,28 @@ async def _retained(unit: _Unit | None, guard: AbstractAsyncContextManager[None]
         async with _fenced(guard):
             yield
     elif unit is not None:
+        if isinstance(guard, ScopeGuard):
+            held = guard.held()
+            if held is not None:
+                # Earlier units enclose this one, even if their guard was acquired after both began.
+                covered = held in unit.outer_guards or held in unit.guards
+                for enclosing in RESOURCES.get().values():
+                    if covered:
+                        break
+                    if enclosing.task is asyncio.current_task():
+                        covered = held in enclosing.guards or held in enclosing.outer_guards
+                    if enclosing is unit:
+                        break
+                if not covered:
+                    raise BadHandle(
+                        "the scope guard does not cover this transaction: acquire it before transaction() "
+                        "or let the store retain it through commit"
+                    )
+                yield
+                return
         await unit.resources.enter_async_context(guard)
+        if isinstance(guard, ScopeGuard):
+            unit.guards.add(guard)
         yield
     else:
         async with guard:

@@ -1,0 +1,569 @@
+use std::collections::BTreeMap;
+
+use base64::{engine::general_purpose::STANDARD, Engine};
+use edax_core::ErrorCode;
+use edax_cqrs::ingest::{
+    plan, raw_fingerprint, row_key, source_key, validate_inputs, Contract, Input, Rejection, Stored,
+};
+use edax_cqrs::namespace::{key, prefix};
+use serde_json::json;
+
+#[allow(clippy::unwrap_used, reason = "test fixture must be valid")]
+fn event(offset: u64, sequence: u64, status: &str) -> Input {
+    let content = json!({"type": "order.state", "status": status});
+    let raw = json!({
+        "topic": "orders", "partition": 0, "offset": offset,
+        "key": STANDARD.encode(b"order-42"),
+        "value": STANDARD.encode(content.to_string()),
+        "headers": [["content-type", STANDARD.encode(b"application/json")]],
+        "timestamp": 1_700_000_000_000_i64, "timestamp_type": 0, "oversized": false,
+    })
+    .to_string();
+    Input {
+        source: source_key("projection-v1", "orders-v1", "orders", 0, offset.try_into().unwrap()).unwrap(),
+        key: row_key("projection-v1", "upsert", Some("tenant-7"), None, "order-42").unwrap(),
+        stream: "order-42".into(),
+        event_id: format!("order-42:{sequence}"),
+        sequence: Some(sequence),
+        content: content.clone(),
+        private: Some(json!({"order_id": "order-42", "status": status})),
+        public: None,
+        erased: false,
+        fingerprint: None,
+        raw_fingerprint: raw_fingerprint(raw.as_bytes()),
+        raw,
+        failure: None,
+    }
+}
+
+#[allow(clippy::unwrap_used, reason = "test fixture must be valid")]
+fn append_event(offset: u64, sequence: u64, status: &str) -> Input {
+    let mut input = event(offset, sequence, status);
+    input.key = row_key("projection-v1", "append", Some("tenant-7"), None, &input.event_id).unwrap();
+    input
+}
+
+#[allow(clippy::unwrap_used, reason = "test fixture must be valid")]
+fn current(input: &Input) -> BTreeMap<String, Stored> {
+    plan(
+        "upsert",
+        std::slice::from_ref(input),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap()
+    .writes
+}
+
+#[test]
+fn target_namespaces_and_key_parts_are_unambiguous() {
+    assert_eq!(prefix("projection-v1").unwrap(), "13:projection-v1:");
+    assert_eq!(prefix("é").unwrap(), "2:é:");
+    assert_eq!(
+        key("v1", r#"[ "tenant-7", {"b": 2, "a": 1} ]"#).unwrap(),
+        r#"2:v1:["tenant-7",{"a":1,"b":2}]"#
+    );
+    for target in ["", "target\0v1"] {
+        assert_eq!(prefix(target).unwrap_err().code, ErrorCode::BadHandle);
+    }
+    for parts in ["{}", "null", "[", "[9007199254740993]"] {
+        assert_eq!(key("v1", parts).unwrap_err().code, ErrorCode::Codec);
+    }
+    assert_ne!(key("a:b", r#"["c"]"#).unwrap(), key("a", r#"["b:c"]"#).unwrap());
+}
+
+#[test]
+fn row_keys_match_validated_input_identities() {
+    for (mode, tenant) in [
+        ("upsert", Some("tenant-7")),
+        ("append", None),
+        ("append", Some("tenant-ž")),
+    ] {
+        let contract = Contract {
+            mode: mode.into(),
+            generation: "projection-v1".into(),
+            source_incarnation: "orders-v1".into(),
+            mapper_id: "orders-mapper-v1".into(),
+            at_rest: "sealed".into(),
+        };
+        let mut input = event(0, 1, "open");
+        let row_id = if mode == "append" { &input.event_id } else { "order-42" };
+        input.key = row_key(&contract.generation, mode, tenant, None, row_id).unwrap();
+        assert_eq!(
+            input.key,
+            key(&contract.generation, &json!([mode, tenant, null, row_id]).to_string()).unwrap()
+        );
+        assert_eq!(validate_inputs(&contract, &[input]), Ok(()));
+    }
+    for (name, target, mode, row_id) in [
+        ("unknown mode", "v1", "fold", "order-42"),
+        ("empty row", "v1", "upsert", ""),
+        ("empty event", "v1", "append", ""),
+        ("empty target", "", "upsert", "order-42"),
+        ("NUL target", "v1\0", "upsert", "order-42"),
+    ] {
+        assert_eq!(
+            row_key(target, mode, None, None, row_id).unwrap_err().code,
+            if row_id.is_empty() {
+                ErrorCode::Codec
+            } else {
+                ErrorCode::BadHandle
+            },
+            "{name}"
+        );
+    }
+    assert!(row_key("v1", "upsert", None, None, "order-42").is_ok());
+    assert_eq!(
+        row_key("v1", "upsert", Some(""), None, "order-42").unwrap_err().code,
+        ErrorCode::Codec
+    );
+}
+
+#[test]
+fn current_state_comparison_branches() {
+    let initial = event(10, 3, "paid");
+    let stored = current(&initial);
+    let cases = [
+        ("stale", event(11, 2, "other"), "accepted", None),
+        ("exact", event(11, 3, "paid"), "accepted", None),
+        ("conflict", event(11, 3, "cancelled"), "rejected", None),
+        ("newer", event(11, 4, "shipped"), "accepted", Some(4)),
+    ];
+    for (name, input, outcome, write_sequence) in cases {
+        let result = plan("upsert", &[input], &stored, &BTreeMap::new()).unwrap();
+        assert_eq!(result.outcomes, [outcome], "{name}");
+        assert_eq!(
+            result.writes.values().next().and_then(|row| row.sequence),
+            write_sequence,
+            "{name}"
+        );
+        assert_eq!(result.rejections.len(), usize::from(outcome == "rejected"), "{name}");
+    }
+}
+
+#[test]
+fn validates_originals_before_compaction_and_retains_first_owner() {
+    let first = event(0, 4, "paid");
+    let mut other = event(1, 6, "shipped");
+    other.stream = "another-order".into();
+    let conflicting = event(2, 4, "cancelled");
+    let newer = event(3, 5, "shipped");
+    let lower = event(4, 2, "open");
+    let result = plan(
+        "upsert",
+        &[first.clone(), other, conflicting, newer.clone(), lower],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        result.outcomes,
+        ["accepted", "rejected", "rejected", "accepted", "accepted"]
+    );
+    assert_eq!(result.writes[&first.key].sequence, Some(5));
+    assert_eq!(result.writes[&first.key].private, newer.private);
+    assert_eq!(result.writes[&first.key].stream, first.stream);
+}
+
+#[test]
+fn committed_reject_cannot_claim_an_absent_key_on_replay() {
+    let mut rejected = event(0, 1, "invalid");
+    rejected.failure = Some("codec: mapper refused this event".into());
+    let initial = plan("upsert", &[rejected.clone()], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+    assert!(initial.writes.is_empty());
+    rejected.failure = None;
+    let mut valid = event(1, 2, "paid");
+    valid.stream = "new-owner".into();
+    let result = plan(
+        "upsert",
+        &[rejected.clone(), valid.clone()],
+        &BTreeMap::new(),
+        &initial.rejections,
+    )
+    .unwrap();
+    assert_eq!(result.outcomes, ["rejected", "accepted"]);
+    assert_eq!(result.writes[&valid.key].stream, "new-owner");
+    assert_eq!(result.rejections, initial.rejections);
+}
+
+#[test]
+fn invalid_records_never_propose_owners() {
+    let cases = [
+        ("absent", None, json!({"status": "open"})),
+        ("overflow", Some(i64::MAX as u64 + 1), json!({"status": "open"})),
+        ("unsafe_json", Some(1), json!({"total": 9_007_199_254_740_993_u64})),
+    ];
+    for (name, sequence, content) in cases {
+        let mut invalid = event(0, 1, "open");
+        invalid.sequence = sequence;
+        invalid.content = content;
+        let mut valid = event(1, 0, "paid");
+        valid.stream = "new-owner".into();
+        let result = plan("upsert", &[invalid, valid.clone()], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert_eq!(result.outcomes, ["rejected", "accepted"], "{name}");
+        assert_eq!(result.writes[&valid.key].stream, "new-owner", "{name}");
+        assert!(
+            result.rejections.values().all(|r| r.error.starts_with("codec: ")),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn tombstones_keep_the_owner_and_sequence() {
+    let mut deleted = event(1, 3, "deleted");
+    deleted.private = None;
+    let stored = current(&deleted);
+    let mut different_owner = event(4, 5, "new");
+    different_owner.stream = "different-order".into();
+    let result = plan(
+        "upsert",
+        &[event(2, 2, "open"), deleted.clone(), different_owner],
+        &stored,
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(result.outcomes, ["accepted", "accepted", "rejected"]);
+    assert!(result.writes.is_empty());
+    assert_eq!(result.rejections.len(), 1);
+    assert!(result
+        .rejections
+        .values()
+        .all(|rejection| rejection.error.contains("another aggregate stream")));
+}
+
+#[test]
+fn append_exact_replays_and_conflicts() {
+    let first = append_event(0, 1, "open");
+    let duplicate = append_event(1, 1, "open");
+    let different = append_event(2, 1, "cancelled");
+    let result = plan(
+        "append",
+        &[first.clone(), duplicate, different.clone()],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(result.outcomes, ["accepted", "accepted", "rejected"]);
+    assert_eq!(result.writes.len(), 1);
+    assert_eq!(result.writes[&first.key].private, first.private);
+    let replay = plan("append", &[first, different], &result.writes, &result.rejections).unwrap();
+    assert_eq!(replay.outcomes, ["accepted", "rejected"]);
+    assert!(replay.writes.is_empty());
+}
+
+#[test]
+fn source_coordinate_reuse_is_fatal_even_before_rejection() {
+    let first = event(0, 1, "open");
+    let other = event(0, 1, "paid");
+    let err = plan(
+        "upsert",
+        &[first.clone(), other.clone()],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadHandle);
+    let rejected = BTreeMap::from([(
+        first.source.clone(),
+        Rejection {
+            fingerprint: first.raw_fingerprint.clone(),
+            error: "rejected: invalid state".into(),
+            raw: first.raw,
+            published: true,
+        },
+    )]);
+    let err = plan("upsert", &[other], &BTreeMap::new(), &rejected).unwrap_err();
+    assert_eq!(err.code, ErrorCode::BadHandle);
+}
+
+#[test]
+fn one_source_cannot_have_conflicting_decisions_or_mappings_in_a_batch() {
+    let original = append_event(0, 1, "open");
+    let mut failed = original.clone();
+    failed.failure = Some("codec: mapping failed".into());
+    let mut erased = original.clone();
+    erased.erased = true;
+    erased.private = None;
+    let mut remapped = original.clone();
+    remapped.private = Some(json!({"status": "closed"}));
+    let mut moved = original.clone();
+    moved.key = row_key("projection-v1", "append", Some("tenant-8"), None, &moved.event_id).unwrap();
+    for (name, other) in [
+        ("failed", failed),
+        ("erased", erased),
+        ("remapped", remapped),
+        ("moved", moved),
+    ] {
+        for inputs in [[original.clone(), other.clone()], [other, original.clone()]] {
+            assert_eq!(
+                plan("append", &inputs, &BTreeMap::new(), &BTreeMap::new())
+                    .unwrap_err()
+                    .code,
+                ErrorCode::BadHandle,
+                "{name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn equivalent_source_duplicates_keep_first_failed_diagnostic_and_keyed_identity() {
+    let mut first = append_event(0, 1, "open");
+    first.failure = Some("codec: first diagnostic".into());
+    let mut second = first.clone();
+    second.failure = Some("codec: later diagnostic".into());
+    second.raw = "bounded alternate stub".into();
+    let rejected = plan("append", &[first.clone(), second], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+    assert_eq!(rejected.outcomes, ["rejected", "rejected"]);
+    assert_eq!(rejected.rejections[&first.source].error, "codec: first diagnostic");
+    assert_eq!(rejected.rejections[&first.source].raw, first.raw);
+
+    let mut sealed = append_event(0, 1, "open");
+    sealed.fingerprint = Some("a".repeat(64));
+    sealed.private = Some(json!({"ciphertext": "reservation-one"}));
+    let mut resealed = sealed.clone();
+    resealed.private = Some(json!({"ciphertext": "reservation-two"}));
+    resealed.raw = "bounded alternate stub".into();
+    let accepted = plan(
+        "append",
+        &[sealed.clone(), resealed],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(accepted.outcomes, ["accepted", "accepted"]);
+    assert_eq!(accepted.writes[&sealed.key].private, sealed.private);
+}
+
+#[test]
+fn persisted_rejection_wins_over_different_replay_mapping_in_one_batch() {
+    let mut failed = append_event(0, 1, "open");
+    failed.failure = Some("codec: original diagnostic".into());
+    let mut durable = plan(
+        "append",
+        std::slice::from_ref(&failed),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .unwrap()
+    .rejections;
+    durable.get_mut(&failed.source).unwrap().published = true;
+    let mut remapped = failed.clone();
+    remapped.failure = None;
+    remapped.private = Some(json!({"status": "changed"}));
+    let result = plan("append", &[failed.clone(), remapped], &BTreeMap::new(), &durable).unwrap();
+    assert_eq!(result.outcomes, ["rejected", "rejected"]);
+    assert!(result.writes.is_empty());
+    assert_eq!(result.rejections, durable);
+}
+
+#[test]
+fn source_digest_survives_full_record_to_stub_changes() {
+    let mut original = event(0, 1, "open");
+    original.raw_fingerprint = raw_fingerprint(b"stable original source record");
+    original.failure = Some("codec: mapper refused this event".into());
+    let initial = plan("upsert", &[original.clone()], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+    let mut stub = original.clone();
+    stub.raw = json!({"topic": "orders", "partition": 0, "offset": 0, "oversized": true}).to_string();
+    for (name, inputs, rejected) in [
+        ("persisted rejection", vec![stub.clone()], initial.rejections.clone()),
+        ("same batch", vec![original.clone(), stub.clone()], BTreeMap::new()),
+    ] {
+        let result = plan("upsert", &inputs, &BTreeMap::new(), &rejected).unwrap();
+        assert_eq!(result.outcomes, vec!["rejected"; inputs.len()], "{name}");
+        let mut expected = initial.rejections.clone();
+        if name == "persisted rejection" {
+            expected.get_mut(&original.source).unwrap().raw = stub.raw.clone();
+        }
+        assert_eq!(result.rejections, expected, "{name}");
+        assert!(result.writes.is_empty(), "{name}");
+    }
+    stub.raw_fingerprint = raw_fingerprint(b"different original source record");
+    for (name, inputs, rejected) in [
+        ("persisted changed source", vec![stub.clone()], initial.rejections),
+        ("same batch changed source", vec![original, stub], BTreeMap::new()),
+    ] {
+        assert_eq!(
+            plan("upsert", &inputs, &BTreeMap::new(), &rejected).unwrap_err().code,
+            ErrorCode::BadHandle,
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn preserves_published_rejections_and_handles_empty_and_invalid_modes() {
+    let input = event(0, 1, "open");
+    let rejected = BTreeMap::from([(
+        input.source.clone(),
+        Rejection {
+            fingerprint: input.raw_fingerprint.clone(),
+            error: "rejected: invalid state".into(),
+            raw: input.raw.clone(),
+            published: true,
+        },
+    )]);
+    let replay = plan("upsert", &[input], &BTreeMap::new(), &rejected).unwrap();
+    assert_eq!(replay.rejections, rejected);
+    assert!(plan("append", &[], &BTreeMap::new(), &BTreeMap::new())
+        .unwrap()
+        .outcomes
+        .is_empty());
+    assert_eq!(
+        plan("fold", &[], &BTreeMap::new(), &BTreeMap::new()).unwrap_err().code,
+        ErrorCode::BadHandle
+    );
+}
+
+#[test]
+fn valid_updates_survive_every_permutation_batch_cut_and_replay() {
+    let mut deletion = event(2, 3, "deleted");
+    deletion.private = None;
+    let originals = [event(0, 1, "open"), event(1, 2, "paid"), deletion.clone()];
+    for permutation in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        for cut in 0..4 {
+            let inputs: Vec<Input> = permutation.iter().map(|&i| originals[i].clone()).collect();
+            let mut stored = BTreeMap::new();
+            let mut start = 0;
+            for end in 1..=inputs.len() {
+                if end != inputs.len() && cut & (1 << (end - 1)) == 0 {
+                    continue;
+                }
+                for _ in 0..2 {
+                    let result = plan("upsert", &inputs[start..end], &stored, &BTreeMap::new()).unwrap();
+                    assert!(result.rejections.is_empty());
+                    stored.extend(result.writes);
+                }
+                start = end;
+            }
+            assert_eq!(stored[&deletion.key].sequence, Some(3));
+            assert_eq!(stored[&deletion.key].private, None);
+        }
+    }
+}
+
+#[test]
+fn unsafe_preparation_diagnostics_stay_bounded_and_postgres_safe() {
+    for failure in [
+        "codec: name has \0".to_owned(),
+        format!("rejected: {}", "x".repeat(10000)),
+    ] {
+        let mut input = event(0, 1, "ready");
+        input.failure = Some(failure.clone());
+        let result = plan("upsert", &[input], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(result.writes.is_empty());
+        let refusal = result.rejections.values().next().unwrap();
+        assert!(!refusal.error.contains('\0'));
+        assert!(refusal.error.len() < 256);
+        assert_eq!(
+            edax_core::Error::from_wire(&refusal.error).code,
+            edax_core::Error::from_wire(&failure).code
+        );
+    }
+}
+
+#[test]
+fn handmade_identity_cannot_bypass_cleanup_scope_validation() {
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "orders-v1".into(),
+        mapper_id: "orders-v1".into(),
+        at_rest: "plaintext".into(),
+    };
+    for (tenant, subject) in [
+        ("tenant-7".to_owned(), "s".repeat(300)),
+        ("tenant\0bad".into(), "person-1".into()),
+        ("tenant-7".into(), "person\0bad".into()),
+    ] {
+        let mut input = event(0, 1, "ready");
+        input.key = key(
+            &contract.generation,
+            &json!(["upsert", tenant, subject, "order-42"]).to_string(),
+        )
+        .unwrap();
+        assert_eq!(validate_inputs(&contract, &[input]).unwrap_err().code, ErrorCode::Codec);
+    }
+}
+
+#[test]
+fn corrupt_stored_upsert_sequence_is_fatal() {
+    let input = event(0, 1, "ready");
+    let mut stored = current(&input);
+    stored.get_mut(&input.key).unwrap().sequence = None;
+    assert_eq!(
+        plan("upsert", &[input], &stored, &BTreeMap::new()).unwrap_err().code,
+        ErrorCode::BadHandle
+    );
+}
+
+#[test]
+fn empty_producer_identity_is_record_data_not_wiring() {
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "orders-v1".into(),
+        mapper_id: "orders".into(),
+        at_rest: "plaintext".into(),
+    };
+    for field in ["stream", "event_id"] {
+        let mut input = event(0, 1, "ready");
+        if field == "stream" {
+            input.stream.clear()
+        } else {
+            input.event_id.clear()
+        }
+        assert_eq!(
+            validate_inputs(&contract, &[input]).unwrap_err().code,
+            ErrorCode::Codec,
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn ingestion_tenants_are_representable_by_erasure_scopes() {
+    for tenant in ["".to_owned(), "t".repeat(65)] {
+        assert_eq!(
+            row_key("v1", "upsert", Some(&tenant), Some("person"), "order-42")
+                .unwrap_err()
+                .code,
+            ErrorCode::Codec
+        );
+        assert_eq!(
+            edax_cqrs::ingest::scope_range("v1", "upsert", Some(&tenant), None)
+                .unwrap_err()
+                .code,
+            ErrorCode::Codec
+        );
+    }
+}
+
+#[test]
+fn opaque_source_ids_are_scoped_and_distinct_from_kafka_coordinates() {
+    let id =
+        edax_cqrs::ingest::record_source_key("projection-v1", "wearable-v1", "device-7/session-2/reading-9").unwrap();
+    assert_eq!(
+        id,
+        "13:projection-v1:[\"source-id\",\"wearable-v1\",\"device-7/session-2/reading-9\"]"
+    );
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "wearable-v1".into(),
+        mapper_id: "pulse-v1".into(),
+        at_rest: "plaintext".into(),
+    };
+    let mut input = event(0, 1, "paid");
+    input.source = id;
+    validate_inputs(&contract, &[input.clone()]).unwrap();
+    input.source = edax_cqrs::ingest::record_source_key("projection-v1", "other", "reading-9").unwrap();
+    assert_eq!(
+        validate_inputs(&contract, &[input]).unwrap_err().code,
+        ErrorCode::BadHandle
+    );
+    for invalid in ["", "bad\0id"] {
+        assert!(edax_cqrs::ingest::record_source_key("projection-v1", "wearable-v1", invalid).is_err());
+    }
+}

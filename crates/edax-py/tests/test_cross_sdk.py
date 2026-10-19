@@ -394,6 +394,11 @@ def test_sealing_bytes_match_shared_vectors(case: dict[str, Any]) -> None:
             case["subject"],
         )
         assert bytes(aad).hex() == case["aad_hex"]
+        if case["kind"] in ("ingestion", "projection", "intent"):
+            from edax import _json
+
+            part = {key: case[key] for key in ("kind", "identity", "version", "tenant", "subject")}
+            assert _native.stored_encryption_context(_json.encode(part), info) == aad
     assert _native.seal_bytes(info, key, aad, plaintext) == ciphertext
     assert _native.open_bytes(info, key, aad, ciphertext) == plaintext
 

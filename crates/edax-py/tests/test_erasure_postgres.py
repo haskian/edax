@@ -512,3 +512,19 @@ async def test_handler_write_through_a_store_alone_is_refused_after_revoke(datab
         erased.set()
         await asyncio.gather(handling, return_exceptions=True)
     assert await projections.get("profile") is None
+
+
+@pytest.mark.parametrize("timeout", ["lock_timeout", "statement_timeout"])
+async def test_erasure_fence_wait_is_uncounted_contention(database: tuple[Any, str], timeout: str) -> None:
+    from edax.errors import InProgress
+
+    pool, schema = database
+    store = PostgresErasureStore(pool, schema=schema)
+    async with store.writer_guard(scope()), pool.acquire() as connection:
+        with pytest.raises(InProgress, match="erasure_fence"):
+            async with connection.transaction(isolation="read_committed"):
+                await connection.execute(f"SET LOCAL {timeout} = '20ms'")
+                await store.revoke_in_transaction(connection, scope())
+    # Failed lock acquisition cannot install a partial revocation.
+    async with store.writer_guard(scope()):
+        pass

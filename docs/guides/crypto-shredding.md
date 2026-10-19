@@ -1,9 +1,10 @@
 # Crypto-shredding
 
-Edax can encrypt whole event and command payloads, aggregate snapshots, saga state, and cached
-command results under keys belonging to an erasure subject. Revoking that subject blocks new work;
-destroying its keys makes retained ciphertext unreadable through the provider. Plaintext copies in
-projections, caches, exports, and backups require their own cleanup participants.
+Edax can encrypt whole event and command payloads, aggregate snapshots, saga state, cached command
+results, ingestion rows and projection state under keys belonging to an erasure subject. Revoking that
+subject blocks new work; destroying its keys makes retained ciphertext unreadable through the provider.
+Plaintext copies, such as a target kept `at_rest="plaintext"`, caches and exports, require their own
+cleanup participants.
 
 Encryption is an optional edax capability with typed `subject` and `encryption` envelope fields.
 The [seal kernel](../kernels/seal.md) owns cryptography;
@@ -24,6 +25,10 @@ Message and aggregate IDs, tenant, subject, payload name and version stay public
 So do correlation and causation IDs, times, event sequence, command idempotency key,
 `extensions`, `metadata`, and the encryption information. Broker keys and headers stay public too.
 State identity, version, processing marks, owner, and completion marker are public.
+In ingestion rows and projection state, only the `private` part is sealed. The row or state key
+(generation, tenant, subject, row or aggregate ID), the stream owner, the sequence, the `public` part
+and the keyed fingerprints stay readable. A rejection keeps the raw source record: a sealed record
+stays sealed and keeps only its error code, and an unsealed one keeps its plaintext and error text.
 The [message field table](../kernels/event.md#message--the-messages) lists each envelope field and its type.
 
 Use opaque identifiers and keep personal data out of those fields. Encryption does not conceal
@@ -256,7 +261,9 @@ Secret destruction does not guarantee that every process-memory copy is zeroized
 `KeyMaterial` zeroizes its owned buffer. Go clears operation-owned key slices, but host and native
 transfers can leave other copies. Python immutable bytes cannot be deterministically cleared.
 Already returned keys or plaintext cannot be recalled. Keep keys out of diagnostics and avoid
-retaining them beyond the operation.
+retaining them beyond the operation. A Kafka batch runner treats one batch as one operation: its
+`Sealing.for_batch` view reads each subject's keys once, under the operation deadline, and drops
+them with the batch. Its commit's write fence still reads the status afresh.
 
 ## Fence writes through commit
 
@@ -282,6 +289,16 @@ write with it. A handler that writes nothing pays no fence. Writes through conne
 not manage, and side effects outside storage, are not fenced in this mode. When a fence refuses
 inside a handler, a consumer skips the message only if the provider confirms the scope destroyed. A Postgres `fence`
 takes the kernel's locks for all its scopes in one call and reads the status in a separate statement.
+The locks are hash buckets, at most 32 tenant and 32 subject buckets per transaction, so a batch that
+writes for many subjects cannot fill the server's shared lock table. A cleanup waits for every writer
+in its bucket, so a collision delays unrelated writes; the status read stays exact.
+**Upgrade from exact-scope locks:** the previous release used different advisory-lock names.
+Old exact-scope writers and new bucket-based cleanup do not exclude one another. A rolling mixed-version
+deployment is unsupported. Stop admission to **all** writers and erasers using these tables, drain
+or roll back every open transaction and guard, deploy the new version everywhere, then resume them.
+Stopping only Kafka polling is insufficient: already running handlers and cleanup transactions must finish.
+Keep the old processes stopped during rollback as well; drain the new protocol before restarting the old one.
+
 `PostgresErasureStore.guard_in_transaction` does both against the edax erasure tables. It refuses a
 tombstoned scope with `Rejected`, so a provider maps that refusal to its own key status.
 
@@ -357,6 +374,51 @@ a separately authorized control path, then call `mark_published` after broker ac
 Deduplicate by operation ID. The control path must work after subject or tenant payload-key
 revocation; do not encrypt it under the keys being erased.
 
+### Ingestion and projection stores
+
+Ingestion sinks and projection state stores keep a subject's `private` part sealed by default, so
+destroying the key erases it, backups included. A target built with `at_rest="plaintext"` keeps it
+readable instead, and needs a cleanup participant. The sink's or store's `cleanup()` returns one, a
+`ScopeCleanup`:
+
+```python
+cleanup = sink.cleanup(erasure_store, key_namespace="customer-data")
+# Omit key_namespace only when the sink/store has Sealing configured; it supplies the namespace.
+eraser = ErasureCoordinator(keys, operations, {"orders-ingestion": cleanup})
+```
+
+A subject scope deletes that subject's rows; a tenant scope deletes every row of the tenant,
+unsealed rows included. Projection receipts stay: they hold keyed fingerprints. Rejections stay too.
+A rejection of a sealed record holds its ciphertext and only the error code. A rejection of an
+unsealed (legacy) record keeps the raw plaintext record. Preparation rejection diagnostics are bounded
+and do not copy arbitrary host exception text. Cleanup does not
+delete it, so clear such rejections through your own retention process. Given the `PostgresErasureStore` of a `write_fence="transaction"` provider, the Postgres
+cleanup drains prior writers and commits destination revocation with the first bounded delete page.
+It commits later delete pages separately until empty. A retry reinstalls the revocation fence before
+continuing, so partial progress is safe even after a destination restore. A fenced writer therefore either
+committed before it or is refused after it. Memory cleanup only deletes. The provider's revoke
+already drained the guarded writers.
+
+The fence holds only for commits that take it. A Kafka runner fences each commit with its own
+`sealing=`, or the sink's or store's when it has none. A runner with sealing on neither refuses to
+commit a subject's rows with `BadHandle`, so a plaintext target of subject data still needs `sealing=`.
+
+Edax does not check that a plaintext target's cleanup is registered. `cleanup.resweep(operations)`
+deletes again for revoked scopes in its bound key namespace, and returns how many rows it found.
+A full resweep revisits the complete revocation history using bounded pages; its total cost grows
+with that history. It reinstalls destination fences because a restore can also restore old tombstones.
+It skips foreign namespaces; directly calling a cleanup with a foreign namespace is a wiring error. Run
+it on a schedule or as a deploy check, and alert when it reports more than zero. That count means a
+missing participant, or a restore that brought rows back. It covers a restore only when the erasure
+store outlives the restored database. The coordinator can report `complete` before the next sweep.
+
+Register a distinct named cleanup participant for **every retained generation**, including inactive,
+rebuilding and replaced generations that still hold plaintext. Registration must happen before an
+erasure freezes its participants. Activating v2 does not register or erase v1. Keep old participants
+until their data is removed; run their `resweep` after restores. Cleanup intentionally covers only its
+configured generation and key namespace. Subjectless state is not encrypted by a tenant key, but a
+runner with `Sealing` still fences tenant writes and tenant cleanup deletes those rows.
+
 Completion describes the frozen participant set and the provider's confirmations. It is not proof
 that an unregistered export, old backup, compromised key copy, or unfenced service has disappeared.
 Production providers must preserve tombstones through backup restoration and include all wrapped
@@ -399,5 +461,5 @@ For each cleanup participant, exercise a paused writer through commit, erasure r
 writer, an offline participant, repeated callbacks, and recovery after every persisted stage.
 The [live Postgres tests](../../crates/edax-py/tests/test_erasure_postgres.py) cover those destination
 fences and durable notifications for the supplied Postgres adapter. Other destinations need their
-own evidence. SDKs do not keep a reusable key cache, but that does not erase plaintext already
+own evidence. SDKs keep no key cache beyond one batch, but that does not erase plaintext already
 retained by application code or guarantee deterministic wiping of Python's immutable bytes.

@@ -141,6 +141,9 @@ pub fn check_subject(subject: &str) -> Result<(), Error> {
     if subject.is_empty() || subject.len() > SUBJECT_MAX {
         return Err(Error::codec("subject must contain 1 to 256 UTF-8 bytes"));
     }
+    if subject.contains('\0') {
+        return Err(Error::codec("subject holds a NUL character"));
+    }
     Ok(())
 }
 
@@ -194,5 +197,19 @@ mod tests {
             tenant_key(Tenancy::Pool, Some("a"), "b:c"),
             "a separator inside a tenant id spells no other tenant's key"
         );
+    }
+}
+
+#[cfg(test)]
+mod subject_boundary_tests {
+    #[test]
+    fn erasure_subjects_match_storage_and_native_string_boundaries() {
+        for subject in ["".to_owned(), "s".repeat(257), "person\0bad".into()] {
+            assert_eq!(
+                super::check_subject(&subject).unwrap_err().code,
+                crate::ErrorCode::Codec
+            );
+        }
+        assert!(super::check_subject(&"é".repeat(128)).is_ok());
     }
 }
