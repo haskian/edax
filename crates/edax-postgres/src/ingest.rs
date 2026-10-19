@@ -237,12 +237,8 @@ pub(crate) fn key_value_check_named(schema: &str, name: &str) -> String {
   AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace
   AND am.amname = 'btree' AND op.opcname = 'text_ops' AND op.opcnamespace = 'pg_catalog'::regnamespace
  )
- AND NOT EXISTS (
-  SELECT 1 FROM pg_catalog.pg_attribute extra
-  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped
-  AND extra.attname NOT IN ('key', 'value') AND extra.attnotnull
-  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''
- )
+ AND {omitted}
 )"#,
+        omitted = crate::schema::omitted_columns_check(&["key", "value"]),
     )
 }

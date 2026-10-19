@@ -28,6 +28,24 @@ use std::collections::BTreeMap;
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
 
+/// Whether columns omitted by a fixed insert can supply their own values. The caller's catalog
+/// query names its table `t`; column names here are internal contract constants.
+pub(crate) fn omitted_columns_check(written: &[&str]) -> String {
+    let names = written
+        .iter()
+        .map(|name| format!("'{name}'"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "NOT EXISTS (
+  SELECT 1 FROM pg_catalog.pg_attribute extra
+  WHERE extra.attrelid = t.oid AND extra.attnum > 0 AND NOT extra.attisdropped
+  AND extra.attname NOT IN ({names}) AND extra.attnotnull
+  AND NOT extra.atthasdef AND extra.attidentity = '' AND extra.attgenerated = ''
+ )"
+    )
+}
+
 /// The version of the table contract this build requires. Raised only by an addition.
 pub const CONTRACT_VERSION: u32 = 2;
 

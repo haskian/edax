@@ -119,10 +119,12 @@ fn intents_check(schema: &str, name: &str) -> String {
  JOIN pg_catalog.pg_attribute k ON k.attrelid = t.oid AND k.attname = 'key' AND NOT k.attisdropped
  WHERE n.nspname = '{schema}' AND t.relname = '{name}' AND t.relkind IN ('r', 'p')
  AND NOT t.relrowsecurity AND NOT t.relforcerowsecurity
- AND (SELECT count(*) FROM pg_catalog.pg_attribute a WHERE a.attrelid = t.oid AND NOT a.attisdropped AND a.attnotnull AND (a.attname, a.atttypid) IN (
+ AND (SELECT count(*) FROM pg_catalog.pg_attribute a WHERE a.attrelid = t.oid AND NOT a.attisdropped AND a.attnotnull
+ AND a.attgenerated = '' AND a.attidentity <> 'a' AND (a.attname, a.atttypid) IN (
    ('key', 'pg_catalog.text'::regtype), ('generation', 'pg_catalog.text'::regtype),
    ('source_partition', 'pg_catalog.int4'::regtype), ('source_offset', 'pg_catalog.int8'::regtype),
    ('ordinal', 'pg_catalog.int4'::regtype), ('value', 'pg_catalog.jsonb'::regtype))) = 6
+ AND {omitted}
  AND EXISTS (
   SELECT 1 FROM pg_catalog.pg_index i JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[0]
   WHERE i.indrelid = t.oid AND i.indisunique AND i.indisvalid AND i.indimmediate AND i.indpred IS NULL
@@ -147,6 +149,14 @@ fn intents_check(schema: &str, name: &str) -> String {
   AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace
   AND pg_catalog.pg_get_expr(i.indexprs, i.indrelid) = '(((COALESCE((value -> ''tenant''::text), ''null''::jsonb))::text || '',''::text) || (COALESCE((value -> ''aggregate''::text), ''null''::jsonb))::text)'
  )
-)"#
+)"#,
+        omitted = crate::schema::omitted_columns_check(&[
+            "key",
+            "generation",
+            "source_partition",
+            "source_offset",
+            "ordinal",
+            "value",
+        ]),
     )
 }
