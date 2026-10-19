@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.13.0](https://github.com/haskian/edax/compare/1b43560f5f5ead2724b96a42fbf1fd50c83b044c..v0.13.0) - 2026-10-19
+#### Features
+- add atomic ingestion and ordered projection processing (#24) - ([1b43560](https://github.com/haskian/edax/commit/1b43560f5f5ead2724b96a42fbf1fd50c83b044c)) - Črtomir Majer
+
+- - -
+
 ## [v0.12.0](https://github.com/haskian/edax/compare/b0710b6d981d362cc35de70d05762830d70f9a0e..v0.12.0) - 2026-10-16
 #### Features
 - (**edax-py**) fence sealed writes inside the write's own transaction (#27) - ([b0710b6](https://github.com/haskian/edax/commit/b0710b6d981d362cc35de70d05762830d70f9a0e)) - Črtomir Majer
