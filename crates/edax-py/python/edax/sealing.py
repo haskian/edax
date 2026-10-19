@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import Counter
-from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
     AsyncExitStack,
@@ -20,7 +20,7 @@ from contextlib import (
 )
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from types import TracebackType
+from types import MappingProxyType, TracebackType
 from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast, get_args, runtime_checkable
 
 from . import _json, _names, _native
@@ -173,7 +173,7 @@ def detach_sealing_context() -> None:
     _pending_fences.set(())
     _authenticated_event.set(None)
     _opened_event.set(None)
-    _scope_guards.set(())
+    _scope_guards.set({})
     _joined_guards.set(None)
 
 
@@ -282,6 +282,7 @@ class ScopeGuard(AbstractAsyncContextManager[None]):
     def __init__(self, keys: KeyProvider, scope: KeyScope) -> None:
         self.keys = keys
         self.scope = scope
+        self._identity = (id(keys), scope)
         self.task: asyncio.Task[Any] | None = None
         self.active = False
         self._guard = keys.guard(scope)
@@ -290,7 +291,11 @@ class ScopeGuard(AbstractAsyncContextManager[None]):
         await self._guard.__aenter__()
         self.task = asyncio.current_task()
         self.active = True
-        _scope_guards.set((*active_scope_guards(), self))
+        # Copy on write: a child keeps the index snapshot it inherited, not its parent's later guards.
+        index = dict(_scope_guards.get())
+        previous = tuple(guard for guard in index.get(self._identity, ()) if guard.active)
+        index[self._identity] = (*previous, self)
+        _scope_guards.set(index)
 
     async def __aexit__(
         self, kind: type[BaseException] | None, error: BaseException | None, trace: TracebackType | None
@@ -299,16 +304,17 @@ class ScopeGuard(AbstractAsyncContextManager[None]):
         try:
             return await self._guard.__aexit__(kind, error, trace)
         finally:
-            _scope_guards.set(active_scope_guards())
+            index = dict(_scope_guards.get())
+            previous = tuple(guard for guard in index.get(self._identity, ()) if guard.active)
+            if previous:
+                index[self._identity] = previous
+            else:
+                index.pop(self._identity, None)
+            _scope_guards.set(index)
 
     def held(self) -> ScopeGuard | None:
         return next(
-            (
-                guard
-                for guard in reversed(active_scope_guards())
-                if guard.keys is self.keys and guard.scope == self.scope
-            ),
-            None,
+            (guard for guard in reversed(_scope_guards.get().get(self._identity, ())) if guard.active), None
         )
 
     def borrowable(self) -> bool:
@@ -326,12 +332,14 @@ class ScopeGuard(AbstractAsyncContextManager[None]):
         return self
 
 
-_scope_guards: ContextVar[tuple[ScopeGuard, ...]] = ContextVar("edax_scope_guards", default=())
+_scope_guards: ContextVar[Mapping[tuple[int, KeyScope], tuple[ScopeGuard, ...]]] = ContextVar(
+    "edax_scope_guards", default=MappingProxyType({})
+)
 
 
 @dataclass
 class _JoinedGuards:
-    guards: tuple[ScopeGuard, ...]
+    guards: frozenset[ScopeGuard]
     task: asyncio.Future[Any] | None = None
 
 
@@ -339,13 +347,13 @@ _joined_guards: ContextVar[_JoinedGuards | None] = ContextVar("edax_joined_guard
 
 
 def active_scope_guards() -> tuple[ScopeGuard, ...]:
-    return tuple(guard for guard in _scope_guards.get() if guard.active)
+    return tuple(guard for guards in _scope_guards.get().values() for guard in guards if guard.active)
 
 
 @contextmanager
 def joined_scope_guards() -> Iterator[_JoinedGuards]:
     """Authorize one child only. Set its task, then join it before releasing the parent's guards."""
-    joined = _JoinedGuards(tuple(guard for guard in active_scope_guards() if guard.borrowable()))
+    joined = _JoinedGuards(frozenset(guard for guard in active_scope_guards() if guard.borrowable()))
     token = _joined_guards.set(joined)
     try:
         yield joined

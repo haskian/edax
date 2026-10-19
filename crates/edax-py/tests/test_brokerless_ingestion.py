@@ -177,3 +177,44 @@ async def test_unjoined_child_cannot_borrow_parent_guard(start_after_release: bo
     start.set()
     await asyncio.wait_for(writing, 1)
     assert keys.acquisitions == 2 and not keys.lock.locked()
+
+
+@pytest.mark.parametrize("already_guarded", [False, True], ids=["acquire", "borrow"])
+async def test_preparation_does_not_compare_every_pair_of_scopes(
+    monkeypatch: pytest.MonkeyPatch, already_guarded: bool
+) -> None:
+    from contextlib import nullcontext
+
+    from edax.ingestion import prepare_ingestion
+
+    count = 500
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-v1", at_rest="plaintext")
+    sealing = Sealing(MemoryKeys(), "clinic-keys")
+    items = [
+        target.input_from_source(
+            f"reading-{index}",
+            event_id=f"reading-{index}",
+            stream="wearable-bridge",
+            tenant=f"clinic-{index}",
+            row=MappedRow(f"reading-{index}", public={"pulse_bpm": 72}),
+            content={"reading_id": index, "pulse_bpm": 72},
+            raw='{"pulse_bpm":72}',
+        )
+        for index in range(count)
+    ]
+    comparisons = 0
+    equal = KeyScope.__eq__
+
+    def compared(scope: KeyScope, other: object) -> object:
+        nonlocal comparisons
+        comparisons += 1
+        return equal(scope, other)
+
+    monkeypatch.setattr(KeyScope, "__eq__", compared)
+    scopes = {(f"clinic-{index}", None) for index in range(count)}
+    async with (
+        sealing.fenced(scopes) if already_guarded else nullcontext(),
+        prepare_ingestion(target, sealing, items) as prepared,
+    ):
+        assert len(prepared) == count
+    assert comparisons <= count * 10, "distinct scopes must not trigger pairwise guard searches"

@@ -50,8 +50,8 @@ class _Unit:
     task: asyncio.Task[Any] | None
     fenced: set[tuple[int, KeyScope]] = field(default_factory=set)
     guards: set[ScopeGuard] = field(default_factory=set)
-    outer_guards: tuple[ScopeGuard, ...] = field(
-        default_factory=lambda: tuple(
+    outer_guards: frozenset[ScopeGuard] = field(
+        default_factory=lambda: frozenset(
             guard for guard in active_scope_guards() if guard.task is asyncio.current_task()
         )
     )
@@ -166,14 +166,15 @@ async def _retained(unit: _Unit | None, guard: AbstractAsyncContextManager[None]
             held = guard.held()
             if held is not None:
                 # Earlier units enclose this one, even if their guard was acquired after both began.
-                covering = set(unit.outer_guards) | unit.guards
+                covered = held in unit.outer_guards or held in unit.guards
                 for enclosing in RESOURCES.get().values():
+                    if covered:
+                        break
                     if enclosing.task is asyncio.current_task():
-                        covering.update(enclosing.guards)
-                        covering.update(enclosing.outer_guards)
+                        covered = held in enclosing.guards or held in enclosing.outer_guards
                     if enclosing is unit:
                         break
-                if held not in covering:
+                if not covered:
                     raise BadHandle(
                         "the scope guard does not cover this transaction: acquire it before transaction() "
                         "or let the store retain it through commit"
