@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Literal
 
 import pytest
 from edax.errors import KeyUnavailable
@@ -196,7 +197,7 @@ async def test_cancelled_waiter_cannot_reserve_when_previous_call_finishes_concu
     reservations = 0
 
     class Released(asyncio.Event):
-        async def wait(self) -> bool:
+        async def wait(self) -> Literal[True]:
             previous.set_result("previous reservation")
             assert owner is not None
             owner.cancel()

@@ -467,8 +467,8 @@ class _ProviderCalls:
             waiter = asyncio.create_task(previous.released.wait())
             try:
                 # wait_for can swallow a concurrent cancellation on Python 3.10.
-                done, _ = await asyncio.wait((waiter,), timeout=wait_budget)
-                if not done:
+                released, _ = await asyncio.wait((waiter,), timeout=wait_budget)
+                if not released:
                     raise KeyUnavailable("key provider call exceeded its deadline")
                 waiter.result()
             finally:
