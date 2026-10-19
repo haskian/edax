@@ -30,7 +30,7 @@ and the two travel together because the query evaluates the filter.
 | `forget` | whether a stored record may be deleted, so a re-driven message runs again |
 | `Decimal` / `Instant` | the host-value types a Rust field declares, holding the one text `canonical_decimal` and `canonical_timestamp` write, so a command hashes and a payload reads alike in every SDK ([host values](./filter.md#host-values-every-sdk-writes-alike)) |
 | `namespace` | the length-prefixed key namespace of a generation, its erasure key ranges, and `AtRest` with the sealed-part check, shared by `ingest` and `projection` |
-| `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts and exact source coordinates (`ingest.json`) |
+| `ingest` | append identity, complete-state ownership and compaction, durable rejection precedence, immutable target contracts, exact source coordinates and opt-in UUIDv7 admission floors (`ingest.json`, `ingestion_partition.json`) |
 | `projection` | canonical ordered delta transitions, dual receipts, source continuity, scoped leases, checkpoint recovery and outbox activation |
 | `filter` | the read side's match decision ([filter.md](./filter.md)) |
 | `query` | ordering, keyset cursors and paging over the documents a filter selects, and the `document` rule every stored read-model document meets |

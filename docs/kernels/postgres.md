@@ -245,7 +245,7 @@ row still gone on the third read gives the claim up as the transient `store` err
 base event-store schema or provision tables at runtime. Hosts apply the DDL through migrations.
 
 `ingest::statements` supplies target-manifest checks, row-locking plan reads, inserts and updates,
-and pending rejection reads and marks. No statement takes an advisory lock: a plan read locks the
+and pending rejection reads and marks. Ordinary ingestion takes no advisory lock: a plan read locks the
 rows it finds, and an absent key is inserted without `ON CONFLICT`, so a concurrent insert fails
 and retries. A key range bounds each target, so the key index serves it on every supported
 version. The partial index selects unpublished rejections so delivery does not scan lifetime
@@ -291,3 +291,7 @@ See [ingestion](../backends/ingestion.md) for migrations and batch recovery, and
   reproduces.
 - [filter.md](./filter.md): the null and missing-path rule.
 - [golden-vectors.md](./golden-vectors.md): how the vectors are generated and asserted.
+
+Opt-in `ingest::partition` SQL places append rows by exact UUIDv7 time. A transaction advisory
+gate per physical table fences its durable admission floor. Rejection decisions remain permanent.
+See [partitioned ingestion](../backends/partitioned-ingestion.md).

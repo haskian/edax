@@ -27,7 +27,7 @@ helpers operate on caller-owned state. The crate's only external runtime depende
 | `key` | `scoped(scope, key)`: one key under a scope, `"{len(scope)}:{scope}:{key}"`, injective because the length (in bytes) comes first. `Tenancy` and `tenant_key(mode, tenant, key)`: which modes require a tenant, and which compose it into a key. `guard_key(mode, tenant, kind, scope, key)`: the ledger key an idempotency guard of a `GuardKind` (`cmd` or `evt`) claims, `"edax:{kind}:"` and the scoped key, with the tenant outermost | yes | `testdata/golden/tenancy.json`, and indirectly `claim_key.json` / `event_idempotency.json` / `saga.json` | `tenant_key`, `tenancy_rules`, `tenancy_modes`, `check_tenant`, `tenant_max` on the ABI; `Tenancy`, `tenant_key`, `check_tenant` and `TENANT_MAX` re-exported from `edax` |
 | `backoff` | How long before retry `n`, given a random draw? | yes | `testdata/golden/backoff.json` | `backoff_millis` / `default_backoff` on the ABI |
 | `clock` | Unix nanos, strictly increasing per process | **no** | none — the guarantee is monotonicity | `current_timestamp` on the ABI |
-| `guid` | A fresh universally unique identifier (UUID) v7 | **no** | none — the guarantees are structural | `guid` on the ABI |
+| `guid` | UUIDv7 generation and exact timestamp extraction | **no** | none — the guarantees are structural | `guid` on the ABI |
 | `error` | Is this failure terminal or transient? What is the default for a failure with no code? | yes | `testdata/golden/error_taxonomy.json`, `testdata/golden/error_wire.json` | `error_codes`, `error_verdict`, `split_error` |
 | `names` | `closed_names!`: a unit enum, its `ALL` list and its `as_str` names from one row list, so a binding's import check against `ALL` sees every variant, and a name spelled twice fails the build | yes | indirectly, wherever a set crosses (`tenancy.json`, `saga.json`, `retries.json`, `retry_failure.json`, `relay_drain.json`, `idempotency_fence.json`) | every closed set of names in the kernels; the lists reach the ABI as `tenancy_modes`, `retry_failures` and their kin |
 | `sync` | `lock`: a poisoned mutex hands back its state instead of panicking again | yes | none | the native handles in `edax-abi`, `edax-memory`, `edax-kafka` |
@@ -109,6 +109,10 @@ FNV-1a is a *consistency* hash, not a security one: use it to make two services 
 same bytes identically, never where collision resistance matters.
 
 ## `clock` and `guid`
+
+`uuid7_micros` validates a UUIDv7 and extracts its Unix microseconds with integer arithmetic.
+Partitioned ingestion uses it for identity placement, never ordering.
+
 
 The two functions in this crate that are not deterministic. The crate docstring names them as the
 exceptions.
