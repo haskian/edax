@@ -88,12 +88,15 @@ contract: **golden wins** over a disagreeing test unless you're deliberately cha
 
 ```
 EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test sealing golden_sealing
 EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test ingestion_numbers --test projection_state --test projection_state_boundaries
 EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test protected golden_protected_ledger
 EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
 EDAX_REGEN=1 mise exec -- cargo test -p edax-postgres --test golden
+EDAX_REGEN=1 mise exec -- cargo test -p edax-postgres --test projection_state
 EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
 ```
 
@@ -127,7 +130,7 @@ and one collation (the crate-private `value` and `collation` modules) — never 
 
 **One kernel crate per technology.** A Kafka or Redis decision all SDKs must match belongs in
 `edax-kafka` or `edax-redis` with a golden vector, never in the Python adapter. `edax-kafka` owns
-`record` (the record key, header, media-type route and dead-letter record), `partition`
+`record` (the record key, header, media-type route, dead-letter record, ingestion raw encoding, source digest and rejection provenance), `partition`
 (`partition_for`), `offsets` (the offset watermark and the revoke) and `client` (`check_config`,
 `check_consumer`, `check_dead_sink`, `acks_warning` and `broker_error`).
 `edax-redis` owns `ledger` (the key, settings and their defaults, value layout, claim handle and reply outcomes) and

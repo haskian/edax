@@ -74,6 +74,12 @@ def replay(case: dict[str, Any]) -> Any:
         )
     if op == "statements":
         return json.loads(_edax.postgres_ingest_statements(case["config"]))
+    if op == "write_plan":
+        return json.loads(
+            _edax.postgres_ingest_write_plan(
+                json.dumps(case["plan"]), json.dumps(case["stored"]), json.dumps(case["rejected"])
+            )
+        )
     if op == "reserve":
         return _edax.batch_reserve(json.dumps(case["config"]))
     if op == "charge":
@@ -131,7 +137,7 @@ def test_kafka_raw_golden() -> None:
         if case["op"] == "decode":
             with pytest.raises(RuntimeError) as failure:
                 _edax.kafka_ingestion_record(json.dumps(case["raw"]))
-            assert str(failure.value) == case["error"]
+            assert str(failure.value).startswith(case["error"] + " ")
             continue
         record = case["record"]
         raw = _edax.kafka_ingestion_raw(

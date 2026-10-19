@@ -48,6 +48,21 @@ pub fn request_json(text: &str) -> Result<Request, Error> {
     serde_json::from_value(value).map_err(Error::codec)
 }
 
+/// Parse a reducer-visible event without rounding its original application integer tokens.
+/// Sequence counters retain the protocol's full i64 domain.
+pub fn event_json(text: &str) -> Result<Event, Error> {
+    use crate::json_numbers::{check_integers, Width};
+    use serde_json::value::RawValue;
+    let fields: BTreeMap<String, &RawValue> = serde_json::from_str(text).map_err(Error::codec)?;
+    for name in ["payload", "metadata"] {
+        if let Some(value) = fields.get(name) {
+            check_integers(value.get().as_bytes(), Width::Double)?;
+        }
+    }
+    let value: Value = serde_json::from_str(text).map_err(Error::codec)?;
+    serde_json::from_value(value).map_err(Error::codec)
+}
+
 /// Immutable interpretation and complete partition set of a generation.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -274,6 +289,9 @@ pub enum Operation {
     },
     /// Reload and extend a still-current assignment, fencing an expired lease anew.
     Refresh {
+        /// A commit extends only the cursor it staged. Ordinary refreshes reload progress.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_offset: Option<i64>,
         /// Previously acquired ownership identity.
         lease: Lease,
         /// Positive lease duration.
@@ -456,6 +474,7 @@ impl Contract {
         aggregate: &str,
     ) -> Result<String, Error> {
         required(aggregate)?;
+        namespace::check_tenant(tenant.as_deref())?;
         subject.as_deref().map(namespace::check_subject).transpose()?;
         self.key(json!(["projection", "state", tenant, subject, aggregate]))
     }
@@ -463,6 +482,7 @@ impl Contract {
     /// what an erasure cleanup of a plaintext generation deletes. Without a subject, every state record
     /// of the tenant, unsealed ones included.
     pub fn state_scope_range(&self, tenant: &Option<String>, subject: Option<&str>) -> Result<(String, String), Error> {
+        namespace::check_tenant(tenant.as_deref())?;
         match subject {
             Some(subject) => {
                 namespace::check_subject(subject)?;
@@ -740,7 +760,11 @@ fn run_batch(
                 ));
             }
             if !duplicate && state.as_ref().map_or(Some(1), |s| s.sequence.checked_add(1)) != Some(event.sequence) {
-                return Err(Error::codec("projection aggregate sequence gap"));
+                return Err(Error::codec(if state.is_none() {
+                    "projection aggregate has no state: first sequence must be one and subject must stay unchanged"
+                } else {
+                    "projection aggregate sequence gap"
+                }));
             }
             if duplicate && state.as_ref().is_none_or(|s| s.sequence < event.sequence) {
                 return Err(Error::bad_handle("projection state and deduplication restore disagree"));
@@ -859,6 +883,11 @@ fn checked(c: &Contract, event: &Event, reduced: &Reduced) -> Result<Reduced, Er
                         .payload
                 }
             };
+            if intent.is_some() && value.is_null() {
+                return Err(Error::bad_handle(
+                    "a subject's intent payload must arrive sealed under its own scope",
+                ));
+            }
             namespace::check_sealed(Some(value), event.tenant.as_deref(), subject)?;
         }
     }
@@ -891,10 +920,8 @@ fn sealed_parts(
         parts.push((None, part("projection", identity, sequence)));
     }
     for (index, intent) in reduced.intents.iter().enumerate() {
-        if !intent.payload.is_null() {
-            let identity = c.intent_key(&intent_id(c, event, intent)?)?;
-            parts.push((Some(index), part("intent", identity, 0)));
-        }
+        let identity = c.intent_key(&intent_id(c, event, intent)?)?;
+        parts.push((Some(index), part("intent", identity, 0)));
     }
     Ok(parts)
 }
@@ -1065,7 +1092,12 @@ pub fn transition(request: &Request, records: &BTreeMap<String, Value>, now: i64
             plan.result = json!(checkpoint);
             writes.insert(key, json!(checkpoint));
         }
-        Operation::Refresh { lease, lease_ms, proof } => {
+        Operation::Refresh {
+            lease,
+            lease_ms,
+            proof,
+            expected_offset,
+        } => {
             required(&lease.owner)?;
             if manifest.frozen {
                 return Err(Error::bad_handle("projection generation is frozen"));
@@ -1078,6 +1110,12 @@ pub fn transition(request: &Request, records: &BTreeMap<String, Value>, now: i64
                 || checkpoint.epoch < lease.epoch
             {
                 return Err(Error::bad_handle("stale projection ownership"));
+            }
+            if expected_offset.is_some_and(|expected| expected != checkpoint.next_offset) {
+                return Err(Error::new(
+                    ErrorCode::Store,
+                    "projection cursor moved; reload it and fetch again",
+                ));
             }
             c.continuity(proof, checkpoint.next_offset)?;
             if checkpoint.expires_ms <= now {

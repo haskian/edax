@@ -563,5 +563,115 @@ fn ordered_projection_fences_and_cutovers() {
         2029,
         false,
     );
+    m.cases.extend(boundary_cases());
     edax_golden::write_or_check("projection_state.json", m.cases);
+}
+
+/// Invalid transitions must leave the durable model unchanged; all SDK readers replay these too.
+fn boundary_cases() -> Vec<Value> {
+    let mut m = Model::new();
+    m.call("boundary_initialize", json!({"op":"initialize"}), 0, true);
+    m.c.reducer_id = "other-reducer".into();
+    m.call(
+        "changed_contract_reinitialize_refused",
+        json!({"op":"initialize"}),
+        0,
+        false,
+    );
+    m.c.reducer_id = "balance-v1".into();
+    m.call("inactive_generation_cannot_freeze", json!({"op":"freeze"}), 0, false);
+    for (name, duration, now) in [
+        ("zero_lease_duration", 0, 0),
+        ("negative_lease_duration", -1, 0),
+        ("negative_lease_clock", 1000, -1),
+        ("lease_clock_exhausted", 1000, i64::MAX),
+    ] {
+        m.call(
+            name,
+            json!({"op":"acquire","partition":0,"owner":"worker-a","lease_ms":duration,"proof":proof()}),
+            now,
+            false,
+        );
+    }
+    let lease = m.call(
+        "boundary_acquire",
+        json!({"op":"acquire","partition":0,"owner":"worker-a","lease_ms":1000,"proof":proof()}),
+        10,
+        true,
+    );
+    m.call(
+        "refresh_expected_cursor_moved",
+        json!({"op":"refresh","lease":lease,"lease_ms":1000,"proof":proof(),"expected_offset":99}),
+        11,
+        false,
+    );
+    m.call(
+        "refresh_expected_cursor_matches",
+        json!({"op":"refresh","lease":lease,"lease_ms":1000,"proof":proof(),"expected_offset":0}),
+        11,
+        true,
+    );
+    for (name, field, value) in [
+        ("refresh_foreign_owner", "owner", json!("worker-b")),
+        ("refresh_future_epoch", "epoch", json!(99)),
+    ] {
+        let mut stale = lease.clone();
+        stale[field] = value;
+        m.call(
+            name,
+            json!({"op":"refresh","lease":stale,"lease_ms":1000,"proof":proof()}),
+            11,
+            false,
+        );
+    }
+    m.call(
+        "sequence_zero_refused",
+        prepare(&lease, vec![input(0, event(0, "zero"))]),
+        11,
+        false,
+    );
+    let cutover = json!({"source_identity":m.c.source_identity,"source_history":m.c.source_history,"topic":m.c.topic,"cutoffs":{"0":1,"1":0}});
+    m.call(
+        "activation_before_cutoff_refused",
+        json!({"op":"activate","cutover":cutover}),
+        12,
+        false,
+    );
+    let mut initial = cutover.clone();
+    initial["cutoffs"]["0"] = json!(0);
+    m.call(
+        "boundary_activate",
+        json!({"op":"activate","cutover":initial}),
+        12,
+        true,
+    );
+    m.call(
+        "active_cutoffs_cannot_change",
+        json!({"op":"activate","cutover":cutover}),
+        12,
+        false,
+    );
+    let newer = m.call(
+        "expired_lease_new_owner",
+        json!({"op":"acquire","partition":0,"owner":"worker-b","lease_ms":1000,"proof":proof()}),
+        1011,
+        true,
+    );
+    m.call(
+        "refresh_retired_owner_epoch",
+        json!({"op":"refresh","lease":lease,"lease_ms":1000,"proof":proof()}),
+        1012,
+        false,
+    );
+    let checkpoint = newer["checkpoint_key"].as_str().unwrap().to_owned();
+    let stored = m.records.get_mut(&checkpoint).unwrap();
+    stored["epoch"] = json!(i64::MAX);
+    stored["expires_ms"] = json!(0);
+    m.call(
+        "ownership_epoch_exhausted",
+        json!({"op":"acquire","partition":0,"owner":"worker-c","lease_ms":1000,"proof":proof()}),
+        1013,
+        false,
+    );
+    m.cases
 }

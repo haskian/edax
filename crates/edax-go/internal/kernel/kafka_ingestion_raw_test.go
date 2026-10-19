@@ -3,6 +3,7 @@ package kernel
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -46,8 +47,10 @@ func TestKafkaIngestionRawGolden(t *testing.T) {
 					}
 				}
 			case "decode":
-				decoded, err := KafkaIngestionRecord(string(row.Raw))
-				ingestionGoldenCheck(t, row.ingestionGoldenResult, decoded, err)
+				_, err := KafkaIngestionRecord(string(row.Raw))
+				if row.Error == nil || err == nil || !strings.HasPrefix(err.Error(), *row.Error+" ") {
+					t.Fatalf("decoder error %v, want code %v", err, row.Error)
+				}
 			case "rejection":
 				decoded, err := KafkaIngestionRejectionRecord(string(row.Raw), row.Source)
 				if row.Error != nil {

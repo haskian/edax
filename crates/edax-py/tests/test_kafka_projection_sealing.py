@@ -295,13 +295,18 @@ async def test_a_commit_past_its_deadline_holds_the_write_fence_until_it_ends() 
     await asyncio.sleep(0.05)
     revoking = asyncio.create_task(keys.revoke(scope))
     await asyncio.sleep(0.05)
-    # The commit outlived its deadline but may still land, so erasure waits behind its write fence.
-    assert not revoking.done() and not partition.done()
-    release.set()
-    await asyncio.wait_for(revoking, 1)
-    # Once the commit ended, erasure ran; the subject is no longer active, so the runner waits.
-    with pytest.raises(KeyRevoking):
-        await asyncio.wait_for(partition, 1)
+    try:
+        # The tracked commit retains its fence, but its scheduler returns at the deadline so another
+        # partition can progress. Only actual I/O completion lets erasure pass.
+        assert not revoking.done() and partition.done()
+        with pytest.raises(StoreError, match="deadline"):
+            await partition
+        assert run._parts[TP].unresolved is not None
+    finally:
+        release.set()
+        await asyncio.wait_for(run.wait_closed(), 1)
+        await asyncio.wait_for(revoking, 1)
+    assert run.retained_records == run.retained_bytes == 0
 
 
 async def test_erasure_mid_stream_through_a_sealing_store() -> None:

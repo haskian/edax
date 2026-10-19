@@ -292,6 +292,13 @@ takes the kernel's locks for all its scopes in one call and reads the status in 
 The locks are hash buckets, at most 32 tenant and 32 subject buckets per transaction, so a batch that
 writes for many subjects cannot fill the server's shared lock table. A cleanup waits for every writer
 in its bucket, so a collision delays unrelated writes; the status read stays exact.
+**Upgrade from exact-scope locks:** the previous release used different advisory-lock names.
+Old exact-scope writers and new bucket-based cleanup do not exclude one another. A rolling mixed-version
+deployment is unsupported. Stop admission to **all** writers and erasers using these tables, drain
+or roll back every open transaction and guard, deploy the new version everywhere, then resume them.
+Stopping only Kafka polling is insufficient: already running handlers and cleanup transactions must finish.
+Keep the old processes stopped during rollback as well; drain the new protocol before restarting the old one.
+
 `PostgresErasureStore.guard_in_transaction` does both against the edax erasure tables. It refuses a
 tombstoned scope with `Rejected`, so a provider maps that refusal to its own key status.
 
@@ -375,16 +382,20 @@ readable instead, and needs a cleanup participant. The sink's or store's `cleanu
 `ScopeCleanup`:
 
 ```python
-cleanup = sink.cleanup(erasure_store)  # Postgres: revoke and delete in one transaction
+cleanup = sink.cleanup(erasure_store, key_namespace="customer-data")
+# Omit key_namespace only when the sink/store has Sealing configured; it supplies the namespace.
 eraser = ErasureCoordinator(keys, operations, {"orders-ingestion": cleanup})
 ```
 
 A subject scope deletes that subject's rows; a tenant scope deletes every row of the tenant,
 unsealed rows included. Projection receipts stay: they hold keyed fingerprints. Rejections stay too.
 A rejection of a sealed record holds its ciphertext and only the error code. A rejection of an
-unsealed (legacy) record keeps the raw plaintext record and its full error text. Cleanup does not
+unsealed (legacy) record keeps the raw plaintext record. Preparation rejection diagnostics are bounded
+and do not copy arbitrary host exception text. Cleanup does not
 delete it, so clear such rejections through your own retention process. Given the `PostgresErasureStore` of a `write_fence="transaction"` provider, the Postgres
-cleanup revokes the scope in its own transaction before the delete. A fenced writer therefore either
+cleanup drains prior writers and commits destination revocation with the first bounded delete page.
+It commits later delete pages separately until empty. A retry reinstalls the revocation fence before
+continuing, so partial progress is safe even after a destination restore. A fenced writer therefore either
 committed before it or is refused after it. Memory cleanup only deletes. The provider's revoke
 already drained the guarded writers.
 
@@ -393,10 +404,20 @@ The fence holds only for commits that take it. A Kafka runner fences each commit
 commit a subject's rows with `BadHandle`, so a plaintext target of subject data still needs `sealing=`.
 
 Edax does not check that a plaintext target's cleanup is registered. `cleanup.resweep(operations)`
-deletes again for every scope the erasure store has revoked, and returns how many rows it found. Run
+deletes again for revoked scopes in its bound key namespace, and returns how many rows it found.
+A full resweep revisits the complete revocation history using bounded pages; its total cost grows
+with that history. It reinstalls destination fences because a restore can also restore old tombstones.
+It skips foreign namespaces; directly calling a cleanup with a foreign namespace is a wiring error. Run
 it on a schedule or as a deploy check, and alert when it reports more than zero. That count means a
 missing participant, or a restore that brought rows back. It covers a restore only when the erasure
 store outlives the restored database. The coordinator can report `complete` before the next sweep.
+
+Register a distinct named cleanup participant for **every retained generation**, including inactive,
+rebuilding and replaced generations that still hold plaintext. Registration must happen before an
+erasure freezes its participants. Activating v2 does not register or erase v1. Keep old participants
+until their data is removed; run their `resweep` after restores. Cleanup intentionally covers only its
+configured generation and key namespace. Subjectless state is not encrypted by a tenant key, but a
+runner with `Sealing` still fences tenant writes and tenant cleanup deletes those rows.
 
 Completion describes the frozen participant set and the provider's confirmations. It is not proof
 that an unregistered export, old backup, compromised key copy, or unfenced service has disappeared.

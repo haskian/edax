@@ -129,7 +129,7 @@ async def test_poison_partition_halts_without_stopping_healthy_partition() -> No
         await eventually(processed)
         assert not task.done()
         assert isinstance(run.partition_failures[TP], CodecError)
-        assert "sequence gap" in str(run.partition_failures[TP])
+        assert "first sequence must be one" in str(run.partition_failures[TP])
         assert await store.get("bank-eu", "account-42") is None
         observed_lease = run._parts[TP].lease
         assert observed_lease is not None

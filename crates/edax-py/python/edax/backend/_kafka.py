@@ -7,10 +7,10 @@ import logging
 import math
 import traceback
 import warnings
-from collections.abc import Awaitable, Callable, Collection, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol, get_args
+from typing import TYPE_CHECKING, Any, Protocol, cast, get_args
 
 from .. import _native, errors
 from .._deadline import within
@@ -349,8 +349,19 @@ class OffsetCommitter:
 
     async def commit_retired(self, last: Sequence[_native.KafkaDue]) -> None:
         async with self._serial:
+            # The revoke's drain owns this wait and cancels it at its deadline. The older client
+            # request itself is never cancelled: it may have shielded network I/O below this layer.
+            pending = self.unfinished()
+            if pending is not None:
+                await asyncio.shield(asyncio.gather(pending, return_exceptions=True))
             self.check_idle()
             await self._commit(last)
+
+    async def wait_idle(self, timeout: float) -> None:
+        """Wait for an interrupted commit before admitting another original, within a lifecycle bound."""
+        if self._interrupted and (pending := self.unfinished()) is not None:
+            await asyncio.wait({pending}, timeout=timeout)
+            self.check_idle()
 
     async def flush(self) -> None:
         async with self._serial:
@@ -457,6 +468,43 @@ def retrieve_failure(task: asyncio.Future[Any]) -> None:
     """Consume a detached operation's exception without losing its lifetime tracking."""
     if not task.cancelled():
         task.exception()
+
+
+async def settled(task: asyncio.Future[Any] | None) -> None:
+    """Retain a fence until its I/O actually ends, then propagate any cancellation of this waiter."""
+    cancelled = False
+    while task is not None and not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception:  # noqa: BLE001 - the owning operation observes its failure
+            break
+    if cancelled:
+        raise asyncio.CancelledError
+
+
+async def poll_activity(client: Any, resume: Callable[[Any], bool]) -> Mapping[Any, Sequence[FetchedRecord]]:
+    """Keep an idle group member polling without consuming its paused assignments.
+
+    Custom clients without pause/resume have no implicit group-activity requirement. The caller owns
+    this fetch until it settles and fences unexpected reassignment results before normal fetching.
+    """
+    if not callable(getattr(client, "pause", None)) or not callable(getattr(client, "resume", None)):
+        return {}
+    assigned = set(client.assignment())
+    paused = getattr(client, "paused", ())
+    paused = set(cast(Collection[Any], paused() if callable(paused) else paused))
+    added = assigned - paused
+    client.pause(*added)
+    try:
+        with classified():
+            return cast(
+                Mapping[Any, Sequence[FetchedRecord]], await client.getmany(timeout_ms=0, max_records=1)
+            )
+    finally:
+        current = set(client.assignment())
+        client.resume(*(tp for tp in added & current if resume(tp)))
 
 
 @dataclass(frozen=True)

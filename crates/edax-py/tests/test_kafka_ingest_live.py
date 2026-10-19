@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AsyncExitStack
 from typing import Any
 from uuid import uuid4
@@ -193,3 +193,100 @@ async def test_live_upsert_replay_and_durable_conflict_rejection(
     assert rejection["published"] is True
     assert rejection["error"].startswith("rejected: ")
     assert json.loads(rejection["raw"])["offset"] == 20
+
+
+async def test_live_group_rebalance_and_long_sink_wait_preserve_progress(
+    resources: tuple[str, Any, str, AIOKafkaProducer],
+) -> None:
+    from edax.ingestion import BatchInput, BatchResult, MemoryIngestionSink
+
+    topic, _, _, raw_producer = resources
+    entered = asyncio.Event()
+
+    class SlowFirstSink(MemoryIngestionSink):
+        first = True
+
+        async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
+            if self.first:
+                self.first = False
+                entered.set()
+                # A real aiokafka member leaves after this idle interval unless the runner polls.
+                await asyncio.sleep(2.5)
+            return await super().commit(inputs)
+
+    sink = SlowFirstSink(IngestionTarget("append", "group-view-v1", topic, "order-state-v1"))
+    producer = KafkaProducer(raw_producer, topic)
+    for index in range(12):
+        await producer.publish(
+            build_message(
+                f"order-{index}",
+                "OrderState",
+                1,
+                id=f"order-{index}-paid",
+                tenant="tenant-7",
+                data=b'{"status":"paid"}',
+            )
+        )
+    group = f"edax-ingest-rebalance-{uuid4().hex}"
+    clients: list[AIOKafkaConsumer] = []
+    runners: list[KafkaIngestion] = []
+    tasks: list[asyncio.Task[None]] = []
+    stops: list[asyncio.Event] = []
+    dead: list[DeadLetter[Any]] = []
+
+    async def publish(letter: DeadLetter[Any]) -> None:
+        dead.append(letter)
+
+    async def member() -> None:
+        client = AIOKafkaConsumer(
+            bootstrap_servers=BOOTSTRAP,
+            group_id=group,
+            enable_auto_commit=False,
+            auto_offset_reset="earliest",
+            max_poll_interval_ms=1000,
+            session_timeout_ms=6000,
+            heartbeat_interval_ms=200,
+        )
+        run = KafkaIngestion(client, sink, map_order, publish, settings=BatchSettings(max_records=2))
+        client.subscribe([topic], listener=run.rebalance_listener())
+        clients.append(client)
+        runners.append(run)
+        await client.start()
+        stop = asyncio.Event()
+        stops.append(stop)
+        tasks.append(asyncio.create_task(run.run(stop)))
+
+    tp = TopicPartition(topic, 0)
+    try:
+        await member()
+        await asyncio.wait_for(entered.wait(), 10)
+        # Stay idle longer than max_poll_interval before inducing a real group rebalance.
+        await asyncio.sleep(1.2)
+        assert not tasks[0].done() and tp in runners[0]._parts
+        await member()
+
+        async def complete() -> None:
+            while await clients[0].committed(tp) != 12:
+                for task in tasks:
+                    if task.done():
+                        await task
+                        raise AssertionError("runner ended during a routine group rebalance")
+                await asyncio.sleep(0.02)
+
+        await asyncio.wait_for(complete(), 20)
+        assert dead == []
+        for index in range(12):
+            assert await sink.get("tenant-7", f"order-{index}-paid") is not None
+        assert all(run._failure is None for run in runners)
+    finally:
+        for stop in stops:
+            stop.set()
+        if tasks:
+            await asyncio.wait(tasks, timeout=5)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for client in clients:
+            await client.stop()
+        for run in runners:
+            await asyncio.wait_for(run.wait_closed(), 5)

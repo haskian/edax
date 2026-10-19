@@ -2303,6 +2303,14 @@ int32_t edax_memory_ingestion_published(EDAXAlefHandle this_,
                                         const char *fingerprint);
 
 /**
+ * Confirm a JSON map of source fingerprints atomically; invalid entries mark nothing.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_ingestion_published_many(EDAXAlefHandle this_,
+                                             const char *confirmed);
+
+/**
  * Free a `MemoryKeys` handle.
  * # Safety
  * Handle must have been returned by this library, or be zero.
@@ -6542,6 +6550,26 @@ char *edax_postgres_ingest_statements(const char *config);
 uintptr_t edax_postgres_ingest_statements_len(const char *_config);
 
 /**
+ * Exact-number SQL parameters for a decided ingestion plan and its locked snapshot.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_ingest_write_plan(const char *plan,
+                                      const char *stored,
+                                      const char *rejected);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_ingest_write_plan`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_ingest_write_plan`.
+ */
+uintptr_t edax_postgres_ingest_write_plan_len(const char *_plan,
+                                              const char *_stored,
+                                              const char *_rejected);
+
+/**
  * The parameters of `ledger_hold` and `ledger_delete`. See `edax_postgres.ledger.key_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -7911,6 +7939,17 @@ int32_t edax_state_encryption_context(const char *kind,
                                       uint8_t **out_ptr,
                                       uintptr_t *out_len,
                                       uintptr_t *out_cap);
+
+/**
+ * The complete authenticated context of a kernel-planned stored part.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_stored_encryption_context(const char *part_json,
+                                       EDAXAlefHandle info,
+                                       uint8_t **out_ptr,
+                                       uintptr_t *out_len,
+                                       uintptr_t *out_cap);
 
 /**
  * A streak with no failure yet.

@@ -58,15 +58,26 @@ impl MemoryIngest {
 
     /// Record a confirmed publication without accepting another record at the source coordinate.
     pub fn published(&self, source: &str, fingerprint: &str) -> Result<(), Error> {
+        self.published_many(&BTreeMap::from([(source.to_owned(), fingerprint.to_owned())]))
+    }
+
+    /// Confirm a publication batch atomically: a missing or changed source marks nothing.
+    pub fn published_many(&self, confirmed: &BTreeMap<String, String>) -> Result<(), Error> {
         let mut state = lock(&self.state);
-        let row = state
-            .rejected
-            .get_mut(source)
-            .ok_or_else(|| Error::bad_handle("unknown ingestion rejection"))?;
-        if row.fingerprint != fingerprint {
-            return Err(Error::bad_handle("ingestion rejection fingerprint changed"));
+        for (source, fingerprint) in confirmed {
+            let row = state
+                .rejected
+                .get(source)
+                .ok_or_else(|| Error::bad_handle("unknown ingestion rejection"))?;
+            if row.fingerprint != *fingerprint {
+                return Err(Error::bad_handle("ingestion rejection fingerprint changed"));
+            }
         }
-        row.published = true;
+        for source in confirmed.keys() {
+            if let Some(row) = state.rejected.get_mut(source) {
+                row.published = true;
+            }
+        }
         Ok(())
     }
 }

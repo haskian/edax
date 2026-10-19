@@ -234,7 +234,16 @@ async def test_changed_source_cannot_activate_old_cutover(stores: Any) -> None:
 
 def test_projection_state_golden_across_python_binding() -> None:
     for case in golden("projection_state.json"):
-        args = (_json.encode(case["request"]), _json.encode(case["records"]), case["now"])
+        request = _json.encode(case["request"])
+        if case["keys"] and case["lock"] is not None:
+            assert _json.decode(_edax.projection_reads(request)) == {
+                "keys": case["keys"],
+                "lock": case["lock"],
+            }, case["name"]
+        else:
+            with pytest.raises(RuntimeError):
+                _edax.projection_reads(request)
+        args = (request, _json.encode(case["records"]), case["now"])
         if case["error"] is not None:
             with pytest.raises(RuntimeError) as error:
                 _edax.projection_transition(*args)

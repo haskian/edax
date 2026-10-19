@@ -31,7 +31,7 @@ type input struct {
 	EventID  string        `json:"event_id"`
 	Sequence uint64        `json:"sequence"`
 	Content  eventEnvelope `json:"content"`
-	Private  *order        `json:"private"`
+	Public   *order        `json:"public"`
 	Raw      string        `json:"raw"`
 	// RawFingerprint identifies the original source record across full and stub retention.
 	RawFingerprint string `json:"raw_fingerprint"`
@@ -75,16 +75,16 @@ func run() (err error) {
 				return err
 			}
 			state := order{ID: "order-42", Status: "paid"}
-			originals[i] = input{Source: source, Key: key, Stream: "order-42", EventID: "order-paid-1", Sequence: 1, Content: eventEnvelope{Stream: "order-42", EventID: "order-paid-1", Sequence: 1, State: state}, Private: &state}
+			originals[i] = input{Source: source, Key: key, Stream: "order-42", EventID: "order-paid-1", Sequence: 1, Content: eventEnvelope{Stream: "order-42", EventID: "order-paid-1", Sequence: 1, State: state}, Public: &state}
 		}
 		if mode == "append" {
 			// One event ID at three source offsets: original, exact replay, changed content.
 			originals[2].Content.State.Status = "cancelled"
-			originals[2].Private = &order{ID: "order-42", Status: "cancelled"}
+			originals[2].Public = &order{ID: "order-42", Status: "cancelled"}
 		} else {
 			// A complete-state deletion at sequence 2 must survive the old paid state at 1.
 			originals[1].EventID, originals[1].Sequence = "order-deleted-2", 2
-			originals[1].Content.State.Status, originals[1].Private = "deleted", nil
+			originals[1].Content.State.Status, originals[1].Public = "deleted", nil
 			originals[1].Content.EventID, originals[1].Content.Sequence = "order-deleted-2", 2
 		}
 		for i := range originals {
@@ -128,16 +128,16 @@ func run() (err error) {
 		var stored struct {
 			Stream   string `json:"stream"`
 			Sequence uint64 `json:"sequence"`
-			Private  *order `json:"private"`
+			Public   *order `json:"public"`
 		}
 		if err := json.Unmarshal([]byte(text), &stored); err != nil {
 			return err
 		}
 		if mode == "upsert" {
-			if stored.Stream != "order-42" || stored.Sequence != 2 || stored.Private != nil {
+			if stored.Stream != "order-42" || stored.Sequence != 2 || stored.Public != nil {
 				return fmt.Errorf("deletion marker lost: %s", text)
 			}
-		} else if stored.Private == nil || stored.Private.Status != "paid" {
+		} else if stored.Public == nil || stored.Public.Status != "paid" {
 			return fmt.Errorf("append changed: %s", text)
 		}
 		prefix, err := kernel.GenerationPrefix(generation)

@@ -155,7 +155,7 @@ async def test_snapshot_decoder_output_before_callback_reuses_dictionary() -> No
 
     def mutate(message: Any) -> ProjectionEvent:
         shared["amount_minor"] = message.sequence
-        return replace(event(message.sequence, f"credit-{message.sequence - 1}"), payload=shared)
+        return replace(event(message.sequence, message.id), payload=shared)
 
     run.decode = mutate
     await run._partition(TP, run._parts[TP])

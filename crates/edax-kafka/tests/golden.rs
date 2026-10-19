@@ -1719,9 +1719,9 @@ fn kafka_ingestion_raw_cases() -> Vec<Value> {
             "value" => invalid.value = "!".to_owned(),
             _ => invalid.headers[0].1 = "!".to_owned(),
         }
-        let error = refusal(&invalid.record());
-        assert!(error.is_string());
-        rows.push(json!({"name": format!("invalid_base64_{field}"), "op": "decode", "raw": invalid, "want": null, "error": error}));
+        let error = invalid.record().unwrap_err();
+        // The decoder crate owns its wording; only the kernel taxonomy is a wire contract.
+        rows.push(json!({"name": format!("invalid_base64_{field}"), "op": "decode", "raw": invalid, "want": null, "error": format!("{}:", error.code.as_str())}));
     }
     let source = r#"9:orders-v1:["source","cluster-a/orders-1","orders",7,"9223372036854775807"]"#;
     let replacement = r#"9:orders-v2:["source","cluster-a/orders-2","orders",7,"9223372036854775807"]"#;

@@ -16,8 +16,10 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
         table: String,
         intents: String,
     }
-    let value: serde_json::Value = serde_json::from_str(config_json).map_err(Error::codec)?;
-    let config: Config = serde_json::from_value(value).map_err(Error::codec)?;
+    let value: serde_json::Value = serde_json::from_str(config_json)
+        .map_err(|error| Error::bad_handle(format_args!("postgres projection config: {error}")))?;
+    let config: Config = serde_json::from_value(value)
+        .map_err(|error| Error::bad_handle(format_args!("postgres projection config: {error}")))?;
     let schema = identifier("schema", &config.schema)?;
     let table_name = identifier("table name", &config.table)?;
     let intents_name = identifier("table name", &config.intents)?;
@@ -32,11 +34,16 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
     let eligible = "(m.value->>'active')::boolean \
         AND i.source_offset >= (m.value->'cutoffs'->>(i.source_partition::text))::bigint \
         AND (NOT (m.value->>'frozen')::boolean OR i.source_offset < (m.value->'upper'->>(i.source_partition::text))::bigint)";
+    // Immutable text expression: JSON rendering keeps null distinct from every string and escapes
+    // delimiters. Btree C collation matches the memory kernel's lexical group ordering.
+    let group = "(COALESCE(value->'tenant', 'null'::jsonb)::text || ',' || COALESCE(value->'aggregate', 'null'::jsonb)::text) COLLATE \"C\"";
+    let intent_group = group.replace("value", "i.value");
     Ok(BTreeMap::from([
         ("ddl".into(), format!(
             "CREATE TABLE {table} (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL) WITH (fillfactor = 70);\n\
              CREATE TABLE {intents} (key text COLLATE \"C\" PRIMARY KEY, generation text NOT NULL, source_partition integer NOT NULL, source_offset bigint NOT NULL, ordinal integer NOT NULL, value jsonb NOT NULL);\n\
-             CREATE INDEX ON {intents} (generation, source_partition, source_offset, ordinal);"
+             CREATE INDEX ON {intents} (generation, source_partition, source_offset, ordinal);\n\
+             CREATE INDEX ON {intents} (generation, source_partition, ({group}), source_offset, ordinal);"
         )),
         ("check".into(), format!(
             "SELECT {} AND {} AS compatible",
@@ -64,20 +71,29 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
         // Advance on selection, even if delivery subsequently fails, so one failing partition cannot
         // starve others. No cursor is written for an empty page. One relay per generation is required.
         ("pending".into(), format!(
-            "WITH page AS MATERIALIZED (SELECT i.key, i.value, i.source_partition, i.rank, \
+            "WITH page AS MATERIALIZED (SELECT i.key, i.value, i.source_partition, i.group_key, i.rank, d.value AS cursor, \
                i.source_partition <= COALESCE((d.value->>'partition')::integer, -1) AS wrapped \
              FROM {table} AS m LEFT JOIN {table} AS d ON d.key = $1 || ':delivery' \
              CROSS JOIN LATERAL jsonb_each_text(m.value->'cutoffs') AS c(part, cutoff) \
-             CROSS JOIN LATERAL (SELECT key, value, source_partition, row_number() OVER (ORDER BY source_offset, ordinal) AS rank \
-               FROM (SELECT key, value, source_partition, source_offset, ordinal FROM {intents} AS i \
-               WHERE i.generation = $2 AND i.source_partition = c.part::integer AND i.source_offset >= c.cutoff::bigint \
-               AND (NOT (m.value->>'frozen')::boolean OR i.source_offset < (m.value->'upper'->>c.part)::bigint) \
-               ORDER BY i.source_offset, i.ordinal LIMIT $3::text::bigint) AS page) AS i \
+             CROSS JOIN LATERAL (SELECT *, row_number() OVER (ORDER BY wrapped_group, group_key, source_offset, ordinal) AS rank \
+               FROM ((SELECT i.key, i.value, i.source_partition, i.source_offset, i.ordinal, {intent_group} AS group_key, false AS wrapped_group \
+                 FROM {intents} AS i WHERE i.generation = $2 AND i.source_partition = c.part::integer \
+                 AND {eligible} AND ({intent_group}) > COALESCE(d.value->'groups'->>c.part, '') COLLATE \"C\" \
+                 ORDER BY group_key, i.source_offset, i.ordinal LIMIT $3::text::bigint) \
+               UNION ALL (SELECT i.key, i.value, i.source_partition, i.source_offset, i.ordinal, {intent_group} AS group_key, true AS wrapped_group \
+                 FROM {intents} AS i WHERE i.generation = $2 AND i.source_partition = c.part::integer \
+                 AND {eligible} AND ({intent_group}) <= COALESCE(d.value->'groups'->>c.part, '') COLLATE \"C\" \
+                 ORDER BY group_key, i.source_offset, i.ordinal LIMIT $3::text::bigint)) AS candidates \
+               ORDER BY wrapped_group, group_key, source_offset, ordinal LIMIT $3::text::bigint) AS i \
              WHERE m.key = $1 AND (m.value->>'active')::boolean \
              ORDER BY i.rank, wrapped, i.source_partition LIMIT $3::text::bigint), \
+             group_cursors AS (SELECT jsonb_object_agg(source_partition::text, group_key) AS groups FROM \
+               (SELECT DISTINCT ON (source_partition) source_partition, group_key FROM page \
+                 ORDER BY source_partition, rank DESC) AS last_groups), \
              advanced AS (INSERT INTO {table} (key, value) \
-               SELECT $1 || ':delivery', jsonb_build_object('partition', source_partition) FROM page \
-               ORDER BY rank DESC, wrapped DESC, source_partition DESC LIMIT 1 \
+               SELECT $1 || ':delivery', jsonb_build_object('partition', source_partition, \
+                 'groups', COALESCE(cursor->'groups', '{{}}'::jsonb) || group_cursors.groups) \
+               FROM page CROSS JOIN group_cursors ORDER BY rank DESC, wrapped DESC, source_partition DESC LIMIT 1 \
                ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value) \
              SELECT key, value::text AS value FROM page ORDER BY rank, wrapped, source_partition"
         )),
@@ -119,6 +135,17 @@ fn intents_check(schema: &str, name: &str) -> String {
   JOIN pg_catalog.pg_attribute p ON p.attrelid = t.oid AND p.attnum = i.indkey[1] AND p.attname = 'source_partition'
   JOIN pg_catalog.pg_attribute o ON o.attrelid = t.oid AND o.attnum = i.indkey[2] AND o.attname = 'source_offset'
   WHERE i.indrelid = t.oid AND i.indisvalid AND i.indpred IS NULL
+ )
+ AND EXISTS (
+  SELECT 1 FROM pg_catalog.pg_index i
+  JOIN pg_catalog.pg_attribute g ON g.attrelid = t.oid AND g.attnum = i.indkey[0] AND g.attname = 'generation'
+  JOIN pg_catalog.pg_attribute p ON p.attrelid = t.oid AND p.attnum = i.indkey[1] AND p.attname = 'source_partition'
+  JOIN pg_catalog.pg_attribute o ON o.attrelid = t.oid AND o.attnum = i.indkey[3] AND o.attname = 'source_offset'
+  JOIN pg_catalog.pg_attribute n ON n.attrelid = t.oid AND n.attnum = i.indkey[4] AND n.attname = 'ordinal'
+  JOIN pg_catalog.pg_collation ic ON ic.oid = i.indcollation[2]
+  WHERE i.indrelid = t.oid AND i.indisvalid AND i.indpred IS NULL AND i.indkey[2] = 0
+  AND ic.collname IN ('C', 'POSIX') AND ic.collnamespace = 'pg_catalog'::regnamespace
+  AND pg_catalog.pg_get_expr(i.indexprs, i.indrelid) = '(((COALESCE((value -> ''tenant''::text), ''null''::jsonb))::text || '',''::text) || (COALESCE((value -> ''aggregate''::text), ''null''::jsonb))::text)'
  )
 )"#
     )

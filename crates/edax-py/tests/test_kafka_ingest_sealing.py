@@ -104,8 +104,8 @@ async def test_plaintext_event_under_sealing(allow_plaintext: bool) -> None:
     if allow_plaintext:
         assert letters == [] and row is not None and row["private"] == {"data": SECRET.decode()}
     else:
-        # A plaintext event is no sealed record: its refusal keeps the full policy error.
-        assert row is None and len(letters) == 1 and "plaintext" in str(letters[0].failure)
+        # Preparation uses the kernel's bounded rejection diagnostic, including plaintext refusals.
+        assert row is None and len(letters) == 1 and isinstance(letters[0].failure, Rejected)
 
 
 @pytest.mark.parametrize("destroyed", [True, False], ids=["destroyed", "revoking"])
@@ -152,7 +152,7 @@ async def test_sealed_mapper_failure_keeps_only_its_code() -> None:
     async with running(run):
         await until(lambda: client.commits == [{TP: 1}])
     assert len(letters) == 1
-    assert str(letters[0].failure) == "sealed record refused"
+    assert str(letters[0].failure) == "ingestion sink refused this original"
     assert b"ana@example.com" not in repr(letters[0].failure).encode()
 
 

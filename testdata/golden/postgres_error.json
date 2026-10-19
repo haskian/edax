@@ -896,7 +896,7 @@
     "unique": null
   },
   {
-    "error": "store: postgres ingest failed with 55P03: server text",
+    "error": "in_progress: postgres ingest failed with 55P03: server text",
     "message": "server text",
     "name": "ingest_55P03_none",
     "op": "ingest",
@@ -1037,6 +1037,22 @@
     "name": "ingest_XX000_none",
     "op": "ingest",
     "sqlstate": "XX000",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres erasure_fence failed with 55P03: server text",
+    "message": "server text",
+    "name": "erasure_fence_55P03_none",
+    "op": "erasure_fence",
+    "sqlstate": "55P03",
+    "unique": null
+  },
+  {
+    "error": "in_progress: postgres erasure_fence failed with 57014: server text",
+    "message": "server text",
+    "name": "erasure_fence_57014_none",
+    "op": "erasure_fence",
+    "sqlstate": "57014",
     "unique": null
   },
   {

@@ -83,6 +83,11 @@ delivery and do not participate in event identity. Every store refuses a NUL cha
 tenant, the replacement state or an intent payload, and a storage key over 2048 bytes (a long
 aggregate or event ID). Both are `codec` errors, because Postgres cannot store either.
 
+Unkeyed replay checks use the shared 64-bit FNV-1a `payload_hash`. Equality is hash equality,
+not a collision-resistant proof of identical content. Use the sealed/keyed fingerprint path for
+untrusted producers. Its HMAC-SHA-256 fingerprint protects replay identity. Changing the unkeyed
+algorithm requires an explicit persisted-state migration; it is not changed by this repair.
+
 Every new event must have the next aggregate sequence, beginning at one. A no-op still
 advances that sequence. The aggregate stays on its original source partition. Both event
 identity and aggregate/sequence identity are retained indefinitely. Reusing either with
@@ -119,7 +124,26 @@ Hosts run the returned DDL through their migration tooling. No runtime API creat
 The two projection tables are optional and do not change ordinary PostgreSQL or ingestion tables.
 `edax_projection_state` holds manifests, checkpoints, states, receipts and delivery cursors as key/value
 rows with no secondary index, so state updates stay heap-only (HOT). `edax_projection_intents` holds undelivered
-effect intents with an index on their source position.
+effect intents with indexes on source position and on aggregate delivery order. The catalog check
+requires both. Existing tables from an earlier revision of this feature need the aggregate index
+from `reference_projection_state_ddl` before deploying the new adapter. For the default table:
+
+```sql
+CREATE INDEX CONCURRENTLY edax_projection_intents_delivery_group
+ON edax_projection_intents (
+  generation, source_partition,
+  ((COALESCE(value->'tenant', 'null'::jsonb)::text || ',' ||
+    COALESCE(value->'aggregate', 'null'::jsonb)::text) COLLATE "C"),
+  source_offset, ordinal
+);
+```
+
+Use your configured schema/table names and run this outside a transaction. Keep the source-position
+index. An interrupted concurrent index build must be repaired before deployment; invalid indexes
+fail compatibility checks. Delivery rotates aggregate groups within each partition and always reads
+an aggregate's oldest retained prefix. Bounded candidate pages avoid sorting the whole eligible
+backlog. Obsolete cutover rows can still cost index scanning; prune them regularly. The cursor is
+scheduling state, so losing it may repeat a selection but cannot skip an aggregate's pending head.
 
 ```python
 from edax.backend.projection_postgres import PostgresProjectionStateStore, reference_projection_state_ddl
@@ -294,13 +318,12 @@ relay = Relay(store, deliver, on_dead=park_refused_effect, max_attempts=5)
 await relay.run(stop=stopping)
 ```
 
-`unpublished` returns eligible intents oldest first within each partition, taking each partition's
-next in turn across pages, even when a page fits fewer intents than there are busy partitions.
-The turn advances when a page is selected, including when delivery fails, and PostgreSQL persists
-it across relay restarts in the existing state table. Empty pages do not change it. Offsets of two
-partitions say nothing about which is older. Each aggregate stays on one partition, so its intents
-keep their order. The
-relay holds back only the aggregate whose delivery failed. `mark_published` deletes the intent. A refused intent goes
+`unpublished` rotates partitions and aggregate groups across pages. Each selected aggregate starts
+at its oldest eligible pending intent, so an unavailable head cannot be overtaken on a later page.
+The turns advance when a page is selected, including when delivery fails, and PostgreSQL persists
+them across relay restarts in the state table. Empty pages do not change them. A page full of blocked
+intents cannot permanently starve another aggregate. Offsets in different partitions have no global
+order. Both key-opening failures and relay delivery failures hold back only their aggregate. `mark_published` deletes the intent. A refused intent goes
 to `on_dead` after its attempts, so it cannot block the others. The destination must atomically
 deduplicate `EffectIntent.id` with its business effect. Delivery is at least once: a lost
 publication marker or restored backup can repeat it. The ID derives from effect namespace, tenant,
@@ -356,14 +379,21 @@ one record at a time to reserve capacity before decoding. One partition batch ex
 time; `BatchSettings.concurrency` does not enable concurrent database commits. Pending I/O from
 an earlier deadline can coexist but retains its data credits until it actually finishes.
 
+An unresolved partition operation does not block the scheduler from acquiring and staging other
+partitions. Actual writes may still serialize on a shared database lock or provider guard. The reference
+`MemoryKeys` guard serializes writers; a provider's locking granularity limits physical commit concurrency.
+Key-provider calls remain owned after a hard timeout. Retries do not duplicate an unresolved call for
+the same operation and scope; each `Sealing` coordinator caps outstanding calls at 1024.
+
 Retention gauges cover prepared serialized inputs and their transaction copies. They do not
 bound process RSS, broker prefetch, Python objects, persisted history, loaded aggregate state,
 reducer-produced state/intents or external delivery payloads. The host must bound callback
 allocation and execution time. Async deadlines cannot preempt synchronous callback code.
 Outbox paging bounds record count, not payload bytes. The memory reference retains all history.
 
-A batch commit costs a fixed number of statements: the locks, one read, one clock read, and one
-insert, one update and one intent insert. The state table keeps 30 % of each page free
+A batch commit uses the projection locks, one read, one clock read, one insert, one update and one
+intent insert. Transaction-mode erasure fences add their lock and fresh status-read statements.
+The first use also checks server and table compatibility. The state table keeps 30 % of each page free
 (fillfactor 70) so state and checkpoint updates stay heap-only. A high-latency database needs
 suitable operation deadlines.
 

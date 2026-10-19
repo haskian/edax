@@ -56,8 +56,9 @@ pub fn row_key(
 ) -> Result<String, Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
     if row_id.is_empty() {
-        return Err(Error::bad_handle("invalid ingestion row identity"));
+        return Err(Error::codec("invalid ingestion row identity"));
     }
+    namespace::check_tenant(tenant)?;
     subject.map(namespace::check_subject).transpose()?;
     key(
         target,
@@ -75,6 +76,7 @@ pub fn scope_range(
     subject: Option<&str>,
 ) -> Result<(String, String), Error> {
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("invalid ingestion row identity"))?;
+    namespace::check_tenant(tenant)?;
     match subject {
         Some(subject) => {
             namespace::check_subject(subject)?;
@@ -134,6 +136,9 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
     for input in inputs {
         let source = identity(contract, &input.source)?;
         let row = identity(contract, &input.key)?;
+        if input.stream.is_empty() || input.event_id.is_empty() {
+            return Err(Error::codec("invalid ingestion event or aggregate identity"));
+        }
         if source.len() != 5
             || source.first().and_then(Value::as_str) != Some("source")
             || source.get(1).and_then(Value::as_str) != Some(&contract.source_incarnation)
@@ -154,10 +159,16 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
                 .is_none_or(|v| !v.is_null() && v.as_str().is_none_or(str::is_empty))
             || row.get(3).and_then(Value::as_str).is_none_or(str::is_empty)
             || (contract.mode == Mode::Append.as_str() && row.get(3).and_then(Value::as_str) != Some(&input.event_id))
-            || input.stream.is_empty()
-            || input.event_id.is_empty()
         {
             return Err(Error::bad_handle("invalid ingestion source or row identity"));
+        }
+        namespace::check_tenant(row.get(1).and_then(Value::as_str))?;
+        row.get(2)
+            .and_then(Value::as_str)
+            .map(namespace::check_subject)
+            .transpose()?;
+        if input.raw.contains('\0') {
+            return Err(Error::codec("ingestion raw representation holds a NUL character"));
         }
         if !is_digest_hex(&input.raw_fingerprint) {
             return Err(Error::bad_handle(
@@ -489,7 +500,18 @@ pub fn plan(
             continue;
         }
         if let Some(failure) = &input.failure {
-            reject(&mut result, input, failure.clone());
+            // Diagnostics are durable jsonb too. Never let untrusted exception text make
+            // a rejected original impossible to persist or exhaust the batch reservation.
+            let failure = if failure.contains('\0') || failure.len() > 256 {
+                Error::new(
+                    Error::from_wire(failure).code,
+                    "ingestion preparation refused this original",
+                )
+                .to_string()
+            } else {
+                failure.clone()
+            };
+            reject(&mut result, input, failure);
             continue;
         }
         // Postgres cannot store NUL in jsonb: refuse the record here, as every store would.

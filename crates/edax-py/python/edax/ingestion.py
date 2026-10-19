@@ -18,6 +18,7 @@ from ._owned import ThreadBound
 from ._units import own_write
 from .erasure import ScopeCleanup
 from .errors import BadHandle, CodecError
+from .outbox import check_page
 from .sealing import AtRest, KeyScope, Sealing, SealPart
 
 __all__ = [
@@ -148,7 +149,9 @@ class IngestionTarget:
             private=private,
             public=public,
             raw=raw,
-            raw_fingerprint=raw_fingerprint or _native.ingest_raw_fingerprint(raw),
+            raw_fingerprint=(
+                _native.ingest_raw_fingerprint(raw) if raw_fingerprint is None else raw_fingerprint
+            ),
             failure=failure,
             erased=erased,
             fingerprint=fingerprint,
@@ -222,7 +225,9 @@ async def seal_private(
     plan: list[tuple[int, SealPart]] = decode(_native.ingest_seal_plan(target.manifest, encode(originals)))
     if not plan or sealing is None:
         return originals
-    sealed = await sealing.seal_stored([(part, originals[index].private) for index, part in plan])
+    sealed = await sealing.for_batch(None).seal_stored(
+        [(part, originals[index].private) for index, part in plan]
+    )
     result = list(originals)
     for (index, _), private in zip(plan, sealed, strict=True):
         result[index] = replace(originals[index], private=private)
@@ -260,15 +265,15 @@ class MemoryIngestionSink:
     def target(self) -> IngestionTarget:
         return self._target
 
-    def cleanup(self) -> ScopeCleanup:
+    def cleanup(self, *, key_namespace: str | None = None) -> ScopeCleanup:
         """The erasure participant that deletes a scope's rows: a subject's, or a whole tenant's. A
-        ``plaintext`` target needs it; a sealed one is erased by destroying the key. Rejections stay:
-        they hold the raw record, which a sealed source keeps sealed."""
+        ``plaintext`` target or subjectless state needs it. ``key_namespace`` defaults to the sink's
+        sealing namespace and is required without sealing. Rejections retain the raw source record."""
 
         async def delete(scope: KeyScope) -> int:
             return self._database.get().delete_scope(*self.target.scope_range(scope))
 
-        return ScopeCleanup(delete)
+        return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         originals = await seal_private(self.target, self.sealing, inputs)
@@ -276,14 +281,13 @@ class MemoryIngestionSink:
             return BatchResult.from_json(self._database.get().commit(self.target.manifest, encode(originals)))
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]:
+        check_page(limit)
         return cast(
             dict[str, dict[str, Any]], decode(self._database.get().pending(self.target.prefix, limit))
         )
 
     async def published(self, confirmed: Mapping[str, str]) -> None:
-        database = self._database.get()
-        for source, fingerprint in confirmed.items():
-            database.published(source, fingerprint)
+        self._database.get().published_many(encode(dict(confirmed)))
 
     async def get(
         self, tenant: str | None, row_key: str, subject: str | None = None

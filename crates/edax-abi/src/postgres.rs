@@ -118,7 +118,7 @@ pub fn postgres_check_catalog(
 ) -> Result<String, String> {
     let compatibility =
         edax_postgres::check_catalog(&tables(tables_json)?, &roles(&roles_named)?, catalog_json).map_err(to_wire)?;
-    serde_json::to_string(&compatibility).map_err(|e| to_wire(edax_core::Error::codec(e)))
+    crate::write_json(&compatibility)
 }
 
 /// Refuse a server the statements cannot run on. See [`edax_postgres::check_server`].
@@ -146,8 +146,7 @@ pub fn postgres_begin(settings: PostgresSettings) -> Result<String, String> {
 /// Every statement rendered for the tables `tables_json` names, as the JSON text of an object from
 /// statement name to SQL. See [`edax_postgres::Statements`].
 pub fn postgres_statements(tables_json: &str) -> Result<String, String> {
-    serde_json::to_string(&edax_postgres::statements(&tables(tables_json)?))
-        .map_err(|e| to_wire(edax_core::Error::codec(e)))
+    crate::write_json(&edax_postgres::statements(&tables(tables_json)?))
 }
 
 /// The operations a server error is read against. See [`edax_postgres::Op`].
@@ -182,7 +181,7 @@ pub fn postgres_client_verdict(op: &str, kind: &str, message: &str) -> Result<St
 }
 
 fn params_json(params: Vec<Option<String>>) -> Result<String, String> {
-    serde_json::to_string(&params).map_err(|e| to_wire(edax_core::Error::codec(e)))
+    crate::write_json(&params)
 }
 
 /// A statement to run, by its name in the statements, and the JSON text of its parameters.
@@ -548,7 +547,7 @@ fn erasure_op(record: &str) -> Result<edax_event::erasure::ErasureOperation, Str
     edax_event::erasure::decode_operation(record).map_err(to_wire)
 }
 fn erasure_json(value: &impl serde::Serialize) -> Result<String, String> {
-    serde_json::to_string(value).map_err(|e| to_wire(edax_core::Error::codec(e)))
+    crate::write_json(value)
 }
 /// Reference migration only; edax never provisions tables.
 pub fn postgres_erasure_reference_ddl(schema: &str) -> Result<String, String> {
@@ -621,11 +620,21 @@ pub fn postgres_ingest_statements(config: &str) -> Result<String, String> {
     crate::write_json(&edax_postgres::ingest::statements(config).map_err(crate::to_wire)?)
 }
 
+/// Exact-number SQL parameters for a decided ingestion plan and its locked snapshot.
+pub fn postgres_ingest_write_plan(plan: &str, stored: &str, rejected: &str) -> Result<String, String> {
+    crate::write_json(
+        &edax_postgres::ingest::write_plan(
+            &crate::read_json(plan)?,
+            &crate::read_json(stored)?,
+            &crate::read_json(rejected)?,
+        )
+        .map_err(to_wire)?,
+    )
+}
+
 /// Statements and host-owned DDL for atomic projection state, receipts, checkpoints and intents.
 pub fn postgres_projection_statements(config_json: &str) -> Result<String, String> {
-    serde_json::to_string(&edax_postgres::projection::statements(config_json).map_err(to_wire)?)
-        .map_err(edax_core::Error::codec)
-        .map_err(to_wire)
+    crate::write_json(&edax_postgres::projection::statements(config_json).map_err(to_wire)?)
 }
 
 #[cfg(test)]

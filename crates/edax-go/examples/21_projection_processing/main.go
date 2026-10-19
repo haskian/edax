@@ -53,6 +53,12 @@ func reduceBalance(previous *state, incoming event) state {
 // kernel decide, and commits exactly the writes it returns. The commit refuses if a record it read
 // changed since, so a racing transaction retries instead of overwriting.
 func transition(db *kernel.MemoryProjectionDatabase, operation map[string]any) (json.RawMessage, error) {
+	return transaction(db, operation, nil)
+}
+
+// Prepare and apply share one read-version snapshot. A concurrent cleanup or writer invalidates
+// the final commit, so retry must rerun preparation and the pure reducer together.
+func transaction(db *kernel.MemoryProjectionDatabase, operation map[string]any, reduce func(json.RawMessage) (map[string]any, error)) (json.RawMessage, error) {
 	request, err := json.Marshal(map[string]any{"contract": json.RawMessage(contract), "operation": operation})
 	if err != nil {
 		return nil, err
@@ -84,6 +90,23 @@ func transition(db *kernel.MemoryProjectionDatabase, operation map[string]any) (
 	}
 	if err := json.Unmarshal([]byte(text), &plan); err != nil {
 		return nil, err
+	}
+	if reduce != nil {
+		next, reduceErr := reduce(plan.Result)
+		if reduceErr != nil {
+			return nil, reduceErr
+		}
+		request, err = json.Marshal(map[string]any{"contract": json.RawMessage(contract), "operation": next})
+		if err != nil {
+			return nil, err
+		}
+		text, err = kernel.ProjectionTransition(string(request), string(read.Records), 100)
+		if err != nil {
+			return nil, err
+		}
+		if err = json.Unmarshal([]byte(text), &plan); err != nil {
+			return nil, err
+		}
 	}
 	writes, err := json.Marshal(map[string]json.RawMessage{"inserts": plan.Inserts, "updates": plan.Updates, "intents": plan.Intents})
 	if err != nil {
@@ -122,45 +145,43 @@ func run() (err error) {
 		{"offset": 1, "event": first},
 		{"offset": 2, "event": second},
 	}
-	text, err := transition(db, map[string]any{"op": "prepare_batch", "lease": lease, "inputs": inputs, "proof": json.RawMessage(proof)})
-	if err != nil {
-		return err
-	}
-	var prepared struct {
-		Items []struct {
-			Novel bool         `json:"novel"`
-			State *storedState `json:"state"`
-			Event event        `json:"event"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(text, &prepared); err != nil {
-		return err
-	}
-	// The reducer runs once per novel event; the host carries each aggregate's state between deltas.
-	// State is per tenant and aggregate, as the kernel keys it.
-	type aggregateKey struct{ tenant, aggregate string }
-	current := map[aggregateKey]*state{}
-	reduced := make([]any, len(prepared.Items))
-	for i, item := range prepared.Items {
-		if item.Novel {
-			calls++
-			key := aggregateKey{item.Event.Tenant, item.Event.Aggregate}
-			previous, seen := current[key]
-			if !seen && item.State != nil {
-				previous = item.State.Public
-			}
-			next := reduceBalance(previous, item.Event)
-			current[key] = &next
-			// A balance names no person: it is public, queryable state with no private part.
-			reduced[i] = map[string]any{"private": nil, "public": next, "intents": []any{}}
+	lease, err = transaction(db, map[string]any{"op": "prepare_batch", "lease": lease, "inputs": inputs, "proof": json.RawMessage(proof)}, func(text json.RawMessage) (map[string]any, error) {
+		var prepared struct {
+			Items []struct {
+				Novel bool         `json:"novel"`
+				State *storedState `json:"state"`
+				Event event        `json:"event"`
+			} `json:"items"`
 		}
-		fmt.Printf("offset %d: novel=%t, reducer calls=%d\n", i, item.Novel, calls)
-	}
-	lease, err = transition(db, map[string]any{"op": "apply_batch", "lease": lease, "inputs": inputs, "proof": json.RawMessage(proof), "reduced": reduced})
+		if err := json.Unmarshal(text, &prepared); err != nil {
+			return nil, err
+		}
+		// The reducer runs once per novel event; the host carries each aggregate's state between deltas.
+		// State is per tenant and aggregate, as the kernel keys it.
+		type aggregateKey struct{ tenant, aggregate string }
+		current := map[aggregateKey]*state{}
+		reduced := make([]any, len(prepared.Items))
+		for i, item := range prepared.Items {
+			if item.Novel {
+				calls++
+				key := aggregateKey{item.Event.Tenant, item.Event.Aggregate}
+				previous, seen := current[key]
+				if !seen && item.State != nil {
+					previous = item.State.Public
+				}
+				next := reduceBalance(previous, item.Event)
+				current[key] = &next
+				// A balance names no person: it is public, queryable state with no private part.
+				reduced[i] = map[string]any{"private": nil, "public": next, "intents": []any{}}
+			}
+			fmt.Printf("offset %d: novel=%t, reducer calls=%d\n", i, item.Novel, calls)
+		}
+		return map[string]any{"op": "apply_batch", "lease": lease, "inputs": inputs, "proof": json.RawMessage(proof), "reduced": reduced}, nil
+	})
 	if err != nil {
 		return err
 	}
-	text, err = transition(db, map[string]any{"op": "get", "tenant": "bank-eu", "aggregate": "account-42"})
+	text, err := transition(db, map[string]any{"op": "get", "tenant": "bank-eu", "aggregate": "account-42"})
 	if err != nil {
 		return err
 	}

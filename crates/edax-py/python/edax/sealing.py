@@ -49,7 +49,7 @@ __all__ = [
 
 T = TypeVar("T")
 #: A write fence's scope: tenant and subject.
-Scope = tuple[str | None, str]
+Scope = tuple[str | None, str | None]
 
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 #: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
@@ -310,29 +310,90 @@ class Opened:
     data: bytes = field(repr=False)
 
 
-async def _bounded(call: Awaitable[T], timeout_s: float | None) -> T:
-    """Await a key-provider call under ``timeout_s``. A provider that does not answer in time is
-    unavailable, which a runner waits on uncounted, rather than a hang that stalls every partition."""
-    if timeout_s is None:
-        return await call
+_provider_deadline: ContextVar[float | None] = ContextVar("edax_provider_deadline", default=None)
+
+
+@contextmanager
+def provider_deadline(timeout_s: float | None) -> Iterator[None]:
+    """Give key calls a shared budget inside an enclosing operation's deadline.
+
+    Leave scheduling headroom so a provider timeout is classified as key unavailability before the
+    runner's general storage deadline. Nested callers can shorten, never extend, the budget.
+    """
+    previous = _provider_deadline.get()
+    deadline = None
+    if timeout_s is not None:
+        deadline = asyncio.get_running_loop().time() + timeout_s - min(0.05, timeout_s * 0.5)
+    if previous is not None:
+        deadline = previous if deadline is None else min(previous, deadline)
+    token = _provider_deadline.set(deadline)
     try:
-        return await asyncio.wait_for(call, timeout_s)
-    except asyncio.TimeoutError as error:
-        raise KeyUnavailable("key provider call exceeded its deadline") from error
+        yield
+    finally:
+        _provider_deadline.reset(token)
+
+
+class _ProviderCalls:
+    """Own provider tasks until they actually finish, including cancellation-suppressing calls.
+
+    Batch views share this coordinator. A timed-out call is never duplicated or its late reservation
+    reused, and outstanding work is capped even when many distinct unavailable scopes are visited.
+    """
+
+    _limit = 1024
+
+    def __init__(self) -> None:
+        self._pending: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
+
+    async def call(
+        self, key: tuple[Any, ...], call: Callable[[], Awaitable[T]], timeout_s: float | None
+    ) -> T:
+        previous = self._pending.get(key)
+        if previous is not None and not previous.done():
+            raise KeyUnavailable("an earlier key provider call is still unresolved")
+        if previous is not None:
+            self._pending.pop(key, None)
+        if len(self._pending) >= self._limit:
+            raise KeyUnavailable("too many unresolved key provider calls")
+        deadline = _provider_deadline.get()
+        if deadline is not None:
+            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
+            timeout_s = remaining if timeout_s is None else min(timeout_s, remaining)
+        if timeout_s is not None and timeout_s <= 0:
+            raise KeyUnavailable("key provider call exceeded its deadline")
+        task = asyncio.ensure_future(call())
+        self._pending[key] = task
+
+        def finished(done: asyncio.Future[Any]) -> None:
+            if self._pending.get(key) is done:
+                self._pending.pop(key, None)
+            if not done.cancelled():
+                done.exception()  # retrieve a late error; late key material is never reused
+
+        task.add_done_callback(finished)
+        try:
+            done, _ = await asyncio.wait((task,), timeout=timeout_s)
+            if not done:
+                task.cancel()
+                raise KeyUnavailable("key provider call exceeded its deadline")
+            return task.result()
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
 
 
 class _BatchKeys:
-    """The provider calls a consumer opens records with, each read once per scope and bounded by
-    ``timeout_s``. Failures are not kept: the next call asks the provider again."""
+    """Cache successful reads within one batch; unresolved provider work belongs to its Sealing."""
 
-    def __init__(self, keys: KeyProvider, timeout_s: float | None) -> None:
+    def __init__(self, keys: KeyProvider, timeout_s: float | None, calls: _ProviderCalls) -> None:
         self._keys = keys
         self._timeout_s = timeout_s
+        self._calls = calls
         self._known: dict[tuple[Any, ...], Any] = {}
 
     async def _once(self, known: tuple[Any, ...], call: Callable[[], Awaitable[T]]) -> T:
         if known not in self._known:
-            self._known[known] = await _bounded(call(), self._timeout_s)
+            self._known[known] = await self._calls.call(known, call, self._timeout_s)
         return cast(T, self._known[known])
 
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
@@ -345,6 +406,12 @@ class _BatchKeys:
 
     async def fingerprint(self, scope: KeyScope) -> KeyReservation:
         return await self._once(("fingerprint", scope), lambda: self._keys.fingerprint(scope))
+
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
+        # Reservations are writes and are never cached; an ambiguous late result stays charged.
+        return await self._calls.call(
+            ("reserve", scope, cipher), lambda: self._keys.reserve(scope, cipher, count), self._timeout_s
+        )
 
 
 class Sealing:
@@ -376,6 +443,7 @@ class Sealing:
             raise BadHandle("write_fence='transaction' needs a provider with transactor and fence()")
         self._fencing = cast(TransactionFence, keys) if write_fence == "transaction" else None
         self.keys = keys
+        self._calls = _ProviderCalls()
         self.key_namespace = key_namespace
         selected = _native.default_cipher() if cipher is None else cipher
         self.cipher = cast(
@@ -383,6 +451,11 @@ class Sealing:
         )
         self.allow_plaintext = allow_plaintext
         self.scope(None, None)
+
+    def check_compatible(self, other: Sealing) -> None:
+        """A runner and its destination must fence the authority that seals stored data."""
+        if self.keys is not other.keys or self.key_namespace != other.key_namespace:
+            raise BadHandle("runner and destination sealing must use the same provider and key namespace")
 
     def scope(self, tenant: str | None, subject: str | None) -> KeyScope:
         scope = KeyScope(key_namespace=self.key_namespace, tenant=tenant, subject=subject)
@@ -395,15 +468,20 @@ class Sealing:
         runner drops the view with its batch, so no key outlives it; the commit's write fence still reads
         status afresh and decides against revocation."""
         return Sealing(
-            cast(KeyProvider, _BatchKeys(self.keys, timeout_s)),
+            cast(KeyProvider, _BatchKeys(self.keys, timeout_s, self._calls)),
             self.key_namespace,
             cipher=self.cipher,
             allow_plaintext=self.allow_plaintext,
         )
 
     async def _statuses(self, scopes: Sequence[Scope], timeout_s: float | None) -> list[KeyStatus]:
-        reads = (_bounded(self.keys.status(self.scope(*scope)), timeout_s) for scope in scopes)
-        return list(await asyncio.gather(*reads))
+        async def read(scope: Scope) -> KeyStatus:
+            key_scope = self.scope(*scope)
+            return await self._calls.call(
+                ("status", key_scope), lambda: self.keys.status(key_scope), timeout_s
+            )
+
+        return list(await asyncio.gather(*(read(scope) for scope in scopes)))
 
     @asynccontextmanager
     async def fenced(
@@ -416,7 +494,10 @@ class Sealing:
         against an erasure that lands after this read: a refused write whose scope is no longer active
         raises ``KeyRevoking`` too, so the next attempt reads the new status. The write must have really
         ended when the block exits: a fence released while a commit may still land lets erasure pass it."""
-        order = sorted(set(scopes), key=lambda scope: (scope[0] or "", scope[1]))
+        order = sorted(
+            set(scopes),
+            key=lambda scope: (scope[0] is not None, scope[0] or "", scope[1] is not None, scope[1] or ""),
+        )
         destroyed: set[Scope] = set()
         for scope, status in zip(order, await self._statuses(order, timeout_s), strict=True):
             try:
@@ -490,10 +571,10 @@ class Sealing:
 
     async def check_legacy(self, tenant: str | None, subject: str | None) -> None:
         """Legacy compatibility never permits restoring data into a revoked scope."""
-        _native.check_plaintext_policy(self.allow_plaintext)
         scope = KeyScope(key_namespace=self.key_namespace, tenant=tenant, subject=subject)
         _native.check_key_scope(scope)
         _native.check_key_write_status(await self.keys.status(scope))
+        _native.check_plaintext_policy(self.allow_plaintext)
 
     async def seal_event(self, draft: EventDraft) -> EventDraft:
         info, key = await self.reserve(draft.tenant, draft.subject)
@@ -620,18 +701,9 @@ class Sealing:
             reservation = reserved[(tenant, subject)]
             info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
             data = _json.encode(value).encode()
-            value_sealed = self._seal_with(
-                info,
-                reservation.key,
-                part["kind"],
-                part["identity"],
-                "",
-                part["version"],
-                data,
-                tenant,
-                subject,
-            )
-            state = _native.ProtectedState(False, info, bytes(value_sealed.data), tenant, subject)
+            context = _native.stored_encryption_context(_json.encode(part), info)
+            ciphertext = _native.seal_bytes(info, reservation.key, context, data)
+            state = _native.ProtectedState(False, info, bytes(ciphertext), tenant, subject)
             sealed.append(_json.decode(_native.encode_protected_state(state)))
         return sealed
 
@@ -643,11 +715,10 @@ class Sealing:
         state = _native.decode_protected_state(_json.encode(stored)).value
         if state is None:
             raise CodecError("a sealed part is not a protected-state envelope")
-        value = SealedValue(encryption=state.encryption, data=state.data)
-        opened = await self.open_state(
-            part["kind"], part["identity"], "", part["version"], value, part["tenant"], part["subject"]
-        )
-        return _json.decode(opened)
+        context = _native.stored_encryption_context(_json.encode(part), state.encryption)
+        key = await self.resolve(state.encryption, part["tenant"], part["subject"])
+        opened = _native.open_bytes(state.encryption, key, context, bytes(state.data))
+        return _json.decode(bytes(opened))
 
 
 # An opened view never replaces the ciphertext used by guards or nested saga runners.

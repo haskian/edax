@@ -112,6 +112,12 @@ fn ingestion_raw_number_vector_holds() {
                     )
                 })
                 .map(|plan| json!(plan)),
+            "projection_sealed_input" => {
+                let envelope=serde_json::from_value(case["envelope"].clone()).unwrap();
+                projection::event_json(case["event_json"].as_str().unwrap())
+                    .and_then(|event|projection::sealed_input(i64::MAX,&envelope,Some(event)))
+                    .map(|input|json!(input))
+            }
             "projection_keys" => projection::request_json(case["request_json"].as_str().unwrap())
                 .and_then(|request| projection::keys(&request))
                 .map(|keys| json!(keys)),
@@ -123,6 +129,33 @@ fn ingestion_raw_number_vector_holds() {
                 assert_eq!(value, case["want"], "{}", case["name"]);
             }
             Err(error) => assert_eq!(json!(error.to_string()), case["error"], "{}", case["name"]),
+        }
+    }
+}
+
+#[test]
+fn projection_transitions_hold_under_alternate_number_features() {
+    for case in golden("projection_state.json") {
+        let request = edax_cqrs::projection::request_json(&case["request"].to_string()).unwrap();
+        let records = serde_json::from_value(case["records"].clone()).unwrap();
+        let result = edax_cqrs::projection::transition(&request, &records, case["now"].as_i64().unwrap());
+        match result {
+            Ok(plan) => assert_eq!(serde_json::json!(plan), case["want"], "{}",case["name"]),
+            Err(error) => assert_eq!(serde_json::json!(error.to_string()),case["error"],"{}",case["name"]),
+        }
+    }
+}
+
+#[test]
+fn ingestion_plans_hold_under_alternate_number_features() {
+    for case in golden("ingest.json").into_iter().filter(|case|case["op"]=="plan") {
+        let inputs=edax_cqrs::ingest::inputs_json(&case["inputs"].to_string()).unwrap();
+        let stored=serde_json::from_value(case["stored"].clone()).unwrap();
+        let rejected=serde_json::from_value(case["rejected"].clone()).unwrap();
+        let result=edax_cqrs::ingest::plan(case["mode"].as_str().unwrap(),&inputs,&stored,&rejected);
+        match result {
+            Ok(plan)=>assert_eq!(serde_json::json!(plan),case["want"],"{}",case["name"]),
+            Err(error)=>assert_eq!(serde_json::json!(error.to_string()),case["error"],"{}",case["name"]),
         }
     }
 }

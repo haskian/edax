@@ -116,9 +116,7 @@ pub fn charge(serialized_bytes: usize, config: &Config) -> Result<usize, Error> 
         .checked_mul(SERIALIZED_COPIES)
         .ok_or_else(|| invalid("prepared input size overflows"))?;
     if charge > reserve(config)? {
-        return Err(Error::bad_handle(
-            "prepared input exceeds the reserved serialized memory",
-        ));
+        return Err(Error::codec("prepared input exceeds the reserved serialized memory"));
     }
     Ok(charge)
 }

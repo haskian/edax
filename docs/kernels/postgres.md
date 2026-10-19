@@ -208,7 +208,8 @@ contract was violated.
 | `23505` on an `ingest` or `projection_state` | `concurrency`: another transaction inserted the key first, so a retry reads it |
 | `55P03`, `57014` on a `claim` | `in_progress`: another unit of work holds the key, and a dispatcher retries it uncounted |
 | `55P03` on an `append`, `projection_save`, `saga_write` or `settle` | `concurrency`: another unit of work holds the row this write compares or fences |
-| `55P03` on any other operation, `57014` on any but a `claim` | `store`, transient: a read or an unversioned write ran out of time, which is no version conflict |
+| `55P03` on `ingest` or `projection_state`, `55P03` or `57014` on `erasure_fence` | `in_progress`: lock contention waits without spending an attempt |
+| `55P03` on remaining operations, `57014` on any but `claim` or `erasure_fence` | `store`, transient: a read or an unversioned write ran out of time, which is no version conflict |
 | `40001`, `40P01`, `25006`, `25P02` | `store`, transient |
 | the `22`, `23` and `54` classes, `23505` on any other key or on none | `codec`: data or a constraint the server refuses, which fails the same way again |
 | the `28`, `3D`, `3F` and `42` classes | `bad_handle`: a wiring mistake no retry fixes |

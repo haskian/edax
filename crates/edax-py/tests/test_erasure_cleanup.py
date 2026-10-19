@@ -177,7 +177,7 @@ async def test_resweep_deletes_what_a_missing_participant_left(participant: Part
     # The coordinator knows the participant but has no cleanup for it: it revokes and deletes nothing.
     operation = await ErasureCoordinator(MemoryKeys(), store, {"rows": None}).erase(case.scope, "request-1")
     assert operation.stage == "notified" and await participant.rows() == EVERY
-    cleanup = participant.cleanup()
+    cleanup = participant.cleanup(key_namespace="customers")
     assert await cleanup.resweep(store) == case.deleted
     assert await participant.rows() == case.kept
     assert await cleanup.resweep(store) == 0
@@ -186,7 +186,7 @@ async def test_resweep_deletes_what_a_missing_participant_left(participant: Part
 async def test_registered_cleanup_completes_the_erasure(participant: Participant) -> None:
     await participant.write()
     store = MemoryErasureStore()
-    cleanup = participant.cleanup()
+    cleanup = participant.cleanup(key_namespace="customers")
     operation = await ErasureCoordinator(MemoryKeys(), store, {"rows": cleanup}).erase(
         scope("shop-a", "person-7"), "request-1"
     )
@@ -206,7 +206,7 @@ async def test_postgres_cleanup_revokes_in_its_transaction(kind: str) -> None:
             else projection(PostgresProjectionStateStore(tx, PROJECTION, schema=schema))
         )
         await rows.write()
-        await rows.cleanup(erasure)(scope("shop-a", "person-7"))
+        await rows.cleanup(erasure, key_namespace="customers")(scope("shop-a", "person-7"))
         assert ("shop-a", "person-7", "row-1") not in await rows.rows()
         # The tombstone committed with the delete: a fenced writer of the scope is refused.
         with pytest.raises(Rejected):
@@ -217,7 +217,9 @@ async def test_postgres_cleanup_revokes_in_its_transaction(kind: str) -> None:
         await coordinator.erase(scope("shop-b", "person-8"), "request-1")
         await coordinator.erase(scope("shop-b", None), "request-2")
         assert [stored.operation.stage for stored in await erasure.revoked(1)] == ["notified"]
-        assert await rows.cleanup().resweep(erasure, limit=1) == 4  # person-8, then the rest of shop-b
+        assert (
+            await rows.cleanup(key_namespace="customers").resweep(erasure, limit=1) == 4
+        )  # person-8, then the rest of shop-b
         assert {row for row in await rows.rows() if row[0] == "shop-b"} == set()
 
 
@@ -234,11 +236,103 @@ async def test_unrevoked_operation_is_not_swept(backend: str) -> None:
         store: ErasureStore = MemoryErasureStore()
         await store.create(candidate)
         assert await store.revoked() == []
-        assert await participant.cleanup().resweep(store) == 0
+        assert await participant.cleanup(key_namespace="customers").resweep(store) == 0
     else:
         async with postgres() as (pool, schema):
             store = PostgresErasureStore(pool, schema=schema)
             await store.create(candidate)
             assert await store.revoked() == []
-            assert await participant.cleanup().resweep(store) == 0
+            assert await participant.cleanup(key_namespace="customers").resweep(store) == 0
     assert await participant.rows() == EVERY
+
+
+async def test_cleanup_is_bound_to_one_key_namespace(participant: Participant) -> None:
+    from edax.errors import BadHandle
+
+    await participant.write()
+    with pytest.raises(BadHandle, match="requires key_namespace"):
+        participant.cleanup()
+    cleanup = participant.cleanup(key_namespace="customers")
+    foreign = KeyScope(key_namespace="other-deployment", tenant="shop-a", subject="person-7")
+    with pytest.raises(BadHandle, match="another key namespace"):
+        await cleanup(foreign)
+    operations = MemoryErasureStore()
+    await ErasureCoordinator(MemoryKeys(), operations, {}).erase(foreign, "foreign-erasure")
+    assert await cleanup.resweep(operations) == 0
+    assert await participant.rows() == EVERY
+
+
+@pytest.mark.parametrize("limit", [0, -1, True])
+async def test_cleanup_and_revoked_pages_require_a_positive_limit(limit: int) -> None:
+    from edax.errors import BadHandle
+
+    cleanup = MemoryIngestionSink(INGESTION).cleanup(key_namespace="customers")
+    with pytest.raises(BadHandle):
+        await cleanup.resweep(MemoryErasureStore(), limit=limit)
+    with pytest.raises(BadHandle):
+        await MemoryErasureStore().revoked(limit)
+    async with postgres() as (pool, schema):
+        with pytest.raises(BadHandle):
+            await PostgresErasureStore(pool, schema=schema).revoked(limit)
+
+
+@pytest.mark.parametrize("kind", ["ingestion", "projection"])
+async def test_paged_cleanup_commits_progress_and_reinstalls_destination_revocation(
+    kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from edax.errors import StoreError
+
+    async with postgres() as (pool, schema):
+        erasure = PostgresErasureStore(pool, schema=schema)
+        tx = PostgresTransactor(pool, schema=schema)
+        store = (
+            PostgresIngestionSink(tx, INGESTION, schema=schema)
+            if kind == "ingestion"
+            else PostgresProjectionStateStore(tx, PROJECTION, schema=schema)
+        )
+        rows = ingestion(store) if isinstance(store, PostgresIngestionSink) else projection(store)
+        await rows.write()
+        method = "_typed" if kind == "ingestion" else "_owned"
+        own = getattr(store, method)
+        pages = 0
+
+        async def interrupted(call: Any) -> Any:
+            nonlocal pages
+            if call.__name__ == "run":
+                pages += 1
+                if pages == 2:
+                    raise StoreError("injected interruption after one committed cleanup page")
+            return await own(call)
+
+        monkeypatch.setattr(store, method, interrupted)
+        cleanup = store.cleanup(erasure, key_namespace="customers", limit=1)
+        operations = MemoryErasureStore()
+        coordinator = ErasureCoordinator(MemoryKeys(), operations, {"rows": cleanup})
+        erased = scope("shop-a", "person-7")
+        with pytest.raises(StoreError, match="injected interruption"):
+            await coordinator.erase(erased, "paged-erasure")
+        pending = await coordinator.status(erased, "paged-erasure")
+        assert pending is not None and pending.stage == "notified" and not pending.acknowledgements
+        assert len([row for row in await rows.rows() if row[:2] == ("shop-a", "person-7")]) == 1
+        with pytest.raises(Rejected):
+            async with erasure.writer_guard(erased):
+                pass
+        # A destination restore may lose its tombstone independently of the workflow store.
+        await pool.execute(f'DELETE FROM "{schema}".edax_erasure_revocations')
+        result = await coordinator.resume(erased, "paged-erasure")
+        assert result.stage == "complete" and result.acknowledgements == {"rows"}
+        assert await rows.rows() == CASES[0].kept
+        with pytest.raises(Rejected):
+            async with erasure.writer_guard(erased):
+                pass
+        assert pages == 4  # first committed page, interruption, final row, empty completion page
+
+
+def test_cleanup_infers_sealing_namespace_and_refuses_override() -> None:
+    from edax.errors import BadHandle
+    from edax.sealing import Sealing
+
+    sink = MemoryIngestionSink(INGESTION, sealing=Sealing(MemoryKeys(), key_namespace="customers"))
+    assert sink.cleanup().key_namespace == "customers"
+    with pytest.raises(BadHandle, match="differs"):
+        sink.cleanup(key_namespace="other-deployment")

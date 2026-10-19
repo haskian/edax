@@ -5,11 +5,56 @@
 use std::collections::BTreeMap;
 
 use edax_core::Error;
-use serde::Deserialize;
+use edax_cqrs::ingest::{Plan, Rejection, Stored};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::schema::identifier;
 
 const ROLES: [&str; 3] = ["ingest_events", "ingest_state", "ingest_rejections"];
+
+/// Opaque JSON parameters for the three ingestion write statements. The host must pass these
+/// strings unchanged: reparsing and serializing a large double can change its decimal value.
+#[derive(Debug, Serialize)]
+pub struct WritePlan {
+    /// Previously absent target records, inserted without conflict suppression.
+    pub inserts: String,
+    /// Target records already locked by the planning read.
+    pub updates: String,
+    /// First durable rejection decisions only, never a replay's substitute raw representation.
+    pub rejections: String,
+}
+
+/// Translate a decided batch and its locked snapshot into exact-number SQL parameters.
+pub fn write_plan(
+    plan: &Plan,
+    stored: &BTreeMap<String, Stored>,
+    rejected: &BTreeMap<String, Rejection>,
+) -> Result<WritePlan, Error> {
+    let mut inserts = BTreeMap::new();
+    let mut updates = BTreeMap::new();
+    for (key, row) in &plan.writes {
+        if stored.contains_key(key) {
+            updates.insert(key, row);
+        } else {
+            inserts.insert(key, row);
+        }
+    }
+    let rejections: BTreeMap<_, _> = plan
+        .rejections
+        .iter()
+        .filter(|(key, _)| !rejected.contains_key(*key))
+        .collect();
+    fn exact(value: &impl Serialize) -> Result<String, Error> {
+        let value: Value = serde_json::to_value(value).map_err(Error::codec)?;
+        Ok(crate::documents::exact_json(&value))
+    }
+    Ok(WritePlan {
+        inserts: exact(&inserts)?,
+        updates: exact(&updates)?,
+        rejections: exact(&rejections)?,
+    })
+}
 
 /// The configured schema and the quoted, qualified table of each role.
 struct Tables {
@@ -80,8 +125,8 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
 /// rejection committed by the target writer the metadata read waited for. Reading rejections first
 /// could combine their earlier absence with a later target version and accept a rejected input as
 /// stale. The immutable mapper/source contract keeps a source's target key stable.
-/// `delete_scope_{events,state}` take the bounds of `ingest::scope_range` and return how many rows
-/// they deleted. `read_rejections_for_plan` takes a JSON source-key array. `pending` takes the exact
+/// `delete_scope_{events,state}` take the bounds of `ingest::scope_range` and a positive textual page
+/// limit and return how many rows they deleted. `read_rejections_for_plan` takes a JSON source-key array. `pending` takes the exact
 /// target prefix and a textual limit. `mark_published` takes `{source: fingerprint}` and the exact
 /// target prefix, and returns how many rows it marked. `check` returns one boolean column,
 /// `compatible`. No statement creates tables implicitly.
@@ -158,11 +203,11 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
     Ok(sql)
 }
 
-/// An erasure cleanup of one key table: delete the keys in `[$1, $2)` and return how many it deleted.
+/// An erasure cleanup page: delete at most `$3` keys in `[$1, $2)` and return how many it deleted.
 /// Ingestion and projection state both delete a subject's key range this way.
 pub(crate) fn delete_range(table: &str) -> String {
     format!(
-        "WITH gone AS (DELETE FROM {table} WHERE key >= $1::text AND key < $2::text RETURNING 1) SELECT count(*) FROM gone"
+        "WITH gone AS (DELETE FROM {table} WHERE key IN (SELECT key FROM {table} WHERE key >= $1::text AND key < $2::text ORDER BY key LIMIT $3::text::bigint) RETURNING 1) SELECT count(*) FROM gone"
     )
 }
 

@@ -2,7 +2,7 @@
 //! read against the operation that ran), and on a failure the client reports without a SQLSTATE.
 //!
 //! The operation matters. A lock wait that runs out is contention on a ledger claim or a projection
-//! generation, which a dispatcher or runner retries without counting an attempt (`in_progress`). On a compare-and-set write it is a
+//! generation, an ingestion row, or an erasure fence, which a dispatcher or runner retries without counting an attempt (`in_progress`). On a compare-and-set write it is a
 //! lost race (`concurrency`). Anywhere else it is a transient `store` failure, because the store
 //! contracts keep `concurrency` for a version conflict. A unique violation is a version conflict on an
 //! event stream and a reused id on an outbox row. `testdata/golden/postgres_error.json` pins every row.
@@ -45,6 +45,8 @@ edax_core::closed_names! {
         ProjectionState = "projection_state",
         /// An ingestion commit, rejection read or publication mark.
         Ingest = "ingest",
+        /// Acquiring a revocation or writer fence before reading protected state.
+        ErasureFence = "erasure_fence",
     }
 }
 
@@ -75,8 +77,8 @@ impl Op {
 ///   transaction inserted the key first, so a retry reads the committed row); of any other key a reused
 ///   id, `codec`, which fails the same way again.
 /// - `55P03` (a lock wait ran out) and `57014` (a statement ran out) on a claim: `in_progress`, since
-///   another unit of work holds the key. `55P03` on projection state: `in_progress`, since another
-///   runner holds the generation lock.
+///   another unit of work holds the key. Both states on erasure fence acquisition are `in_progress`.
+///   `55P03` on projection state or ingestion is `in_progress`: another runner holds its lock.
 /// - `55P03` on an append, a projection save, a saga write or a settle: `concurrency`, since another unit
 ///   of work holds the row it would write. Elsewhere, and `57014` everywhere but a claim, `store`: a read
 ///   or an unversioned write that ran out of time is transient, not a version conflict.
@@ -94,7 +96,9 @@ pub fn verdict(op: Op, sqlstate: &str, unique: Option<UniqueKey>, message: &str)
     let code = match (sqlstate, op) {
         ("23505", _) if unique == Some(UniqueKey::EventsStreamSequence) => ErrorCode::Concurrency,
         ("23505", Op::Ingest | Op::ProjectionState) => ErrorCode::Concurrency,
-        ("55P03" | "57014", Op::Claim) | ("55P03", Op::ProjectionState) => ErrorCode::InProgress,
+        ("55P03" | "57014", Op::Claim | Op::ErasureFence) | ("55P03", Op::ProjectionState | Op::Ingest) => {
+            ErrorCode::InProgress
+        }
         ("55P03", _) if op.waits_on_a_writer() => ErrorCode::Concurrency,
         ("40001" | "40P01" | "25006" | "25P02" | "55P03" | "57014", _) => ErrorCode::Store,
         _ => match sqlstate.get(..2) {
@@ -144,7 +148,7 @@ mod tests {
 
     #[test]
     fn verdict_branches() {
-        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 21] = [
+        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 23] = [
             (
                 "stream_race",
                 Op::Append,
@@ -184,7 +188,21 @@ mod tests {
                 None,
                 ErrorCode::Concurrency,
             ),
-            ("ingest_lock_wait", Op::Ingest, "55P03", None, ErrorCode::Store),
+            ("ingest_lock_wait", Op::Ingest, "55P03", None, ErrorCode::InProgress),
+            (
+                "erasure_lock_wait",
+                Op::ErasureFence,
+                "55P03",
+                None,
+                ErrorCode::InProgress,
+            ),
+            (
+                "erasure_lock_deadline",
+                Op::ErasureFence,
+                "57014",
+                None,
+                ErrorCode::InProgress,
+            ),
             ("data_class", Op::Ingest, "22012", None, ErrorCode::Codec),
             ("missing_database", Op::Ingest, "3D000", None, ErrorCode::BadHandle),
             ("short_state", Op::Ingest, "2", None, ErrorCode::Store),

@@ -17,7 +17,7 @@ drift in any binding fails that binding's build instead of production.
 
 ```mermaid
 flowchart TB
-  K["kernel: edax-core, edax-event, edax-cqrs,<br/>edax-kafka, edax-redis; and edax for event_codec.json"] --> G["tests/golden.rs derives the cases"]
+  K["kernel: edax-core, edax-event, edax-cqrs,<br/>edax-kafka, edax-redis, edax-postgres; and edax for event_codec.json"] --> G["Rust integration tests derive the cases"]
   G --> W["edax_golden::write_or_check"]
   W -->|"EDAX_REGEN=1: regenerate"| F["testdata/golden/*.json"]
   W -->|"env unset: assert"| F
@@ -101,7 +101,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `postgres_contract.json` | `name`, then the contract, a reference schema, a table-names refusal, a catalog reply with its `compatibility` or `error`, or a server check | the table contract, the reference schema for default and chosen names, the table names refused, and the verdict on catalog replies: compatible ones, each kind of mismatch (a missing table or column, a wrong type, a `NOT NULL` where edax writes `NULL`, a key collation, an extra required column, a missing, partial, expression, deferrable, invalid or wider unique index), and the ones accepted (a partitioned table, `varchar`, `POSIX`, a defaulted extra column) | `edax-postgres` `contract`, `reference_ddl`, `Tables`, `check_catalog`, `check_server` | `edax-postgres` `golden_contract` |
 | `postgres_statements.json` | `name`, `sql`; `begin` also `settings` | every statement a Postgres store runs, byte for byte, for the `public` schema, and the text that opens a transaction under the default settings | `edax-postgres` `statements`, `begin` | `edax-postgres` `golden_statements` |
 | `postgres_rows.json` | `name`, the operands, and `params`, a decoded value or `error`; a parameter call's case holds `call`, `args` and `want` (its statement, when it chooses one, and its parameters) | the parameters each statement binds (events, loads, commands, outbox reads and marks, projection and saga reads and writes, ledger keys), the statement a call chooses, what a read decodes, the drafts an append returns stamped with its clock reading, the stored text of a document (exact digits past 2^53), and each refusal: a gap, a NUL, a leading snapshot, a stale projection or saga write, a foreign saga command, a lease without an owner, an outbox scope that does not fit | `edax-postgres` `rows`, `ledger`, `stored_document` | `edax-postgres` `golden_rows` |
-| `postgres_error.json` | `name`, `op`, `sqlstate`, `unique` or `kind`, `message`, `error` | the verdict on each SQLSTATE per operation, and on a lock or statement timeout on every operation (`in_progress` on a claim, `concurrency` for a lock wait on a compare-and-set write or a settle, `store` elsewhere), and on each client failure kind | `edax-postgres` `verdict`, `client_verdict` | `edax-postgres` `golden_error` |
+| `postgres_error.json` | `name`, `op`, `sqlstate`, `unique` or `kind`, `message`, `error` | the verdict on each SQLSTATE per operation, and on a lock or statement timeout on every operation (`in_progress` on a claim, ingestion/projection lock wait or erasure fence, `concurrency` for a lock wait on a compare-and-set write or a settle, `store` elsewhere), and on each client failure kind | `edax-postgres` `verdict`, `client_verdict` | `edax-postgres` `golden_error` |
 | `postgres_ledger.json` | `name`, `row`, `handle`, `settling`, and what `claim`, `complete`, `release` and `forget` do; a read of a gone row holds `attempt` and its `action` or `error`; `settle_params` its `params` | each class a ledger row is to a claimant, a lapsed pending claim included, and what each operation answers over it; the claim given up on its last read; the settling write's parameters | `edax-postgres` `ledger` | `edax-postgres` `golden_ledger` |
 | `postgres_query.json` | `name`, `documents`, `query`, `sql`, `params`, `expected_page`, `page_error`, `error` | a query compiled to SQL and the page the reference applier answers over the stored documents: null and missing paths, numbers past 2^53, code point order, the decimal collation, the type rank, `Contains`, a keyset resume, a refused cursor | `edax-postgres` `compile`, `page` | `edax-postgres` `golden_query` |
 | `ordering_key.json` | `id`, `aggregate_id`, `expected` | the key that orders a message: the aggregate id when present, an empty one included, else the message's own id; non-ASCII ids | `edax-event` `ordering_key` | `edax-event` `ordering_key_cases` |
@@ -126,6 +126,15 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `idempotency_guard.json` | `name`, `key`, `payload_hash`, `prior`, `run`, `want`, `want_reason`, `want_record` | one guarded dispatch: a success, a null success, a terminal failure, a host rejection, a rejection keeping its reason, a transient and an unclassified failure released; a loser replaying a result, a cached failure, a claim in flight, a reused key, an unreadable record, a failure without a code, a rejection replaying its reason, a reused key carrying none | `edax-cqrs` `settle_failure`, `replay` | `edax-cqrs` `idempotency_guard_cases` |
 | `idempotency_fence.json` | `name`, `op`, `key`, `holds`, `want`, `holds_after` | the fence every ledger applies to a settling write: `complete` and `release` over each class of what the key holds (free, the caller's claim, another claim, the same settled record, another record), the verdict, and the class the key is left in | `edax-cqrs` `complete_fence`, `release_fence` | `edax-cqrs` `idempotency_fence_cases` |
 | `event_codec.json` | `case`, `name`, `version`, `fields`, `json`, `msgpack_hex`, `error` | one event of each variant shape as the Rust registry codec writes it from `fields`, both formats: a nested struct, a string payload, a unit variant, and a decimal and an instant (in their markers) written in the kernel's canonical text; and foreign bytes refused as `codec` (matched by code): an array for a struct at the top and nested, an instant with no offset, a `NaN` and an infinite decimal. Python must build the same event from `fields`, write the same bytes, read them back and refuse the same bytes | `edax` `RegistryCodec` over `Format::encode_payload` / `decode_payload` | `edax` `tests/golden.rs` |
+
+| `event_batch.json` | Named operation inputs, expected result or kernel error | Config, admission, charge, cutting and rollback-aware recovery | `edax-event::batch` | `edax-event tests/golden.rs` |
+| `ingest.json` | Named operation inputs, expected result or kernel error | Append/upsert planning, identity, ownership, sealing and rejection precedence | `edax-cqrs::ingest` | `edax-cqrs tests/golden.rs` |
+| `ingestion_numbers.json` | Named operation inputs, expected result or kernel error | Original numeric tokens and full-width protocol counters | `edax-cqrs` raw readers | `edax-cqrs tests/ingestion_numbers.rs` |
+| `kafka_ingestion_raw.json` | Named operation inputs, expected result or kernel error | Raw source encoding, digest, oversize stubs and decoding | `edax-kafka::record` | `edax-kafka tests/golden.rs` |
+| `postgres_ingest.json` | Named operation inputs, expected result or kernel error | Optional ingestion SQL and exact-number write plans | `edax-postgres::ingest` | `edax-postgres tests/golden.rs` |
+| `projection_state.json` | Named operation inputs, expected result or kernel error | Transitions, read keys/locks, leases, receipts, cutovers and refusal boundaries | `edax-cqrs::projection` | `edax-cqrs tests/projection_state.rs` |
+| `projection_state_boundaries.json` | Named operation inputs, expected result or kernel error | Key discovery, lock modes, continuity and effect eligibility | `edax-cqrs::projection` | `edax-cqrs tests/projection_state_boundaries.rs` |
+| `postgres_projection_state.json` | Named operation inputs, expected result or kernel error | Tables, catalog, locks, reads/writes, delivery and pruning | `edax-postgres::projection` | `edax-postgres tests/projection_state.rs` |
 
 ### Who asserts each vector
 
@@ -178,7 +187,7 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `kafka_dead_letter.json` | its generator, which reads every source back | `test_edax.py::test_golden_kafka_dead_letter`, the record and its stub |
 | `kafka_config.json` | its generator | `test_edax.py::test_golden_kafka_config`, through `_edax.kafka_check_config`, `_edax.kafka_check_consumer`, `_edax.kafka_check_dead_sink` and `_edax.kafka_acks_warning` |
 | `kafka_error.json` | its generator | `test_kafka.py::test_golden_kafka_error_through_the_producer`, each code raised by the client and read back from `KafkaProducer.publish` |
-| `kafka_offsets.json` | its generator, and a proptest model of a consumer under nacks, crashes and rebalances (`tests/model.rs`) | `test_edax.py::test_golden_kafka_offsets`, replaying every step through `_edax.offset_tracker()` |
+| `kafka_offsets.json` | its generator, and a proptest model of a consumer under nacks, crashes and rebalances (`tests/model.rs`) | `test_edax.py::test_golden_kafka_offsets`, replaying every step through `_edax.offset_tracker()`; Go `TestKafkaOffsetsGolden` |
 | `redis_value.json` | its generator | `test_edax.py::test_golden_redis_value` |
 | `redis_ledger.json` | its generator | `test_edax.py::test_golden_redis_ledger` |
 | `redis_scripts.json` | its generator | `test_edax.py::test_golden_redis_scripts` |
@@ -186,7 +195,15 @@ the suites that assert it. Every case object is one row of a JSON array.
 | `postgres_contract.json`, `postgres_statements.json`, `postgres_rows.json`, `postgres_error.json`, `postgres_ledger.json` | its generator | `test_postgres_offline.py` |
 | `postgres_query.json` | its generator, and `live-check` against a real server | `test_postgres_offline.py` (the compiled SQL) and `test_postgres.py` (the page, live) |
 
-"Its generator" means the same `tests/golden.rs` function that writes the file asserts it whenever
+| `event_batch.json`, `ingest.json` | their generators | `test_ingestion_golden.py`; Go `TestBatchIngestionGolden`, `TestIngestionGolden` |
+| `ingestion_numbers.json` | its generator and `feature-check` | `test_ingestion_numbers.py`; Go `TestIngestionRawNumbersGolden` |
+| `kafka_ingestion_raw.json` | its generator | `test_ingestion_golden.py::test_kafka_raw_golden`; Go `TestKafkaIngestionRawGolden` |
+| `postgres_ingest.json` | its generator | `test_postgres_offline.py`; Go `TestPostgresIngestionGolden` |
+| `projection_state.json` | its generator | `test_projection_state.py` (transitions plus read keys/locks); Go `TestProjectionStateGolden` |
+| `projection_state_boundaries.json` | its generator | `test_projection_state_boundaries.py`; Go `TestProjectionStateBoundariesGolden` |
+| `postgres_projection_state.json` | its generator | `test_postgres_offline.py`; Go `TestPostgresProjectionStateGolden` |
+
+"Its generator" means the same Rust test function that writes the file asserts it whenever
 `EDAX_REGEN` is unset — one function, two modes.
 
 Three vectors are asserted **through the SDK layer** rather than against the kernel function.
@@ -200,18 +217,7 @@ proved, not a copy of it in the test.
 
 ## Regenerating
 
-Verbatim from `AGENTS.md` ("Kernels are the source of truth"):
-
-```
-EDAX_REGEN=1 mise exec -- cargo test -p edax-event --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-cqrs  --test protected golden_protected_ledger
-EDAX_REGEN=1 mise exec -- cargo test -p edax-core  --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-kafka --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-redis --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax-postgres --test golden
-EDAX_REGEN=1 mise exec -- cargo test -p edax       --test golden
-```
+Use the complete [regeneration commands in AGENTS.md](../../AGENTS.md#kernels-are-the-source-of-truth). Set `EDAX_REGEN=1` only for a deliberate contract change.
 
 Then read the diff. The files are pretty-printed with a stable key order, so `git diff` shows
 exactly which cases moved.
@@ -280,25 +286,3 @@ Run both suites before you finish. `cargo test` alone misses binding regressions
   and Hypothesis.
 - [`../architecture.md`](../architecture.md) — why the kernels exist and how the native module is
   built.
-
-## Microbatch ingestion vectors
-
-`event_batch.json` pins defaults, limits, admission, batch cutting, recovery transitions and their names.
-`ingest.json` pins append/upsert planning, durable-rejection precedence, target contracts and exact
-source coordinates, modes and outcomes. `kafka_ingestion_raw.json` pins stable original digests, size boundaries and
-raw decoding. `postgres_ingest.json` pins ingestion SQL; `postgres_error.json` pins its SQLSTATE verdicts.
-The Rust generators, Python ABI reader and Go ABI reader replay every case. Asynchronous
-lifecycle and live Kafka/PostgreSQL tests cover behavior that these pure vectors cannot establish.
-`ingestion_numbers.json` adds 56 raw-text cases shared by ingestion and projection state. These preserve
-original numeric tokens while checking rejection, allowed floats and full-width protocol counters.
-Python, Go and the Rust build with alternative serde features replay the same inputs.
-
-## Projection state vectors
-
-`projection_state.json` pins batch transitions, canonical reducer envelopes, dual deduplication, the
-lock and keys of every request, generation-scoped leases, checkpoint recovery, ownership fences and
-cutovers. `projection_state_boundaries.json` pins key discovery, lock modes, source continuity and
-effect eligibility. `postgres_projection_state.json` pins the two optional tables and their catalog
-check, the locks, the keyed read, the insert and update statements, pending delivery, delivery
-deletes and pruning.
-Rust tests generate these fixtures; Python and Go replay them through regenerated bindings.

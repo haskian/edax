@@ -1270,6 +1270,13 @@ impl MemoryIngestion {
     pub fn published(&self, source: &str, fingerprint: &str) -> Result<(), String> {
         self.inner.published(source, fingerprint).map_err(crate::to_wire)
     }
+
+    /// Confirm a JSON map of source fingerprints atomically; invalid entries mark nothing.
+    pub fn published_many(&self, confirmed: &str) -> Result<(), String> {
+        self.inner
+            .published_many(&crate::read_json(confirmed)?)
+            .map_err(crate::to_wire)
+    }
 }
 
 /// An atomic in-memory projection state database: records and effect intents. Keep this handle for

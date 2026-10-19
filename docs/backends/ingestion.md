@@ -49,6 +49,10 @@ and its next read finds the committed row. A batch's published rejections are ma
 statement. A record whose mapped value or identity holds a NUL character becomes a durable
 rejection, because Postgres cannot store it.
 
+This sample maps subjectless order data to `public`. Subject-bearing input also requires a
+configured `Sealing` provider on the runner or sink, including when `at_rest="plaintext"`.
+The provider supplies revocation fences; the default `at_rest="sealed"` additionally encrypts private data.
+
 ```python
 import asyncio
 import json
@@ -68,7 +72,7 @@ from edax.message import EventMessage
 def order_state(event: EventMessage) -> MappedRow:
     # Every event carries the complete current order state, including a deletion marker.
     state: dict[str, Any] = json.loads(event.data)
-    return MappedRow(event.aggregate_id, None if state.get("deleted") else state)
+    return MappedRow(event.aggregate_id, private=None, public=None if state.get("deleted") else state)
 
 
 async def ingest_orders(pool: asyncpg.Pool, stop: asyncio.Event) -> None:
@@ -169,10 +173,22 @@ Change the generation and rebuild when source
 identity, mapping or keying changes. The application supplies and verifies the source incarnation;
 a reused topic name alone is not an identity check.
 
+Unkeyed replay checks use the shared 64-bit FNV-1a `payload_hash`. Equality is hash equality,
+not a collision-resistant proof of identical content. Use the sealed/keyed fingerprint path for
+untrusted producers. Its HMAC-SHA-256 fingerprint protects replay identity. Changing the unkeyed
+algorithm requires an explicit persisted-state migration; it is not changed implicitly.
+
 | Mode | Identity and accepted write | Replay/conflict behavior |
 | --- | --- | --- |
 | `append` | Target generation, tenant, erasure subject and stable event ID. The mapper's row key is ignored. | Exact replay is accepted without rewriting. Different content under that identity becomes a durable rejection. |
 | `upsert` | Target generation, tenant, erasure subject and mapped row key; one aggregate stream permanently owns it. Each original needs a sequence in `0..=i64::MAX`. | A higher sequence replaces complete state. A lower sequence is ignored. An equal sequence preserves the first committed value: identical content is accepted; different content is rejected. |
+
+The accepted final upsert state is independent of batch cuts, but rejection outcomes for conflicting
+intermediate sequences can depend on where a batch ends. The store retains only the current sequence's
+fingerprint; older replays are accepted as stale. Producers must keep one aggregate's erasure subject
+stable: ingestion includes it in the row identity and does not maintain a cross-subject owner index.
+Replays of a sealed event must reuse its original ciphertext. Re-sealing the same event ID is a content
+change and requires a deliberate migration, not ordinary redelivery.
 
 The erasure subject comes from the event envelope, never from the mapper. It sits in the row key
 before the row identity, so one key range holds every row of a subject. An event with no subject
@@ -283,7 +299,7 @@ serialization expansion. Thus the default raw/mapped limits require at least **1
 capacity; 16 MiB is the default. Admitted originals are charged for three serialized prepared-input
 copies, including space for the kernel's bounded rejection diagnostic. Driver error text is not copied
 into a rejection because it can contain an arbitrarily large input. A record that exceeds its reserved
-expansion stops the runner rather than violating admission.
+expansion becomes a bounded durable rejection without exceeding admission credits.
 
 These credits bound retained prepared-input representations, not process resident memory. Broker
 prefetch, Python object overhead, sink buffers and allocations inside arbitrary mapper/middleware
@@ -305,7 +321,9 @@ as the new completion frontier.
 
 Transient middleware and mapper failures rewind the open batch and release its data.
 Their attempt counts and backoff deadlines survive replay. Other partitions remain eligible while
-that partition waits; a preparation failure never acknowledges or rejects an original.
+that partition waits; a transient preparation failure never acknowledges or rejects an original.
+A terminal data failure becomes a bounded rejection keyed by source coordinates, even when its
+producer-supplied identity cannot form a valid target key.
 Serializers must be pure decoders: their exceptions classify malformed input as poison, as in the
 ordinary Kafka consumer. Put transient external lookups in record middleware.
 

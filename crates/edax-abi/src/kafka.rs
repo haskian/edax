@@ -725,7 +725,7 @@ pub fn kafka_ingestion_raw(record: KafkaRecord, source: &str, limit: u64) -> Res
         source.offset,
         source.timestamp,
         source.timestamp_type,
-        limit as usize,
+        crate::host_count(limit),
     )
     .map_err(to_wire)?;
     crate::write_json(&raw)

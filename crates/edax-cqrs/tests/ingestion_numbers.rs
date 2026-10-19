@@ -19,6 +19,11 @@ pub fn replay(case: &Value) -> Result<Value, Error> {
             )
             .map(|plan| json!(plan))
         }
+        "projection_sealed_input" => {
+            let envelope = serde_json::from_value(case["envelope"].clone()).unwrap();
+            let event = projection::event_json(case["event_json"].as_str().unwrap())?;
+            projection::sealed_input(i64::MAX, &envelope, Some(event)).map(|input| json!(input))
+        }
         "projection_keys" => projection::request_json(case["request_json"].as_str().unwrap())
             .and_then(|request| projection::keys(&request))
             .map(|keys| json!(keys)),
@@ -94,6 +99,23 @@ fn ingestion_numbers_golden() {
                 case["error"] = Value::Null;
                 cases.push(case);
             }
+        }
+        for field in ["payload", "metadata"] {
+            let envelope = json!({"tenant":"tenant-7","subject":"person-42","aggregate":"order-42","event_id":"order-paid","sequence":i64::MAX,"event_type":"OrderPaid","schema_version":"1"});
+            let payload = if field == "payload" { token } else { "null" };
+            let metadata = if field == "metadata" { token } else { "null" };
+            let event_json = format!(
+                r#"{{"tenant":"tenant-7","aggregate":"order-42","event_id":"order-paid","sequence":9223372036854775807,"event_type":"OrderPaid","schema_version":"1","payload":{payload},"metadata":{metadata}}}"#
+            );
+            let mut case = json!({"name":format!("sealed_projection_{field}_{name}"),"op":"projection_sealed_input","envelope":envelope,"event_json":event_json});
+            let result = replay(&case);
+            assert_eq!(result.is_ok(), accepted, "{}", case["name"]);
+            case["want"] = result.as_ref().ok().cloned().unwrap_or(Value::Null);
+            case["error"] = result
+                .err()
+                .map(|error| json!(error.to_string()))
+                .unwrap_or(Value::Null);
+            cases.push(case);
         }
         for field in ["payload", "metadata", "state", "intent"] {
             let mut case = json!({"name":format!("projection_{field}_{name}"),"op":"projection_keys","request_json":request(field,token)});

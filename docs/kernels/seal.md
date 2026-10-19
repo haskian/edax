@@ -105,7 +105,7 @@ opt_str(tenant), opt_str(subject), str(marks), u32(completed)
 `kind` is one of `snapshot`, `saga`, `ingestion`, `projection` and `intent`. `completed` is 0 or 1.
 Snapshot identity is its storage key. Saga identity is its instance ID, with saga name as
 `type_name`. Marks are the stored serialized processing marks. The other three seal a subject's
-private data in the CQRS stores. `ingestion` binds the row key and its sequence, 0 in append mode.
+private data in the CQRS stores. `ingestion` binds the row key and its sequence when supplied, or 0 when absent.
 `projection` binds the state key and the event sequence. `intent` binds the intent's storage key
 with version 0. Each leaves `type_name` and marks empty and `completed` 0. The storage key carries the
 generation and the scope fields carry the tenant and subject. So a sealed value copied to another row,

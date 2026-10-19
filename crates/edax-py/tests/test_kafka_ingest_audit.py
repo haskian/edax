@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from aiokafka import TopicPartition
 from edax.delivery import DeadLetter
-from edax.errors import BadHandle, CodecError
+from edax.errors import BadHandle, CodecError, Rejected
 from edax.ingestion import MappedRow
 from edax.message import EventMessage
 from test_kafka_ingest import (
@@ -97,24 +97,34 @@ async def test_native_mapped_value_refusal_is_published_before_healthy_progress(
     assert stored is not None and stored["sequence"] == 2
 
 
-async def test_native_invalid_row_identity_still_stops_ingestion() -> None:
-    messages = events(1)
+@pytest.mark.parametrize("key", ["", "x" * 2050], ids=["empty", "oversize"])
+async def test_invalid_row_identity_rejects_without_stopping_ingestion(key: str) -> None:
+    messages = events(2)
     client = BatchClient(records(messages))
     sink = RecordingSink()
+    dead: list[DeadLetter[Any]] = []
+
+    async def publish(letter: DeadLetter[Any]) -> None:
+        dead.append(letter)
+
     runner = KafkaIngestion(
         client,
         sink,
-        lambda event: MappedRow("", {"status": "paid"}),
-        no_dead,
-        settings=settings(max_records=1),
+        lambda event: MappedRow(
+            key if event.id == messages[0].id else event.aggregate_id, {"status": "paid"}
+        ),
+        publish,
+        settings=settings(max_records=2),
         serializer=EventIds(messages),
     )
     async with running(runner) as task:
-        await until(task.done)
-        with pytest.raises(BadHandle, match="row identity"):
+        await until(lambda: task.done() or any(batch.get(TP) == 2 for batch in client.commits))
+        if task.done():
             await task
-    assert client.commits == []
+    assert len(dead) == 1 and isinstance(dead[0].failure, Rejected)
+    assert dead[0].origin.offset == 0
     assert await sink.pending() == {}
+    assert await sink.get("tenant-7", "order-0") is not None
 
 
 @pytest.mark.parametrize("completes_before_drain", [True, False], ids=["completes", "drain_expires"])

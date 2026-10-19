@@ -131,7 +131,7 @@ what each one owns.
 | `edax-seal` | cipher and encryption records, authenticated context, encryption, fingerprints, randomness, `keys` lifecycle and usage accounting |
 | `edax-event` | `message` (the messages, their payload, the ordering key), `codec`, `causation`, `partition`, `staleness`, `idempotency`, `sequence`, `upcast`, `retry`, `drain`, `saga`, `sealing`, `erasure`, `batch` |
 | `edax-cqrs` | `canonical_json`, `command_hash`, `received_key`, `claim_key`, the idempotency `record`, `protected` fingerprints and results, the ledger fence (`complete_fence`, `release_fence`), the host values `Decimal` and `Instant`, `filter`, `query`, `namespace`, `ingest`, `projection` |
-| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, and `ingest` (the atomic ingestion reference sink), written once and shared by the Rust, Python and Go SDKs |
+| `edax-memory` | in-memory event, projection, idempotency and saga stores and a command outbox behind one transaction boundary, and a partitioned broker log that carries events and commands, and `ingest` (the atomic ingestion reference sink) and `projection_state` (ordered projection transactions), written once and shared by the Rust, Python and Go SDKs |
 | `edax-kafka` | `record` (the key, the header, the route, the dead-letter record), `partition` (broker placement), `offsets` (the watermark), `client` (`check_config`, `check_consumer`, `check_dead_sink`, `acks_warning`, `broker_error`) |
 | `edax-redis` | `ledger` (the key, the settings, the value layout, the claim handle, the reply outcomes), `scripts` (the five fence scripts, the reply verdict) |
 | `edax-postgres` | `config`, `error`, `schema`, `statements`, `rows`, `documents`, `query`, `ledger`, `erasure`, `ingest`, `projection` |
@@ -149,7 +149,8 @@ input and output (I/O) shell per SDK.
 
 The base Rust, Python and Go in-memory backends are views over `edax-memory`. Their
 staging, optimistic-concurrency checks and transaction boundary share one implementation.
-The Python memory projection state store separately stages the writes returned by `edax-cqrs::projection`.
+The Python memory projection state store stages the writes returned by `edax-cqrs::projection` through
+`edax-memory::projection_state`, which checks read versions at atomic commit.
 `edax-kafka` owns the record a published message becomes and the offset watermark that settles it.
 `edax-redis` owns the value stored under an idempotency key and the Lua a fenced write runs. Neither
 crate links a client library, so the I/O stays in the SDK that has one. `edax-postgres` owns

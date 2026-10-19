@@ -22,7 +22,7 @@ from . import _json, _native
 from ._owned import ThreadBound
 from ._units import own_write
 from .erasure import ScopeCleanup
-from .errors import BadHandle, KeyRevoking, KeyUnavailable, Shredded, StoreError
+from .errors import BadHandle, KeyRevoking, KeyUnavailable, Shredded
 from .outbox import check_page
 from .query import Document, Page, Query
 from .sealing import AtRest, KeyScope, Sealing, SealPart
@@ -407,6 +407,14 @@ def _canonical(value: Any) -> Any:
     return _json.decode(_native.canonical_json(_json.encode(value).encode()))
 
 
+class _ReducerFailure(Exception):
+    """Carry a host failure through transaction adapters without assigning it a driver verdict."""
+
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+        super().__init__(str(error))
+
+
 class ProjectionStateStore:
     """Transaction interface shared by the memory reference and the PostgreSQL adapter. A subclass runs
     :meth:`_transaction` over its own :class:`ProjectionSession` and serves the outbox read side.
@@ -467,8 +475,10 @@ class ProjectionStateStore:
                 else (result["intents"][placed["intent"]], "payload")
             )
         values = [holder[name] for holder, name in places]
-        sealed = await self._keys().seal_stored(
-            [(placed["part"], value) for placed, value in zip(plan, values, strict=True)]
+        sealed = (
+            await self._keys()
+            .for_batch(self.key_timeout_s)
+            .seal_stored([(placed["part"], value) for placed, value in zip(plan, values, strict=True)])
         )
         for (holder, name), value in zip(places, sealed, strict=True):
             holder[name] = value
@@ -480,19 +490,31 @@ class ProjectionStateStore:
         keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
         intents: list[EffectIntent] = []
         shredded: list[str] = []
+        held: set[tuple[str | None, str]] = set()
         for record in records:
+            ordering = (record.get("tenant"), record["aggregate"])
+            if ordering in held:
+                continue
             payload = record["payload"]
             part: SealPart | None = _json.decode(
                 _native.projection_open_intent(self.target._contract, _json.encode(record))
             )
-            if part is not None:
-                try:
+            try:
+                # Older null payloads and subjectless tenant data have no encrypted part, but still
+                # belong to their scope's lifecycle. No payload can bypass a confirmed destruction.
+                if part is None and keys is not None:
+                    scope = keys.scope(record.get("tenant"), record.get("subject"))
+                    _native.check_key_write_status(await keys.keys.status(scope))
+                elif keys is None and record.get("subject") is not None:
+                    self._keys()  # a subject's effects require the authoritative provider
+                if part is not None:
                     payload = await self._keys(keys).open_stored(part, payload)
-                except Shredded:
-                    shredded.append(record["id"])
-                    continue
-                except (KeyRevoking, KeyUnavailable):
-                    continue
+            except Shredded:
+                shredded.append(record["id"])
+                continue
+            except (KeyRevoking, KeyUnavailable):
+                held.add(ordering)
+                continue
             intents.append(effect_intent({**record, "payload": payload}))
         if shredded:
             await self.mark_published(shredded)
@@ -577,11 +599,9 @@ class ProjectionStateStore:
             # One read for the whole batch: the batch's records with the extension's checkpoint.
             await session.prefetch(op="prepare_batch", lease=lease, inputs=originals, proof=proof)
             # Staging may outlive the lease; the extension shares this transaction's reads.
-            current = await session.execute(op="refresh", lease=lease, lease_ms=lease_ms, proof=proof)
-            if current["next_offset"] != lease.next_offset:
-                # The stored cursor moved (a failover lost a commit, or another owner advanced it):
-                # retry from it rather than skip or repeat records.
-                raise StoreError("projection cursor moved; reload it and fetch again")
+            current = await session.execute(
+                op="refresh", lease=lease, lease_ms=lease_ms, proof=proof, expected_offset=lease.next_offset
+            )
             prepared = await session.execute(op="prepare_batch", lease=current, inputs=originals, proof=proof)
             states: dict[tuple[str | None, str], ProjectionState | None] = {}
             reduced: list[Any] = []
@@ -598,7 +618,11 @@ class ProjectionStateStore:
                         keys, event.tenant, event.subject, event.aggregate, item["state"]
                     )
                 # Serialize now: reducer aliases cannot change an earlier event's staged result.
-                result = _canonical(reducer(states[key], event))
+                try:
+                    result_value = reducer(states[key], event)
+                except Exception as error:
+                    raise _ReducerFailure(error) from error
+                result = _canonical(result_value)
                 states[key] = ProjectionState(result["private"], result["public"])
                 reduced.append(result)
                 novel.append((item["event"], result))
@@ -612,7 +636,22 @@ class ProjectionStateStore:
             _guard(is_current)
             return committed
 
-        return await self._transaction(apply)
+        original: Exception | None = None
+        try:
+            return await self._transaction(apply)
+        except Exception as error:
+            cause: BaseException | None = error
+            seen: set[int] = set()
+            while cause is not None and id(cause) not in seen:
+                seen.add(id(cause))
+                if isinstance(cause, _ReducerFailure):
+                    original = cause.error
+                    break
+                cause = cause.__cause__
+            if original is None:
+                raise
+        # Outside the handler: do not attach the adapter wrapper back onto its original cause.
+        raise original
 
     async def freeze(self) -> ProjectionCutover:
         """Drain under the generation lock, retire all owners, and capture committed cutoffs."""
@@ -630,7 +669,8 @@ class ProjectionStateStore:
         """The stored state of one aggregate, ``{"sequence", "partition", "private", "public"}`` with
         ``private`` opened, or ``None``. A destroyed subject raises :class:`~edax.errors.Shredded`."""
         record = await self._execute(op="get", tenant=tenant, subject=subject, aggregate=aggregate)
-        state = await self._state(None, tenant, subject, aggregate, record)
+        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
+        state = await self._state(keys, tenant, subject, aggregate, record)
         if state is None:
             return None
         return {**record, "private": state.private}
@@ -710,13 +750,13 @@ class MemoryProjectionStateStore(ProjectionStateStore):
         check_page(limit)
         return self._database.get().prune(self.target.manifest_key, self.target.generation, limit)
 
-    def cleanup(self) -> ScopeCleanup:
+    def cleanup(self, *, key_namespace: str | None = None) -> ScopeCleanup:
         """The erasure participant that deletes a scope's state: a subject's, or a whole tenant's. A
-        ``plaintext`` target needs it; sealed state is erased by destroying the key. Receipts stay: they
-        hold keyed fingerprints, which the destroyed key leaves untestable."""
+        ``plaintext`` target or subjectless state needs it. ``key_namespace`` defaults to the store's
+        sealing namespace and is required without sealing. Receipts retain their keyed fingerprints."""
 
         async def delete(scope: KeyScope) -> int:
             start, end = self.target.state_scope_range(scope)
             return self._database.get().delete_scope(start, end)
 
-        return ScopeCleanup(delete)
+        return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)

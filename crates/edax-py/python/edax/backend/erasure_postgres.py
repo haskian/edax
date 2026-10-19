@@ -12,12 +12,13 @@ import json
 import math
 from collections.abc import AsyncIterator, Awaitable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Protocol, TypeVar, cast
+from typing import Literal, Protocol, TypeVar, cast
 
 from .. import _native
 from .._wiring import wiring_u64
 from ..erasure import ErasureAction, ErasureNotification, ErasureOperation, StoredErasure
 from ..errors import BadHandle, EdaxError
+from ..outbox import check_page
 from ..sealing import KeyScope
 from .postgres import postgres_error, postgres_params
 
@@ -70,13 +71,15 @@ class PostgresErasureStore:
             catalog = await self._await(connection.fetchval(self._sql["check_schema"]))
             _native.postgres_erasure_check_catalog(self._schema, cast(str, catalog))
 
-    async def _await(self, call: Awaitable[T]) -> T:
+    async def _await(
+        self, call: Awaitable[T], *, op: Literal["transaction", "erasure_fence"] = "transaction"
+    ) -> T:
         try:
             return await asyncio.wait_for(call, self._timeout)
         except EdaxError:
             raise
         except Exception as error:
-            raise postgres_error("transaction", error) from error
+            raise postgres_error(op, error) from error
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[PgErasureConnection]:
@@ -164,6 +167,7 @@ class PostgresErasureStore:
             return [self._decode(row[0]) for row in rows]
 
     async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+        check_page(limit)
         async with self._transaction() as connection:
             rows = await self._await(
                 connection.fetch(self._sql["revoked_operations"], str(wiring_u64(limit, "limit")), after)
@@ -187,7 +191,8 @@ class PostgresErasureStore:
             await self._await(
                 connection.execute(
                     self._sql[cast(str, call["statement"])], *cast(list[str | None], call["params"])
-                )
+                ),
+                op="erasure_fence",
             )
 
     async def guard_in_transaction(self, connection: PgErasureConnection, *scopes: KeyScope) -> None:
@@ -219,7 +224,8 @@ class PostgresErasureStore:
             yield connection
 
     async def revoke_in_transaction(self, connection: PgErasureConnection, scope: KeyScope) -> None:
-        """Drain guarded writers and install a tombstone; delete plaintext before committing this tx."""
+        """Drain guarded writers and install a tombstone in this transaction. After its commit, cleanup
+        may delete bounded pages in later transactions; acknowledge only after every page is removed."""
         if not connection.is_in_transaction():
             raise BadHandle("erasure cleanup requires an open transaction")
         await self._locks(connection, _native.postgres_erasure_revocation_locks(scope))

@@ -21,6 +21,8 @@ struct State {
     version: u64,
     /// Last partition selected by each generation's delivery page.
     delivery: BTreeMap<(String, String), i64>,
+    /// Last aggregate selected in each partition. Every group is still read from its oldest row.
+    delivery_groups: BTreeMap<(String, String, i64), String>,
 }
 
 /// What a transaction read: each present record, and the version of every key it asked for.
@@ -127,24 +129,41 @@ impl MemoryProjectionState {
             }
         }
         ready.sort_by_key(|(offset, ordinal, _)| (*offset, *ordinal));
+        let mut groups = Vec::new();
+        for (offset, ordinal, intent) in ready {
+            let partition = position(intent, "partition");
+            let group = format!(
+                "{},{}",
+                intent.get("tenant").unwrap_or(&Value::Null),
+                intent.get("aggregate").unwrap_or(&Value::Null)
+            );
+            let cursor = state
+                .delivery_groups
+                .get(&(manifest_key.to_owned(), generation.to_owned(), partition));
+            let wrapped = cursor.is_some_and(|after| group <= *after);
+            groups.push((partition, wrapped, group, offset, ordinal, intent));
+        }
+        groups.sort_by(|a, b| (&a.0, &a.1, &a.2, &a.3, &a.4).cmp(&(&b.0, &b.1, &b.2, &b.3, &b.4)));
         let mut ranks = BTreeMap::<i64, usize>::new();
-        let mut ranked: Vec<(usize, i64, &Value)> = ready
-            .into_iter()
-            .map(|(_, _, intent)| {
-                let partition = position(intent, "partition");
-                let rank = ranks.entry(partition).or_default();
-                *rank += 1;
-                (*rank, partition, intent)
-            })
-            .collect();
-        ranked.sort_by_key(|(rank, partition, _)| (*rank, *partition <= after, *partition));
-        let page: Vec<Value> = ranked
+        let mut ranked = Vec::new();
+        for (partition, _, group, _, _, intent) in groups {
+            let rank = ranks.entry(partition).or_default();
+            *rank += 1;
+            ranked.push((*rank, partition, group, intent));
+        }
+        ranked.sort_by_key(|(rank, partition, _, _)| (*rank, *partition <= after, *partition));
+        let selected: Vec<(i64, String, Value)> = ranked
             .into_iter()
             .take(limit)
-            .map(|(_, _, intent)| intent.clone())
+            .map(|(_, partition, group, intent)| (partition, group, intent.clone()))
             .collect();
-        if let Some(last) = page.last() {
-            state.delivery.insert(delivery_key, position(last, "partition"));
+        let mut page = Vec::with_capacity(selected.len());
+        for (partition, group, intent) in selected {
+            state
+                .delivery_groups
+                .insert((manifest_key.to_owned(), generation.to_owned(), partition), group);
+            state.delivery.insert(delivery_key.clone(), partition);
+            page.push(intent);
         }
         Ok(page)
     }

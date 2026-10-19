@@ -345,6 +345,57 @@
     }
   },
   {
+    "attempt": 1,
+    "code": "codec",
+    "count": 1,
+    "error": null,
+    "isolable": false,
+    "max_attempts": 3,
+    "name": "uncertain_terminal_without_isolation_retries",
+    "op": "recover",
+    "rolled_back": false,
+    "waits": 0,
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 1,
+    "code": "store",
+    "count": 1,
+    "error": null,
+    "isolable": false,
+    "max_attempts": 3,
+    "name": "transient_without_isolation_retries",
+    "op": "recover",
+    "rolled_back": false,
+    "waits": 0,
+    "want": {
+      "action": "retry",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
+    "attempt": 9,
+    "code": "in_progress",
+    "count": 1,
+    "error": null,
+    "isolable": false,
+    "max_attempts": 3,
+    "name": "contention_first_wait_saturates",
+    "op": "recover",
+    "rolled_back": false,
+    "waits": 0,
+    "want": {
+      "action": "wait",
+      "split": 0,
+      "step": 0
+    }
+  },
+  {
     "attempt": 9,
     "code": "in_progress",
     "count": 500,
@@ -648,6 +699,14 @@
     "want": 12582912
   },
   {
+    "bytes": 0,
+    "config": {},
+    "error": null,
+    "name": "charge_empty",
+    "op": "charge",
+    "want": 0
+  },
+  {
     "bytes": 1000,
     "config": {},
     "error": null,
@@ -666,7 +725,7 @@
   {
     "bytes": 4194305,
     "config": {},
-    "error": "bad_handle: prepared input exceeds the reserved serialized memory",
+    "error": "codec: prepared input exceeds the reserved serialized memory",
     "name": "charge_past_the_reserve",
     "op": "charge",
     "want": null

@@ -15,6 +15,10 @@ def test_ingestion_raw_numbers(case: dict[str, Any]) -> None:
     def replay() -> Any:
         if case["op"] == "plan":
             return json.loads(_edax.ingest_plan(case["mode"], case["inputs_json"], "{}", "{}"))
+        if case["op"] == "projection_sealed_input":
+            return json.loads(
+                _edax.projection_sealed_input(2**63 - 1, json.dumps(case["envelope"]), case["event_json"])
+            )
         assert case["op"] == "projection_keys"
         return json.loads(_edax.projection_keys(case["request_json"]))
 

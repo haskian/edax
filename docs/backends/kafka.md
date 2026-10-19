@@ -299,6 +299,9 @@ commits every partition `due` names in one call every `commit_interval_s`, and o
 ends. Each commit runs under `commit_timeout_s`: `aiokafka` retries a commit while the coordinator is
 away, without end, and the deadline stops that from hanging the consumer. `flush()` commits
 on demand; call it after `dispatcher.stop()` to commit the drained work before closing the client.
+If an earlier cancelled wait left a client commit running, retry transient `StoreError` from
+`flush()` within your shutdown deadline. Keep the client open until that call settles and the
+final flush succeeds; always close the client when shutdown ends, including on deadline expiry.
 
 **A commit is recorded only after the client confirms it.** A failed commit leaves its watermark due.
 Each completion carries its partition generation. The kernel ignores completions from before a reset,
@@ -309,8 +312,9 @@ delivered, and last committed watermark.
 A deadline or caller cancellation ends the wait without cancelling the client commit. aiokafka shields
 its broker request, so cancelling the client call would hide an operation that can still finish later.
 The adapter retains the entire call until it finishes. No new commit or poll starts while that call
-remains unresolved; attempts raise `BadHandle`. A late successful reply updates only its original
-generation. Stop the caller-owned client before replacing the adapter after this failure.
+remains unresolved; attempts raise transient `StoreError`. A late successful reply updates only its
+original generation. Once that call settles, the same adapter can resume. Stop the caller-owned
+client before replacing an adapter whose call remains unresolved.
 
 Fetches and bookings share one task. A rewind invalidates an outstanding fetch and restores the
 kernel's safe cursor after that fetch finishes. Cooperative poll cancellation permits another poll.

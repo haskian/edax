@@ -30,7 +30,7 @@
     ]
   },
   {
-    "error": null,
+    "error": "codec: tenant holds a NUL character",
     "name": "state_identity_escapes_nul_and_unicode",
     "op": "keys",
     "request": {
@@ -55,10 +55,7 @@
         "tenant": "bank\u0000eu"
       }
     },
-    "want": [
-      "11:balances-v1:[\"projection\",\"manifest\"]",
-      "11:balances-v1:[\"projection\",\"state\",\"bank\\u0000eu\",null,\"račun-42\"]"
-    ]
+    "want": null
   },
   {
     "error": null,
@@ -1293,6 +1290,17 @@
           "tenant": "bank-eu",
           "version": 0
         }
+      },
+      {
+        "intent": 1,
+        "item": 0,
+        "part": {
+          "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"ping\\\"]\"]",
+          "kind": "intent",
+          "subject": "person-7",
+          "tenant": "bank-eu",
+          "version": 0
+        }
       }
     ]
   },
@@ -1419,6 +1427,17 @@
         "item": 0,
         "part": {
           "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"receipt\\\"]\"]",
+          "kind": "intent",
+          "subject": "person-7",
+          "tenant": "bank-eu",
+          "version": 0
+        }
+      },
+      {
+        "intent": 1,
+        "item": 0,
+        "part": {
+          "identity": "11:balances-v1:[\"projection\",\"intent\",\"10:receipt-v1:[\\\"bank-eu\\\",\\\"account-7\\\",\\\"account-7-credit-2\\\",\\\"ping\\\"]\"]",
           "kind": "intent",
           "subject": "person-7",
           "tenant": "bank-eu",

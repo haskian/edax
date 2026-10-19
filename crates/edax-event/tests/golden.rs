@@ -2200,6 +2200,36 @@ fn event_batch_cases() -> Vec<Value> {
     for (name, code, attempt, waits, count, max_attempts, rolled_back, isolable) in [
         ("fatal_stops", Some("bad_handle"), 1, 0, 500, 5, true, true),
         (
+            "uncertain_terminal_without_isolation_retries",
+            Some("codec"),
+            1,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
+            "transient_without_isolation_retries",
+            Some("store"),
+            1,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
+            "contention_first_wait_saturates",
+            Some("in_progress"),
+            9,
+            0,
+            1,
+            3,
+            false,
+            false,
+        ),
+        (
             "contention_waits_uncounted",
             Some("in_progress"),
             9,
@@ -2301,6 +2331,7 @@ fn event_batch_cases() -> Vec<Value> {
     cases.push(json!({"name":"default_reservation", "op":"reserve", "config":{}, "want":edax_event::batch::reserve(&config).unwrap(), "error":null}));
     let reserve = edax_event::batch::reserve(&config).unwrap();
     for (name, bytes) in [
+        ("charge_empty", 0),
         ("charge_counts_three_copies", 1_000usize),
         ("charge_at_the_reserve", reserve / 3),
         ("charge_past_the_reserve", reserve / 3 + 1),

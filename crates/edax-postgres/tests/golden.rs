@@ -1004,5 +1004,16 @@ fn golden_ingest() {
             "want": result.as_ref().ok(), "error": refusal(&result),
         }));
     }
+    let row = json!({"stream":"order-42","sequence":1,"fingerprint":"42", "private":{"total":5.808820077685227e16},"public":{"total":1e23,"nested":[-5.808820077685227e16,null]}});
+    let rejection = json!({"fingerprint":"digest","error":"codec: rejected","raw":"original","published":false});
+    let plan = json!({"outcomes":["accepted","accepted","rejected"],"writes":{"new":row,"changed":row},"rejections":{"new-rejection":rejection,"replay":rejection}});
+    let stored = json!({"changed":row});
+    let rejected = json!({"replay":rejection});
+    let result = edax_postgres::ingest::write_plan(
+        &serde_json::from_value(plan.clone()).unwrap(),
+        &serde_json::from_value(stored.clone()).unwrap(),
+        &serde_json::from_value(rejected.clone()).unwrap(),
+    );
+    cases.push(json!({"name":"write_plan_exact_numbers_and_first_decisions","op":"write_plan", "plan":plan,"stored":stored,"rejected":rejected,"want":result.as_ref().ok(),"error":refusal(&result)}));
     write_or_check("postgres_ingest.json", cases);
 }

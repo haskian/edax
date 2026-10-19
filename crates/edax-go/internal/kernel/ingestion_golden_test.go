@@ -211,12 +211,18 @@ func TestIngestionGolden(t *testing.T) {
 func TestPostgresIngestionGolden(t *testing.T) {
 	for _, row := range ingestionGoldenRows[struct {
 		ingestionGoldenResult
-		Config string
+		Config   string
+		Plan     json.RawMessage
+		Stored   json.RawMessage
+		Rejected json.RawMessage
 	}](t, "postgres_ingest") {
 		t.Run(row.Name, func(t *testing.T) {
 			switch row.Op {
 			case "statements":
 				got, err := PostgresIngestStatements(row.Config)
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
+			case "write_plan":
+				got, err := PostgresIngestWritePlan(string(row.Plan), string(row.Stored), string(row.Rejected))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
 			default:
 				t.Fatalf("unknown postgres ingestion operation %q", row.Op)

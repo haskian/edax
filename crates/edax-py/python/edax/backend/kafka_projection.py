@@ -22,7 +22,7 @@ from ..projection import (
     Reducer,
     SourceProof,
 )
-from ..sealing import Scope, Sealing
+from ..sealing import Scope, Sealing, provider_deadline
 from ..serializer import Serializer
 from . import _kafka
 from ._kafka import (
@@ -132,6 +132,8 @@ class KafkaProjection:
         self.decode, self.reducer = decode, reducer
         # The store's sealing opens records too: a runner that cannot see a destroyed key would neither
         # stage its events erased nor fence their commit.
+        if sealing is not None and store.sealing is not None:
+            sealing.check_compatible(store.sealing)
         self.sealing = sealing if sealing is not None else store.sealing
         self._decoder = RecordDecoder(serializer, serializers, middleware)
         self.settings = settings or BatchSettings()
@@ -142,9 +144,12 @@ class KafkaProjection:
         self._stopped = asyncio.Event()
         self._task: asyncio.Task[Any] | None = None
         self._started = False
+        self._loop_started = False
+        self._stop_cancelled = False
         self._releases: set[asyncio.Task[None]] = set()
         self._operations: set[asyncio.Task[Any]] = set()
         self._fetches: dict[TopicPartition, asyncio.Task[Any]] = {}
+        self._activity: asyncio.Task[Any] | None = None
         self._retained_records = 0
         self._retained_bytes = 0
 
@@ -176,7 +181,7 @@ class KafkaProjection:
 
     async def _assign(self, assigned: Collection[TopicPartition]) -> None:
         for tp in assigned:
-            self._parts[tp] = _Assigned()
+            self._parts.setdefault(tp, _Assigned())
 
     def _release(self, lease: ProjectionLease) -> asyncio.Task[None]:
         task = asyncio.create_task(self.store.release(lease))
@@ -242,8 +247,6 @@ class KafkaProjection:
             raise CodecError(str(decoded.cause)) from decoded.cause
         if not isinstance(decoded, EventMessage):
             raise CodecError("projection requires an event message")
-        if keys is None:
-            return ProjectionInput(record.offset, self.decode(decoded))
         envelope = _json.encode(
             {
                 "tenant": decoded.tenant,
@@ -260,6 +263,14 @@ class KafkaProjection:
             # The kernel builds an erased input from the envelope alone: nothing of the event can be read.
             return _input(_json.decode(_native.projection_sealed_input(record.offset, envelope, None)))
 
+        if keys is None:
+            return _input(
+                _json.decode(
+                    _native.projection_sealed_input(
+                        record.offset, envelope, _json.encode(self.decode(decoded))
+                    )
+                )
+            )
         opened = await keys.open_event_for_consumer(decoded)
         if opened is None:
             return erased()
@@ -278,30 +289,53 @@ class KafkaProjection:
         fingerprint = _native.projection_keyed_fingerprint(key, _json.encode(item.event))
         return replace(item, fingerprint=fingerprint)
 
+    async def _stage(
+        self, assigned: _Assigned, keys: Sealing | None, record: FetchedRecord
+    ) -> ProjectionInput:
+        # Opening can outlive its deadline. Reserve its source and possible output while it owns data,
+        # so admitting healthy partitions cannot spend the same capacity.
+        self._retained_records += 1
+        self._retained_bytes += self._reserve
+
+        def released(_: object = None) -> None:
+            self._retained_records -= 1
+            self._retained_bytes -= self._reserve
+
+        try:
+            with provider_deadline(self.timeout):
+                return await self._operation(assigned, self._input(keys, record))
+        finally:
+            if assigned.unresolved is not None:
+                assigned.unresolved.add_done_callback(released)
+            else:
+                released()
+
     async def _fenced(
         self, assigned: _Assigned, inputs: Sequence[ProjectionInput], commit: Callable[[], Awaitable[T]]
     ) -> T:
         """Commit under the write fence of every subject the batch writes. A subject destroyed since the
         batch was staged waits as contention: the next attempt stages its events erased."""
-        if self.sealing is None:
-            if any(not item.erased and item.event.subject is not None for item in inputs):
-                # No fence: a commit landing after an erasure cleanup would bring the subject's state back.
-                raise BadHandle(
-                    "a subject's state needs sealing= on the runner or the store for the erasure fence"
-                )
-            return await self._operation(assigned, commit())
-        scopes: set[Scope] = set()
-        for item in inputs:
-            if not item.erased and item.event.subject is not None:
-                scopes.add((item.event.tenant, item.event.subject))
-        async with self.sealing.fenced(scopes, timeout_s=self.timeout) as destroyed:
-            if destroyed:
-                raise KeyRevoking("a staged subject was erased before its commit")
-            try:
-                return await self._operation(assigned, commit())
-            finally:
-                # A commit past its deadline may still land: the fence holds until it really ends.
-                await _settled(assigned.unresolved)
+
+        async def fenced() -> T:
+            with provider_deadline(self.timeout):
+                if self.sealing is None:
+                    if any(not item.erased and item.event.subject is not None for item in inputs):
+                        raise BadHandle(
+                            "a subject's state needs sealing= on the runner or the store "
+                            "for the erasure fence"
+                        )
+                    return await commit()
+                scopes: set[Scope] = {
+                    (item.event.tenant, item.event.subject) for item in inputs if not item.erased
+                }
+                async with self.sealing.fenced(scopes, timeout_s=self.timeout) as destroyed:
+                    if destroyed:
+                        raise KeyRevoking("a staged scope was erased before its commit")
+                    # This task owns both the guard and commit. If the driver suppresses cancellation,
+                    # it retains the guard while the runner moves on to other partitions.
+                    return await commit()
+
+        return await self._operation(assigned, fenced())
 
     async def _proof(
         self, tp: TopicPartition, assigned: _Assigned, lease: ProjectionLease | None = None
@@ -315,6 +349,8 @@ class KafkaProjection:
         def current() -> bool:
             return self._live(tp, assigned) and assigned.unresolved is None
 
+        if self._activity is not None and not self._activity.done():
+            return
         previous_fetch = self._fetches.get(tp)
         if previous_fetch is not None and not previous_fetch.done():
             return
@@ -335,8 +371,9 @@ class KafkaProjection:
             else:
                 # Refresh reloads an uncertain commit and refences an expired current assignment.
                 call = self.store.refresh(lease, proof, lease_ms=self.lease_ms, is_current=current)
+            started = loop.time()
             lease = assigned.lease = await self._operation(assigned, call)
-            assigned.renew_at = loop.time() + self.lease_ms / 2000
+            assigned.renew_at = started + self.lease_ms / 2000
             if not current():
                 self._retire(tp, assigned, lease)
                 return
@@ -369,7 +406,7 @@ class KafkaProjection:
                     break
                 fetched = await self._operation(
                     assigned,
-                    self.client.getmany(
+                    self._fetch(
                         tp,
                         # An idle partition must not hold up the others: wait only once a batch has started.
                         timeout_ms=min(self.settings.flush_ms, max(1, int(self.timeout * 500)))
@@ -380,6 +417,7 @@ class KafkaProjection:
                     fetch=tp,
                 )
                 if not current():
+                    assigned.seek_needed = True
                     return
                 records = fetched.get(tp, ())
                 if any(key != tp and values for key, values in fetched.items()):
@@ -393,12 +431,19 @@ class KafkaProjection:
                     raise BadHandle("projection client returned a foreign record")
                 raw_bytes = _kafka.record_bytes(record)
                 if raw_bytes > self.settings.max_record_bytes:
-                    raise CodecError("projection record exceeds configured input limit")
-                item = await self._input(keys, record)
+                    raise CodecError(
+                        f"{tp.topic}/{tp.partition}@{record.offset}: projection record exceeds input limit"
+                    )
+                try:
+                    item = await self._stage(assigned, keys, record)
+                except CodecError as error:
+                    raise CodecError(f"{tp.topic}/{tp.partition}@{record.offset}: {error}") from error
                 encoded = _json.encode(item)
                 serialized = len(encoded.encode())
                 if serialized > self.settings.max_mapped_bytes:
-                    raise CodecError("projection canonical envelope exceeds configured input limit")
+                    raise CodecError(
+                        f"{tp.topic}/{tp.partition}@{record.offset}: canonical envelope exceeds input limit"
+                    )
                 # Own a snapshot before another callback can mutate its payload/metadata.
                 decoded = _json.decode(encoded)
                 inputs.append(
@@ -416,12 +461,14 @@ class KafkaProjection:
                 self._retained_bytes += charge
                 del record, records, fetched, item, decoded
             if not current():
+                assigned.seek_needed = True
                 return
             if inputs and current():
                 proof = await self._proof(tp, assigned, lease)
                 if not current():
                     return
                 # One transaction extends the lease and commits the batch; staging cannot spend it.
+                started = loop.time()
                 assigned.lease = await self._fenced(
                     assigned,
                     inputs,
@@ -429,12 +476,12 @@ class KafkaProjection:
                         lease, inputs, proof, self.reducer, lease_ms=self.lease_ms, is_current=current
                     ),
                 )
-                assigned.renew_at = loop.time() + self.lease_ms / 2000
+                assigned.renew_at = started + self.lease_ms / 2000
                 if not current():
                     # Revoked during the commit: hand the lease the commit extended to the next owner.
                     self._retire(tp, assigned, assigned.lease)
                     return
-            assigned.attempts = assigned.contended = 0
+                assigned.attempts = assigned.contended = 0
         except BaseException:
             assigned.seek_needed = True
             if assigned.lease is not None and assigned.unresolved is None:
@@ -453,13 +500,61 @@ class KafkaProjection:
             else:
                 released()
 
+    async def _fetch(
+        self, tp: TopicPartition, **options: Any
+    ) -> Mapping[TopicPartition, Sequence[FetchedRecord]]:
+        with _kafka.classified():
+            return await self.client.getmany(tp, **options)
+
+    async def _keepalive(self) -> None:
+        if any(not task.done() for task in self._fetches.values()):
+            return
+        if self._activity is not None and not self._activity.done():
+            return
+        before = dict(self._parts)
+        task = asyncio.create_task(_kafka.poll_activity(self.client, lambda _: True))
+        self._activity = task
+
+        def fetched(done: asyncio.Task[Any]) -> None:
+            if done.cancelled() or done.exception() is not None:
+                return
+            for tp, records in done.result().items():
+                if (
+                    records
+                    and (assigned := self._parts.get(tp)) is not None
+                    and before.get(tp, assigned) is assigned
+                ):
+                    # This callback also handles a cancellation-suppressing late fetch. The next
+                    # pass seeks its checkpoint; an old owner cannot mutate a replacement entry.
+                    assigned.seek_needed = True
+
+        task.add_done_callback(fetched)
+        try:
+            await self._operation(_Assigned(), task)
+        except StoreError:
+            # The activity fetch can be waiting for reassignment. Its retained slot excludes all
+            # normal fetches until it ends; a later loop retries after actual completion.
+            return
+
     async def run(self, stop: asyncio.Event | None = None) -> None:
         """Process assigned partitions until ``stop`` is set or :meth:`stop` is called. Single use."""
         if self._started:
             raise BadHandle("projection runner cannot be restarted")
         check_listener(cast(Any, self.client))
         self._started = True
-        self._task = asyncio.current_task()
+        self._task = asyncio.create_task(self._run(stop))
+        self._task.add_done_callback(_kafka.retrieve_failure)
+        try:
+            await asyncio.shield(self._task)
+        except asyncio.CancelledError:
+            # Requested stop is absorbed by the owned loop, so cancellation here belongs to the
+            # caller. This remains observable even when it races with stop().
+            self._stopped.set()
+            self._task.cancel()
+            raise
+
+    async def _run(self, stop: asyncio.Event | None) -> None:
+        self._loop_started = True
         watcher = asyncio.create_task((stop or asyncio.Event()).wait())
 
         def stopped(done: asyncio.Task[Any]) -> None:
@@ -510,11 +605,17 @@ class KafkaProjection:
                             continue
                         assigned.attempts += 1
                         assigned.ready_at = now + self.pacing.delay(decision["step"])
+                if not progressed:
+                    await self._keepalive()
                 # Avoid busy polling empty partitions and wake immediately on stop.
                 with suppress(asyncio.TimeoutError):
                     await asyncio.wait_for(self._stopped.wait(), 0.01 if progressed else 0.05)
+        except asyncio.CancelledError:
+            if not self._stopped.is_set():
+                raise
         finally:
             watcher.cancel()
+            await asyncio.gather(watcher, return_exceptions=True)
             self._stopped.set()
             # Lease expiry is the recovery fallback; release is a best-effort optimization. Snapshot the
             # partitions: a rebalance callback may change them while the releases run.
@@ -527,7 +628,11 @@ class KafkaProjection:
         self._stopped.set()
         task = self._task
         if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
+            # Before its first instruction the loop cannot absorb a requested cancellation. It will
+            # observe the stop event immediately instead. Repeated stop calls never cancel cleanup.
+            if self._loop_started and not self._stop_cancelled:
+                self._stop_cancelled = True
+                task.cancel()
             await asyncio.wait({task}, timeout=self.drain_timeout)
 
     async def wait_closed(self) -> None:
@@ -550,15 +655,3 @@ def _input(record: dict[str, Any]) -> ProjectionInput:
         record.get("erased", False),
         record.get("fingerprint"),
     )
-
-
-async def _settled(task: asyncio.Future[Any] | None) -> None:
-    """Wait until ``task`` has really ended. A cancellation of this wait is absorbed: cancelling never
-    proves that a commit stopped, so the caller still holds its fence until the task is done."""
-    while task is not None and not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            continue
-        except Exception:  # noqa: BLE001 - its failure belongs to the operation that owns it
-            break

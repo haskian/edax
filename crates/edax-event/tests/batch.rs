@@ -263,3 +263,13 @@ fn isolation_splits_originals_into_nonempty_ordered_children() {
         ErrorCode::Codec
     );
 }
+
+#[test]
+fn serialized_charge_overflow_is_a_configuration_failure() {
+    assert_eq!(
+        edax_event::batch::charge(usize::MAX, &Config::default())
+            .unwrap_err()
+            .code,
+        ErrorCode::BadHandle
+    );
+}

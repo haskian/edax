@@ -96,6 +96,64 @@
     }
   },
   {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": null,
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":9007199254740991,\"metadata\":null}",
+    "name": "sealed_projection_payload_safe_integer",
+    "op": "projection_sealed_input",
+    "want": {
+      "event": {
+        "aggregate": "order-42",
+        "event_id": "order-paid",
+        "event_type": "OrderPaid",
+        "metadata": null,
+        "payload": 9007199254740991,
+        "schema_version": "1",
+        "sequence": 9223372036854775807,
+        "subject": "person-42",
+        "tenant": "tenant-7"
+      },
+      "offset": 9223372036854775807
+    }
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": null,
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":9007199254740991}",
+    "name": "sealed_projection_metadata_safe_integer",
+    "op": "projection_sealed_input",
+    "want": {
+      "event": {
+        "aggregate": "order-42",
+        "event_id": "order-paid",
+        "event_type": "OrderPaid",
+        "metadata": 9007199254740991,
+        "payload": null,
+        "schema_version": "1",
+        "sequence": 9223372036854775807,
+        "subject": "person-42",
+        "tenant": "tenant-7"
+      },
+      "offset": 9223372036854775807
+    }
+  },
+  {
     "error": null,
     "name": "projection_payload_safe_integer",
     "op": "projection_keys",
@@ -232,6 +290,38 @@
     }
   },
   {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":9007199254740992,\"metadata\":null}",
+    "name": "sealed_projection_payload_unsafe_integer",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":9007199254740992}",
+    "name": "sealed_projection_metadata_unsafe_integer",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
     "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "name": "projection_payload_unsafe_integer",
     "op": "projection_keys",
@@ -342,6 +432,38 @@
       },
       "writes": {}
     }
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":18446744073709551617,\"metadata\":null}",
+    "name": "sealed_projection_payload_beyond_u64",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":18446744073709551617}",
+    "name": "sealed_projection_metadata_beyond_u64",
+    "op": "projection_sealed_input",
+    "want": null
   },
   {
     "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
@@ -456,6 +578,38 @@
     }
   },
   {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":-9223372036854775809,\"metadata\":null}",
+    "name": "sealed_projection_payload_negative_beyond_i64",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":-9223372036854775809}",
+    "name": "sealed_projection_metadata_negative_beyond_i64",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
     "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "name": "projection_payload_negative_beyond_i64",
     "op": "projection_keys",
@@ -568,6 +722,38 @@
     }
   },
   {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":1000000000000000000001,\"metadata\":null}",
+    "name": "sealed_projection_payload_wide_scientific_integer",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":1000000000000000000001}",
+    "name": "sealed_projection_metadata_wide_scientific_integer",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
     "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
     "name": "projection_payload_wide_scientific_integer",
     "op": "projection_keys",
@@ -678,6 +864,38 @@
       },
       "writes": {}
     }
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":-1000000000000000000001,\"metadata\":null}",
+    "name": "sealed_projection_payload_negative_scientific_integer",
+    "op": "projection_sealed_input",
+    "want": null
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":-1000000000000000000001}",
+    "name": "sealed_projection_metadata_negative_scientific_integer",
+    "op": "projection_sealed_input",
+    "want": null
   },
   {
     "error": "codec: integer at byte 0 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
@@ -801,6 +1019,64 @@
           "stream": "order-42"
         }
       }
+    }
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": null,
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":1e+21,\"metadata\":null}",
+    "name": "sealed_projection_payload_exponent_float",
+    "op": "projection_sealed_input",
+    "want": {
+      "event": {
+        "aggregate": "order-42",
+        "event_id": "order-paid",
+        "event_type": "OrderPaid",
+        "metadata": null,
+        "payload": 1e+21,
+        "schema_version": "1",
+        "sequence": 9223372036854775807,
+        "subject": "person-42",
+        "tenant": "tenant-7"
+      },
+      "offset": 9223372036854775807
+    }
+  },
+  {
+    "envelope": {
+      "aggregate": "order-42",
+      "event_id": "order-paid",
+      "event_type": "OrderPaid",
+      "schema_version": "1",
+      "sequence": 9223372036854775807,
+      "subject": "person-42",
+      "tenant": "tenant-7"
+    },
+    "error": null,
+    "event_json": "{\"tenant\":\"tenant-7\",\"aggregate\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"event_type\":\"OrderPaid\",\"schema_version\":\"1\",\"payload\":null,\"metadata\":1e+21}",
+    "name": "sealed_projection_metadata_exponent_float",
+    "op": "projection_sealed_input",
+    "want": {
+      "event": {
+        "aggregate": "order-42",
+        "event_id": "order-paid",
+        "event_type": "OrderPaid",
+        "metadata": 1e+21,
+        "payload": null,
+        "schema_version": "1",
+        "sequence": 9223372036854775807,
+        "subject": "person-42",
+        "tenant": "tenant-7"
+      },
+      "offset": 9223372036854775807
     }
   },
   {

@@ -34,7 +34,10 @@ class PartitionClient:
         self.cursors[tp] = offset
         self.seeks.append((tp, offset))
 
-    async def getmany(self, tp: Any, **kwargs: Any) -> dict[Any, Any]:
+    async def getmany(self, *partitions: Any, **kwargs: Any) -> dict[Any, Any]:
+        if not partitions:
+            return {}
+        tp = partitions[0]
         if self.cursors[tp]:
             return {tp: []}
         self.cursors[tp] = 1

@@ -116,10 +116,6 @@ class PostgresIngestionSink:
         rows = await self._call(conn.fetch(self._sql[f"read_{role}"], _json.encode(keys)))
         return {row["key"]: _json.decode(row["value"]) for row in rows}
 
-    async def _insert(self, conn: PgConnection, role: str, values: Mapping[str, Any]) -> None:
-        if values:
-            await self._call(conn.execute(self._sql[f"insert_{role}"], _json.encode(values)))
-
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         """Commit accepted state and durable rejections together; retain each original outcome."""
         originals = await seal_private(self.target, self.sealing, inputs)
@@ -135,43 +131,61 @@ class PostgresIngestionSink:
             stored = await self._read(conn, f"{self._role}_metadata", keys)
             rows = await self._call(conn.fetch(self._sql["read_rejections_for_plan"], sources))
             rejected = {row["key"]: _json.decode(row["value"]) for row in rows}
-            plan_text = _native.ingest_plan(
-                self.target.mode, encoded, _json.encode(stored), _json.encode(rejected)
+            stored_text, rejected_text = _json.encode(stored), _json.encode(rejected)
+            plan_text = _native.ingest_plan(self.target.mode, encoded, stored_text, rejected_text)
+            writes: dict[str, str] = _json.decode(
+                _native.postgres_ingest_write_plan(plan_text, stored_text, rejected_text)
             )
-            plan = _json.decode(plan_text)
-            writes: dict[str, Any] = plan["writes"]
-            changed = {key: value for key, value in writes.items() if key in stored}
-            if changed:
-                await self._call(conn.execute(self._sql[f"update_{self._role}"], _json.encode(changed)))
-            await self._insert(conn, self._role, {k: v for k, v in writes.items() if k not in stored})
-            # A rejection is decided once: only one this batch decided is written.
-            await self._insert(
-                conn, "rejections", {k: v for k, v in plan["rejections"].items() if k not in rejected}
-            )
+            # Preserve the kernel's exact-number parameter text across the I/O boundary.
+            for parameter, statement in (
+                ("updates", f"update_{self._role}"),
+                ("inserts", f"insert_{self._role}"),
+                ("rejections", "insert_rejections"),
+            ):
+                if writes[parameter] != "{}":
+                    await self._call(conn.execute(self._sql[statement], writes[parameter]))
             return BatchResult.from_json(plan_text)
 
         return await self._own(apply)
 
-    def cleanup(self, erasure: PostgresErasureStore | None = None) -> ScopeCleanup:
+    def cleanup(
+        self,
+        erasure: PostgresErasureStore | None = None,
+        *,
+        key_namespace: str | None = None,
+        limit: int = 1000,
+    ) -> ScopeCleanup:
         """The erasure participant that deletes a scope's rows: a subject's, or a whole tenant's. A
-        ``plaintext`` target needs it; a sealed one is erased by destroying the key. With ``erasure``,
-        the store of a ``write_fence="transaction"`` provider on this database, one transaction revokes
-        the scope, draining fenced writers, and then deletes, so no writer lands after the delete.
-        Rejections stay: they hold the raw record, which a sealed source keeps sealed."""
+        ``plaintext`` target or subjectless state needs it. With ``erasure``, the destination fence store,
+        the first page revokes and drains writers before deleting. Further pages commit independently;
+        a retry reinstalls revocation before continuing. ``key_namespace`` defaults to the sink's sealing
+        namespace and is required without sealing. Rejections retain the raw source record."""
+
+        check_page(limit)
 
         async def delete(scope: KeyScope) -> int:
             start, end = self.target.scope_range(scope)
+            total, first = 0, True
+            while True:
 
-            async def run(conn: PgConnection) -> int:
-                if erasure is not None:
-                    await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
-                return cast(
-                    int, await self._call(conn.fetchval(self._sql[f"delete_scope_{self._role}"], start, end))
-                )
+                async def run(conn: PgConnection, revoke: bool = first) -> int:
+                    if revoke and erasure is not None:
+                        await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
+                    return cast(
+                        int,
+                        await self._call(
+                            conn.fetchval(self._sql[f"delete_scope_{self._role}"], start, end, str(limit))
+                        ),
+                    )
 
-            return await self._typed(run)
+                removed = await self._typed(run)
+                total += removed
+                # Only a committed first page proves that the destination tombstone exists.
+                first = False
+                if removed < limit:
+                    return total
 
-        return ScopeCleanup(delete)
+        return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]:
         """Committed unpublished rejections. Publication is at least once."""

@@ -2953,7 +2953,7 @@
     }
   },
   {
-    "error": "codec: Invalid symbol 33, offset 0.",
+    "error": "codec:",
     "name": "invalid_base64_key",
     "op": "decode",
     "raw": {
@@ -2988,7 +2988,7 @@
     "want": null
   },
   {
-    "error": "codec: Invalid symbol 33, offset 0.",
+    "error": "codec:",
     "name": "invalid_base64_value",
     "op": "decode",
     "raw": {
@@ -3023,7 +3023,7 @@
     "want": null
   },
   {
-    "error": "codec: Invalid symbol 33, offset 0.",
+    "error": "codec:",
     "name": "invalid_base64_header",
     "op": "decode",
     "raw": {

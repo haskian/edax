@@ -7,7 +7,7 @@ from typing import Any, TypeVar, cast
 
 from .. import _json, _native
 from ..erasure import ScopeCleanup
-from ..errors import BadHandle, StoreError
+from ..errors import BadHandle, ConcurrencyError
 from ..outbox import check_page
 from ..projection import (
     EffectIntent,
@@ -61,7 +61,7 @@ class _Session(ProjectionSession):
         if self.updates:
             changed = await store._call(conn.fetchval(store._sql["update"], _json.encode(self.updates)))
             if changed != len(self.updates):
-                raise StoreError("a projection record vanished inside its own transaction")
+                raise ConcurrencyError("a projection record vanished inside its own transaction")
         if self.intents:
             await store._call(conn.execute(store._sql["insert_intents"], _json.encode(self.intents)))
 
@@ -155,24 +155,41 @@ class PostgresProjectionStateStore(ProjectionStateStore):
 
         await self._owned(delete)
 
-    def cleanup(self, erasure: PostgresErasureStore | None = None) -> ScopeCleanup:
+    def cleanup(
+        self,
+        erasure: PostgresErasureStore | None = None,
+        *,
+        key_namespace: str | None = None,
+        limit: int = 1000,
+    ) -> ScopeCleanup:
         """The erasure participant that deletes a scope's state: a subject's, or a whole tenant's. A
-        ``plaintext`` target needs it; sealed state is erased by destroying the key. With ``erasure``,
-        the store of a ``write_fence="transaction"`` provider on this database, one transaction revokes
-        the scope, draining fenced writers, and then deletes. Receipts stay: they hold keyed
-        fingerprints, which the destroyed key leaves untestable."""
+        ``plaintext`` target or subjectless state needs it. With ``erasure``, the destination fence store,
+        the first page revokes and drains writers before deleting. Further pages commit independently;
+        a retry reinstalls revocation before continuing. ``key_namespace`` defaults to the store's sealing
+        namespace and is required without sealing. Receipts retain their keyed fingerprints."""
+
+        check_page(limit)
 
         async def delete(scope: KeyScope) -> int:
             start, end = self.target.state_scope_range(scope)
+            total, first = 0, True
+            while True:
 
-            async def run(conn: PgConnection) -> int:
-                if erasure is not None:
-                    await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
-                return cast(int, await self._call(conn.fetchval(self._sql["delete_scope"], start, end)))
+                async def run(conn: PgConnection, revoke: bool = first) -> int:
+                    if revoke and erasure is not None:
+                        await erasure.revoke_in_transaction(cast(PgErasureConnection, conn), scope)
+                    return cast(
+                        int,
+                        await self._call(conn.fetchval(self._sql["delete_scope"], start, end, str(limit))),
+                    )
 
-            return await self._owned(run)
+                removed = await self._owned(run)
+                total += removed
+                first = False
+                if removed < limit:
+                    return total
 
-        return ScopeCleanup(delete)
+        return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)
 
     async def prune(self, limit: int = 1000) -> int:
         check_page(limit)

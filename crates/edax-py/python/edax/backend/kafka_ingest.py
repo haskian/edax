@@ -22,7 +22,7 @@ from ..errors import BadHandle, CodecError, Shredded
 from ..ingestion import BatchInput, BatchResult, BatchSink, MappedRow, Rejection
 from ..message import EventMessage
 from ..pacing import Pacing
-from ..sealing import Scope, Sealing
+from ..sealing import Scope, Sealing, provider_deadline
 from ..serializer import KernelSerializer, Serializer
 from . import _kafka
 from ._kafka import (
@@ -116,6 +116,8 @@ class KafkaIngestion:
         self.client, self.sink, self.mapper = client, sink, mapper
         # The sink's sealing opens records too: a runner that cannot see a destroyed key would neither
         # stage its records erased nor fence their commit.
+        if sealing is not None and sink.sealing is not None:
+            sealing.check_compatible(sink.sealing)
         self.sealing = sealing if sealing is not None else sink.sealing
         self.settings = settings or BatchSettings()
         self._config = self.settings.json
@@ -170,8 +172,15 @@ class KafkaIngestion:
         return _kafka.rebalance_listener(self._revoke, self._assign)
 
     async def _assign(self, assigned: Collection[TopicPartition]) -> None:
+        try:
+            await self._assigned(assigned)
+        except BaseException as error:
+            self._fail(error)
+            raise
+
+    async def _assigned(self, assigned: Collection[TopicPartition]) -> None:
         async with self._assignment:
-            self._check()
+            await self._idle()
             for tp in sorted(assigned, key=lambda p: (p.topic, p.partition)):
                 if tp in self._parts:
                     continue
@@ -180,7 +189,8 @@ class KafkaIngestion:
                     self._fail(BadHandle("assignment overlapped an unresolved fetch; stop the client"))
                     self._check()
                 epoch = self._epochs.get(tp, 0)
-                position = await self._bounded(self.client.position(tp))
+                with _kafka.classified():
+                    position = await self._bounded(self.client.position(tp))
                 if self._epochs.get(tp, 0) != epoch:
                     continue
                 self._generation += 1
@@ -239,7 +249,11 @@ class KafkaIngestion:
     def _check(self) -> None:
         if self._failure is not None:
             raise self._failure
-        self._offsets.check_idle()
+
+    async def _idle(self) -> None:
+        self._check()
+        await self._offsets.wait_idle(self._drain_timeout)
+        self._check()
 
     async def _bounded(self, call: Awaitable[T]) -> T:
         """Await ``call`` under the operation deadline; past it, stop admission and cancel the call."""
@@ -263,15 +277,8 @@ class KafkaIngestion:
             return await self._bounded(task)
         finally:
             if not task.done():
-                # The worker retains its slot and every data credit until the operation ends.
-                # Shield repeated cancellation too: cancellation never proves rollback/release.
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        continue
-                    except Exception:  # noqa: BLE001 - failure is retrieved by the owning task
-                        break
+                # The worker retains its slot and credits through actual completion.
+                await _kafka.settled(task)
 
     def _rewind(self, tp: TopicPartition, offset: int) -> None:
         part = self._parts.get(tp)
@@ -322,7 +329,8 @@ class KafkaIngestion:
                 if self._parts.get(tp) is not part or part.generation != generation:
                     return None
                 raise BadHandle("batch fetch cancelled outside a rebalance")
-            result = task.result()
+            with _kafka.classified():
+                result = task.result()
         finally:
             if task.done():
                 self._fetch = None
@@ -344,6 +352,31 @@ class KafkaIngestion:
             self._fetch = None
             self._fetch_partition = None
         self._changed.set()
+
+    async def _keepalive(self) -> None:
+        if self._fetch is not None and not self._fetch.done():
+            return
+        generations = {tp: part.generation for tp, part in self._parts.items()}
+        task = asyncio.create_task(
+            _kafka.poll_activity(
+                self.client, lambda tp: tp not in self._parts or self._parts[tp].task is None
+            )
+        )
+        self._fetch, self._fetch_partition = task, None
+        self._track(task)
+        try:
+            result = await self._bounded(task)
+            for tp, records in result.items():
+                if not records:
+                    continue
+                part = self._parts.get(tp)
+                # A late old-generation result cannot move the replacement assignment's position.
+                # A newly assigned partition has not had a normal fetch while this slot was occupied.
+                if part is not None and generations.get(tp, part.generation) == part.generation:
+                    self.client.seek(tp, part.frontier)
+        finally:
+            if task.done() and self._fetch is task:
+                self._fetch = None
 
     def _raw(self, record: FetchedRecord) -> tuple[str, KafkaFetched, dict[str, Any]]:
         fetched = KafkaFetched.of(record)
@@ -378,7 +411,6 @@ class KafkaIngestion:
         public: Any = None
         failure: str | None = None
         erased = False
-        sealed = False
         fingerprint: str | None = None
 
         def built() -> BatchInput:
@@ -425,7 +457,6 @@ class KafkaIngestion:
             content = canonical.decode()
             message = decoded
             if self.sealing is not None:
-                sealed = decoded.encryption is not None
                 if part.keys is None:
                     part.keys = self.sealing.for_batch(self._timeout)
                 opened = await part.keys.open_event_for_consumer(decoded)
@@ -458,11 +489,34 @@ class KafkaIngestion:
         except Exception as error:
             if errors.failure_kind(error) != "terminal":
                 raise
-            # A sealed record's failure text can quote its plaintext: keep only the code.
-            code = errors.code_of(error) or "codec"
-            failure = f"{code}: sealed record refused" if sealed else f"{code}: {error}"
-            content, private, public, fingerprint = None, None, None, None
-        return built()
+            return self._rejected(record, raw, decoded_raw["sha256"], error)
+
+    def _rejected(
+        self, record: FetchedRecord, raw: str, raw_fingerprint: str, error: Exception
+    ) -> BatchInput:
+        # Preparation has not written anything. The kernel supplies a bounded code-only diagnostic;
+        # a source-derived fallback cannot repeat the invalid producer/mapper identity that failed.
+        decision = _json.decode(
+            _native.batch_recover(1, 0, 1, self.settings.max_attempts, True, True, errors.code_of(error))
+        )
+        if decision["action"] != "reject":
+            raise error
+        fallback = _native.kafka_poison_id(record.topic, record.partition, record.offset)
+        return self.sink.target.input(
+            record.topic,
+            record.partition,
+            record.offset,
+            None,
+            fallback,
+            fallback,
+            fallback,
+            None,
+            None,
+            None,
+            raw,
+            decision["rejection"],
+            raw_fingerprint,
+        )
 
     async def _admit(self, tp: TopicPartition, part: _Partition, record: FetchedRecord) -> bool:
         booked = Booked(
@@ -473,7 +527,8 @@ class KafkaIngestion:
             self._rewind,
         )
         try:
-            item = await self._prepare(part, record)
+            with provider_deadline(self._timeout):
+                item = await self._prepare(part, record)
             if self._parts.get(tp) is not part or not booked.live():
                 # Revoked while the keys were read: the new owner fetches the record again.
                 return False
@@ -481,7 +536,13 @@ class KafkaIngestion:
             # A later isolated rejection replaces the failure field. Reserve its bounded
             # kernel diagnostic now, before any partition can spend the remaining capacity.
             rejection_bytes = len(_json.encode(replace(item, failure=self._rejection)).encode())
-            charge = _native.batch_charge(max(serialized_bytes, rejection_bytes), self._config)
+            try:
+                charge = _native.batch_charge(max(serialized_bytes, rejection_bytes), self._config)
+            except CodecError as error:
+                raw, _, decoded_raw = self._raw(record)
+                item = self._rejected(record, raw, decoded_raw["sha256"], error)
+                serialized_bytes = len(_json.encode(item).encode())
+                charge = _native.batch_charge(serialized_bytes, self._config)
             if not _native.batch_admit(self._records, self._bytes, 1, charge, self._config):
                 raise BadHandle("ingestion admission invariant violated")
             if not part.items:
@@ -525,6 +586,7 @@ class KafkaIngestion:
         if not part.items or part.task is not None:
             return
         self.client.pause(tp)
+        part.keys = None  # plaintext key copies are no longer needed after admission
         task = asyncio.create_task(self._work(tp, part))
         part.task = task
         self._workers.add(task)
@@ -566,7 +628,7 @@ class KafkaIngestion:
         bookings: tuple[Booked, ...],
     ) -> None:
         while True:
-            self._check()
+            await self._idle()
             if not all(booked.live() for booked in bookings):
                 return
             try:
@@ -599,8 +661,6 @@ class KafkaIngestion:
                     for row in due:
                         if row.topic == tp.topic and row.partition == tp.partition:
                             part.frontier = max(part.frontier, row.offset)
-                await self._flush()
-                return
             except Exception as error:
                 attempt = 1 + max((part.attempts.get(item.source, 0) for item in inputs), default=0)
                 # Originals that already carry a rejection cannot be rejected again.
@@ -650,6 +710,11 @@ class KafkaIngestion:
                     part.ready_at = 0
                 finally:
                     part.backing_off = False
+                continue
+            # These originals are already acknowledged. Offset failures have their own retry budget
+            # and must never re-enter sink recovery or turn committed originals into rejections.
+            await self._flush()
+            return
 
     async def _commit(
         self, part: _Partition, inputs: tuple[BatchInput, ...]
@@ -663,10 +728,15 @@ class KafkaIngestion:
                     "a subject's rows need sealing= on the runner or the sink for the erasure fence"
                 )
             return inputs, await self._operation(self.sink.commit(inputs))
-        written = [
-            item for item in inputs if item.subject is not None and not item.erased and item.failure is None
-        ]
-        scopes: set[Scope] = {(item.tenant, cast(str, item.subject)) for item in written}
+        written = [item for item in inputs if not item.erased and item.failure is None]
+        scopes: set[Scope] = {(item.tenant, item.subject) for item in written}
+        with provider_deadline(self._timeout):
+            return await self._fenced_commit(inputs, written, scopes)
+
+    async def _fenced_commit(
+        self, inputs: tuple[BatchInput, ...], written: list[BatchInput], scopes: set[Scope]
+    ) -> tuple[tuple[BatchInput, ...], BatchResult]:
+        assert self.sealing is not None
         async with self.sealing.fenced(scopes, timeout_s=self._timeout) as destroyed:
             final = tuple(
                 replace(item, erased=True, private=None, public=None, fingerprint=None)
@@ -680,6 +750,7 @@ class KafkaIngestion:
     async def _flush(self) -> None:
         for attempt in range(1, self.settings.max_attempts + 1):
             try:
+                await self._idle()
                 await self._offsets.flush()
                 return
             except Exception as error:
@@ -718,7 +789,7 @@ class KafkaIngestion:
         try:
             await self._assign(self.client.assignment())
             while not stop.is_set():
-                self._check()
+                await self._idle()
                 progressed = False
                 last_admitted: TopicPartition | None = None
                 for tp in tuple(self._rotation):
@@ -750,6 +821,7 @@ class KafkaIngestion:
                     # Capacity waiters get the next freed credit, ahead of busy earlier partitions.
                     self._rotation.rotate(-self._rotation.index(last_admitted) - 1)
                 if not progressed and not stop.is_set():
+                    await self._keepalive()
                     self._changed.clear()
                     with suppress(asyncio.TimeoutError):
                         await asyncio.wait_for(self._changed.wait(), self.settings.flush_ms / 1000)

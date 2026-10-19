@@ -506,6 +506,7 @@ fn projection_value<T: serde::de::DeserializeOwned>(text: &str) -> Result<T, Str
 /// Parse and validate a projection contract.
 fn projection_contract(text: &str) -> Result<edax_cqrs::projection::Contract, String> {
     let contract: edax_cqrs::projection::Contract = projection_value(text)?;
+    contract.validate().map_err(to_wire)?;
     Ok(contract)
 }
 
@@ -563,16 +564,15 @@ pub fn projection_state_scope_range(
 pub fn projection_sealed_input(offset: i64, envelope_json: &str, event_json: Option<String>) -> Result<String, String> {
     let envelope: edax_cqrs::projection::Envelope = projection_value(envelope_json)?;
     let event = event_json
-        .map(|text| projection_value::<edax_cqrs::projection::Event>(&text))
+        .map(|text| edax_cqrs::projection::event_json(&text))
         .transpose()
-        .map_err(edax_core::Error::codec)
         .map_err(to_wire)?;
     crate::write_json(&edax_cqrs::projection::sealed_input(offset, &envelope, event).map_err(to_wire)?)
 }
 
 /// The keyed receipt fingerprint of a sealed event, from the subject's fingerprint key.
 pub fn projection_keyed_fingerprint(key: Vec<u8>, event_json: &str) -> Result<String, String> {
-    let event: edax_cqrs::projection::Event = projection_value(event_json)?;
+    let event = edax_cqrs::projection::event_json(event_json).map_err(to_wire)?;
     edax_cqrs::projection::keyed_fingerprint(&key, &event).map_err(to_wire)
 }
 
@@ -611,9 +611,7 @@ pub fn projection_open_intent(contract_json: &str, record_json: &str) -> Result<
 pub fn projection_transition(request_json: &str, records_json: &str, now_ms: i64) -> Result<String, String> {
     let request = edax_cqrs::projection::request_json(request_json).map_err(to_wire)?;
     let records = projection_value(records_json)?;
-    serde_json::to_string(&edax_cqrs::projection::transition(&request, &records, now_ms).map_err(to_wire)?)
-        .map_err(edax_core::Error::codec)
-        .map_err(to_wire)
+    crate::write_json(&edax_cqrs::projection::transition(&request, &records, now_ms).map_err(to_wire)?)
 }
 
 /// Generation cutoffs gate outbox dispatch even after replay or snapshot restore.
@@ -1157,4 +1155,11 @@ pub fn protected_failure(record: &str, owner: &str, code: &str) -> Result<String
 /// Authenticate a cached result after scoped provider resolution.
 pub fn protected_open(record: &str, key: &[u8]) -> Result<Vec<u8>, String> {
     protected_record(record)?.open_result(key).map_err(crate::to_wire)
+}
+
+/// The complete authenticated context of a kernel-planned stored part.
+pub fn stored_encryption_context(part_json: &str, info: crate::EncryptionInfo) -> Result<Vec<u8>, String> {
+    let part: edax_cqrs::namespace::Part = crate::read_json(part_json)?;
+    let info = edax_seal::EncryptionInfo::try_from(info).map_err(to_wire)?;
+    part.context(&info).map_err(to_wire)
 }

@@ -2144,6 +2144,22 @@ func PostgresIngestStatements(config string) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// PostgresIngestWritePlan calls the shared kernel.
+func PostgresIngestWritePlan(plan string, stored string, rejected string) (string, error) {
+	var zero string
+	if err := checkNativeString("plan", plan); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("stored", stored); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("rejected", rejected); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresIngestWritePlan(plan, stored, rejected)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // PostgresLedgerKeyParams calls the shared kernel.
 func PostgresLedgerKeyParams(key string) (string, error) {
 	var zero string
@@ -3232,6 +3248,19 @@ func StateEncryptionContext(kind string, identity string, typeName string, versi
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// StoredEncryptionContext calls the shared kernel.
+func StoredEncryptionContext(partJSON string, info EncryptionInfo) ([]byte, error) {
+	var zero []byte
+	if err := checkNativeString("partJSON", partJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("info", info); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.StoredEncryptionContext(partJSON, normalizeNative(info))
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // GetStreak calls the shared kernel.
 func GetStreak() *Streak {
 	nativeValue := native.GetStreak()
@@ -4159,6 +4188,23 @@ func (h *MemoryIngestion) Published(source string, fingerprint string) error {
 		return err
 	}
 	return mapNativeError(h.inner.Published(source, fingerprint))
+}
+
+// PublishedMany calls the shared kernel.
+func (h *MemoryIngestion) PublishedMany(confirmed string) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("MemoryIngestion")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("MemoryIngestion")
+	}
+	if err := checkNativeString("confirmed", confirmed); err != nil {
+		return err
+	}
+	return mapNativeError(h.inner.PublishedMany(confirmed))
 }
 
 // Reserve calls the shared kernel.

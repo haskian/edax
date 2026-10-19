@@ -42,7 +42,8 @@ def original(target: IngestionTarget, event: EventMessage, offset: int) -> Batch
         event_id=event.id,
         sequence=event.sequence,
         content=wire,
-        private=json.loads(event.data),
+        private=None,
+        public=json.loads(event.data),
         raw=json.dumps({"offset": offset, "event": wire}),
     )
 
@@ -61,7 +62,7 @@ async def main() -> None:
     result = await archive.commit(batch)
     assert result.outcomes == ("accepted", "accepted", "rejected")
     saved = await archive.get("shop-eu", paid.id)
-    assert saved is not None and saved["private"]["status"] == "paid"
+    assert saved is not None and saved["public"]["status"] == "paid"
     print(f"append: {result.outcomes}; the first event value stays paid")
 
     # 2. A Relay publishes committed rejections, then marks them. Production delivery must be durable.
@@ -92,13 +93,13 @@ async def main() -> None:
         "accepted",
     )
     saved = await view.get("shop-eu", "order-42")
-    assert saved is not None and saved["private"]["status"] == "shipped"
+    assert saved is not None and saved["public"]["status"] == "shipped"
 
     # 4. None retains a deletion marker, sequence and stream owner. Replay cannot resurrect it.
     deleted = original(view.target, order(3, None, event_id="order-42-deleted"), 2)
     assert (await view.commit([deleted, stale, deleted])).outcomes == ("accepted",) * 3
     saved = await view.get("shop-eu", "order-42")
-    assert saved is not None and saved["sequence"] == 3 and saved["private"] is None
+    assert saved is not None and saved["sequence"] == 3 and saved["public"] is None
     assert saved["stream"] == "order-42"
     print("upsert: shipped survived stale replay; deletion retained sequence 3")
     print("\nok: append replay, durable rejection decisions, stale upserts and deletion markers checked")

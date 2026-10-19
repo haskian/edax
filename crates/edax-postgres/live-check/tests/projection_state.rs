@@ -156,7 +156,7 @@ fn delete_scope(stores: &mut Stores, subject: Option<&str>) -> i64 {
     let memory = stores.memory.delete_scope(&start, &end);
     let postgres: i64 = stores
         .client
-        .query_one(&stores.sql["delete_scope"], &[&start, &end])
+        .query_one(&stores.sql["delete_scope"], &[&start, &end, &"1000"])
         .unwrap()
         .get(0);
     assert_eq!(postgres, memory as i64, "both stores delete the same records");

@@ -102,16 +102,42 @@ pub fn check_sealed(private: Option<&Value>, tenant: Option<&str>, subject: &str
     Ok(())
 }
 
+/// Refuse a tenant that cannot cross native string boundaries or be stored by Postgres.
+pub fn check_tenant(tenant: Option<&str>) -> Result<(), Error> {
+    tenant.map(edax_core::check_tenant).transpose()?;
+    if tenant.is_some_and(|value| value.contains('\0')) {
+        return Err(Error::codec("tenant holds a NUL character"));
+    }
+    Ok(())
+}
+
 /// Refuse an erasure subject a key cannot carry: the kernel's subject rule (1 to 256 bytes), and no NUL,
 /// which Postgres cannot store. One rule for every key that names a subject.
 pub fn check_subject(subject: &str) -> Result<(), Error> {
-    edax_core::check_subject(subject)?;
-    if subject.contains('\0') {
-        return Err(Error::codec("subject holds a NUL character"));
-    }
-    Ok(())
+    edax_core::check_subject(subject)
 }
 
 /// The longest key every store accepts. A Postgres btree entry holds at most about 2.7 KB, so every
 /// store refuses a longer key alike, as `codec`, rather than only the store that fails.
 pub const MAX_KEY_BYTES: usize = 2048;
+
+impl Part {
+    /// The complete AAD contract for a stored ingestion, projection or intent part.
+    /// Fixed fields preserve the bytes used by the original stored-part format.
+    pub fn context(&self, info: &edax_seal::EncryptionInfo) -> Result<Vec<u8>, Error> {
+        if !matches!(self.kind.as_str(), "ingestion" | "projection" | "intent") {
+            return Err(Error::codec("unknown stored part kind"));
+        }
+        edax_event::sealing::state_context(
+            &self.kind,
+            &self.identity,
+            "",
+            self.version,
+            self.tenant.as_deref(),
+            Some(&self.subject),
+            "",
+            false,
+            info,
+        )
+    }
+}

@@ -512,6 +512,11 @@ protected-state envelope of the row key's tenant and subject. `seal_plan` names 
 before that check, and `open_plan` the part it opens in a row it read: kind, storage key, version and
 scope. Every SDK seals exactly what they name, so a row one SDK writes opens in another.
 
+Unkeyed replay checks use the shared 64-bit FNV-1a `payload_hash`. Equality is hash equality,
+not a collision-resistant proof of identical content. Use the sealed/keyed fingerprint path for
+untrusted producers. Its HMAC-SHA-256 fingerprint protects replay identity. Changing the unkeyed
+algorithm requires an explicit persisted-state migration; it is not changed by this repair.
+
 `plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
 rejections before selecting owners. In append mode, identical event replay succeeds and changed
 content under the same identity is rejected. In upsert mode, one aggregate stream owns each row.

@@ -75,6 +75,7 @@ _Op = Literal[
     "saga_write",
     "projection_state",
     "ingest",
+    "erasure_fence",
 ]
 _names.check(get_args(_Op), _native.postgres_ops(), "postgres operations")
 #: The operations that only read: a short transaction of their own takes no pending write fence.

@@ -74,7 +74,7 @@ fn target_namespaces_and_key_parts_are_unambiguous() {
 
 #[test]
 fn row_keys_match_validated_input_identities() {
-    for (mode, tenant) in [("upsert", Some("tenant-7")), ("append", None), ("append", Some(""))] {
+    for (mode, tenant) in [("upsert", Some("tenant-7")), ("append", None), ("append", Some("tenant-ž"))] {
         let contract = Contract {
             mode: mode.into(),
             generation: "projection-v1".into(),
@@ -100,13 +100,18 @@ fn row_keys_match_validated_input_identities() {
     ] {
         assert_eq!(
             row_key(target, mode, None, None, row_id).unwrap_err().code,
-            ErrorCode::BadHandle,
+            if row_id.is_empty() {
+                ErrorCode::Codec
+            } else {
+                ErrorCode::BadHandle
+            },
             "{name}"
         );
     }
-    assert_ne!(
-        row_key("v1", "upsert", None, None, "order-42").unwrap(),
-        row_key("v1", "upsert", Some(""), None, "order-42").unwrap()
+    assert!(row_key("v1", "upsert", None, None, "order-42").is_ok());
+    assert_eq!(
+        row_key("v1", "upsert", Some(""), None, "order-42").unwrap_err().code,
+        ErrorCode::Codec
     );
 }
 
@@ -350,5 +355,102 @@ fn valid_updates_survive_every_permutation_batch_cut_and_replay() {
             assert_eq!(stored[&deletion.key].sequence, Some(3));
             assert_eq!(stored[&deletion.key].private, None);
         }
+    }
+}
+
+#[test]
+fn unsafe_preparation_diagnostics_stay_bounded_and_postgres_safe() {
+    for failure in [
+        "codec: name has \0".to_owned(),
+        format!("rejected: {}", "x".repeat(10000)),
+    ] {
+        let mut input = event(0, 1, "ready");
+        input.failure = Some(failure.clone());
+        let result = plan("upsert", &[input], &BTreeMap::new(), &BTreeMap::new()).unwrap();
+        assert!(result.writes.is_empty());
+        let refusal = result.rejections.values().next().unwrap();
+        assert!(!refusal.error.contains('\0'));
+        assert!(refusal.error.len() < 256);
+        assert_eq!(
+            edax_core::Error::from_wire(&refusal.error).code,
+            edax_core::Error::from_wire(&failure).code
+        );
+    }
+}
+
+#[test]
+fn handmade_identity_cannot_bypass_cleanup_scope_validation() {
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "orders-v1".into(),
+        mapper_id: "orders-v1".into(),
+        at_rest: "plaintext".into(),
+    };
+    for (tenant, subject) in [
+        ("tenant-7".to_owned(), "s".repeat(300)),
+        ("tenant\0bad".into(), "person-1".into()),
+        ("tenant-7".into(), "person\0bad".into()),
+    ] {
+        let mut input = event(0, 1, "ready");
+        input.key = key(
+            &contract.generation,
+            &json!(["upsert", tenant, subject, "order-42"]).to_string(),
+        )
+        .unwrap();
+        assert_eq!(validate_inputs(&contract, &[input]).unwrap_err().code, ErrorCode::Codec);
+    }
+}
+
+#[test]
+fn corrupt_stored_upsert_sequence_is_fatal() {
+    let input = event(0, 1, "ready");
+    let mut stored = current(&input);
+    stored.get_mut(&input.key).unwrap().sequence = None;
+    assert_eq!(
+        plan("upsert", &[input], &stored, &BTreeMap::new()).unwrap_err().code,
+        ErrorCode::BadHandle
+    );
+}
+
+#[test]
+fn empty_producer_identity_is_record_data_not_wiring() {
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "orders-v1".into(),
+        mapper_id: "orders".into(),
+        at_rest: "plaintext".into(),
+    };
+    for field in ["stream", "event_id"] {
+        let mut input = event(0, 1, "ready");
+        if field == "stream" {
+            input.stream.clear()
+        } else {
+            input.event_id.clear()
+        }
+        assert_eq!(
+            validate_inputs(&contract, &[input]).unwrap_err().code,
+            ErrorCode::Codec,
+            "{field}"
+        );
+    }
+}
+
+#[test]
+fn ingestion_tenants_are_representable_by_erasure_scopes() {
+    for tenant in ["".to_owned(), "t".repeat(65)] {
+        assert_eq!(
+            row_key("v1", "upsert", Some(&tenant), Some("person"), "order-42")
+                .unwrap_err()
+                .code,
+            ErrorCode::Codec
+        );
+        assert_eq!(
+            edax_cqrs::ingest::scope_range("v1", "upsert", Some(&tenant), None)
+                .unwrap_err()
+                .code,
+            ErrorCode::Codec
+        );
     }
 }

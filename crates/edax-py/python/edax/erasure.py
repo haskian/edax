@@ -16,7 +16,8 @@ from typing import Literal, Protocol, TypedDict, cast, get_args
 from . import _names, _native
 from ._wiring import wiring_u64
 from .errors import BadHandle, ConcurrencyError
-from .sealing import KeyProvider, KeyScope
+from .outbox import check_page
+from .sealing import KeyProvider, KeyScope, Sealing
 
 __all__ = [
     "Cleanup",
@@ -211,6 +212,7 @@ class MemoryErasureStore:
         return await self._page(limit, after, lambda row: row.operation.stage != "complete")
 
     async def revoked(self, limit: int = 100, *, after: str | None = None) -> list[StoredErasure]:
+        check_page(limit)
         return await self._page(limit, after, lambda row: _native.erasure_scope_revoked(row.operation.record))
 
     async def unpublished(self, limit: int = 100) -> list[ErasureNotification]:
@@ -232,20 +234,41 @@ class ScopeCleanup:
     rows it found. A count above zero means a participant was missing, or a restore brought rows back:
     run it on a schedule or as a deploy check, and alert on it. It covers a restore only when the
     erasure store outlives the restored database. The coordinator can report ``complete`` before the
-    next sweep runs."""
+    next sweep runs. The participant is bound to one key namespace, inferred from ``sealing`` or
+    supplied explicitly with ``key_namespace``. A direct call with another namespace is refused;
+    resweep skips operations from other namespaces."""
 
-    def __init__(self, delete: Callable[[KeyScope], Awaitable[int]]) -> None:
+    def __init__(
+        self,
+        delete: Callable[[KeyScope], Awaitable[int]],
+        *,
+        sealing: Sealing | None = None,
+        key_namespace: str | None = None,
+    ) -> None:
+        if sealing is not None:
+            if key_namespace is not None and key_namespace != sealing.key_namespace:
+                raise BadHandle("cleanup namespace differs from the store's sealing namespace")
+            key_namespace = sealing.key_namespace
+        if key_namespace is None:
+            raise BadHandle("cleanup requires key_namespace when the store has no sealing")
+        _native.check_key_scope(KeyScope(key_namespace=key_namespace, tenant=None, subject=None))
+        self.key_namespace = key_namespace
         self._delete = delete
 
     async def __call__(self, scope: KeyScope) -> None:
+        if scope.key_namespace != self.key_namespace:
+            raise BadHandle("cleanup scope belongs to another key namespace")
         await self._delete(scope)
 
     async def resweep(self, store: ErasureStore, *, limit: int = 100) -> int:
+        check_page(limit)
         deleted = 0
         after: str | None = None
         while page := await store.revoked(limit, after=after):
             for stored in page:
-                deleted += await self._delete(stored.operation.scope)
+                scope = stored.operation.scope
+                if scope.key_namespace == self.key_namespace:
+                    deleted += await self._delete(scope)
             after = page[-1].operation.operation_id
         return deleted
 

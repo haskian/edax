@@ -2768,7 +2768,7 @@
       "mode": "upsert",
       "source_incarnation": "cluster-a/orders-v1"
     },
-    "error": "bad_handle: invalid ingestion source or row identity",
+    "error": "codec: invalid ingestion event or aggregate identity",
     "inputs": [
       {
         "content": {
@@ -2958,7 +2958,7 @@
       "mode": "upsert",
       "source_incarnation": "cluster-a/orders-v1"
     },
-    "error": "bad_handle: invalid ingestion source or row identity",
+    "error": "codec: invalid ingestion event or aggregate identity",
     "inputs": [
       {
         "content": {
@@ -4610,7 +4610,7 @@
     "want": "9:orders-v1:[\"upsert\",null,null,\"order-42\"]"
   },
   {
-    "error": null,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
     "mode": "upsert",
     "name": "row_key_empty_tenant",
     "op": "row_key",
@@ -4618,10 +4618,10 @@
     "subject": null,
     "target": "orders-v1",
     "tenant": "",
-    "want": "9:orders-v1:[\"upsert\",\"\",null,\"order-42\"]"
+    "want": null
   },
   {
-    "error": null,
+    "error": "codec: tenant holds a NUL character",
     "mode": "upsert",
     "name": "row_key_nul_tenant",
     "op": "row_key",
@@ -4629,7 +4629,7 @@
     "subject": null,
     "target": "orders-v1",
     "tenant": "acme\u0000store",
-    "want": "9:orders-v1:[\"upsert\",\"acme\\u0000store\",null,\"order-42\"]"
+    "want": null
   },
   {
     "error": null,
@@ -4654,7 +4654,7 @@
     "want": "12:naročila-v1:[\"upsert\",\"trgovina-ž\",null,\"naročilo-42\"]"
   },
   {
-    "error": "bad_handle: invalid ingestion row identity",
+    "error": "codec: invalid ingestion row identity",
     "mode": "upsert",
     "name": "row_key_empty_row_refused",
     "op": "row_key",
@@ -4665,7 +4665,7 @@
     "want": null
   },
   {
-    "error": "bad_handle: invalid ingestion row identity",
+    "error": "codec: invalid ingestion row identity",
     "mode": "append",
     "name": "row_key_empty_event_refused",
     "op": "row_key",

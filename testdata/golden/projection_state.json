@@ -5840,7 +5840,7 @@
     "want": null
   },
   {
-    "error": "codec: projection aggregate sequence gap",
+    "error": "codec: projection aggregate has no state: first sequence must be one and subject must stay unchanged",
     "keys": [
       "19:account-balances-v1:[\"projection\",\"manifest\"]",
       "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
@@ -7497,6 +7497,1573 @@
           "topic": "account-events"
         },
         "op": "activate"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "boundary_initialize",
+    "now": 0,
+    "records": {},
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "initialize"
+      }
+    },
+    "want": {
+      "inserts": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 0,
+          "expires_ms": 0,
+          "next_offset": 0,
+          "owner": "",
+          "partition": 0
+        },
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+          "epoch": 0,
+          "expires_ms": 0,
+          "next_offset": 0,
+          "owner": "",
+          "partition": 1
+        },
+        "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+          "active": false,
+          "contract": {
+            "at_rest": "sealed",
+            "effect_namespace": "account-effects-v1",
+            "envelope_id": "event-v1",
+            "generation": "account-balances-v1",
+            "keying_id": "account-v1",
+            "reducer_id": "balance-v1",
+            "source_history": "no-rollback-policy-1",
+            "source_identity": "cluster-42/topic-81",
+            "starts": {
+              "0": 0,
+              "1": 0
+            },
+            "topic": "account-events"
+          },
+          "cutoffs": {},
+          "frozen": false,
+          "upper": {}
+        }
+      },
+      "intents": {},
+      "result": null,
+      "updates": {}
+    }
+  },
+  {
+    "error": "bad_handle: changed projection contract",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "changed_contract_reinitialize_refused",
+    "now": 0,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "other-reducer",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "initialize"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: cannot hand over effects from an inactive projection generation",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "inactive_generation_cannot_freeze",
+    "now": 0,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "op": "freeze"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid projection lease duration or clock",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "zero_lease_duration",
+    "now": 0,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 0,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid projection lease duration or clock",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "negative_lease_duration",
+    "now": 0,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": -1,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid projection lease duration or clock",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "negative_lease_clock",
+    "now": -1,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: projection lease clock overflow",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "lease_clock_exhausted",
+    "now": 9223372036854775807,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "boundary_acquire",
+    "now": 10,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-a",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "store: projection cursor moved; reload it and fetch again",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "refresh_expected_cursor_moved",
+    "now": 11,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "expected_offset": 99,
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "lease_ms": 1000,
+        "op": "refresh",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "refresh_expected_cursor_matches",
+    "now": 11,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1010,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "expected_offset": 0,
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "lease_ms": 1000,
+        "op": "refresh",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1011,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: stale projection ownership",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "refresh_foreign_owner",
+    "now": 11,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-b",
+          "partition": 0
+        },
+        "lease_ms": 1000,
+        "op": "refresh",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: stale projection ownership",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "refresh_future_epoch",
+    "now": 11,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 99,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "lease_ms": 1000,
+        "op": "refresh",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "codec: projection sequence must start at one",
+    "keys": [],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "sequence_zero_refused",
+    "now": 11,
+    "records": {},
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "inputs": [
+          {
+            "event": {
+              "aggregate": "account-42",
+              "event_id": "zero",
+              "event_type": "CreditPosted",
+              "metadata": {
+                "correlation_id": "payment-99"
+              },
+              "payload": {
+                "amount": "12.50",
+                "currency": "EUR"
+              },
+              "schema_version": "1",
+              "sequence": 0,
+              "tenant": "bank-eu"
+            },
+            "offset": 0
+          }
+        ],
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "op": "prepare_batch",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: projection rebuild has not reached cutoff",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "activation_before_cutoff_refused",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "cutover": {
+          "cutoffs": {
+            "0": 1,
+            "1": 0
+          },
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "topic": "account-events"
+        },
+        "op": "activate"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "boundary_activate",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": false,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {},
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "cutover": {
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "topic": "account-events"
+        },
+        "op": "activate"
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": null,
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+          "active": true,
+          "contract": {
+            "at_rest": "sealed",
+            "effect_namespace": "account-effects-v1",
+            "envelope_id": "event-v1",
+            "generation": "account-balances-v1",
+            "keying_id": "account-v1",
+            "reducer_id": "balance-v1",
+            "source_history": "no-rollback-policy-1",
+            "source_identity": "cluster-42/topic-81",
+            "starts": {
+              "0": 0,
+              "1": 0
+            },
+            "topic": "account-events"
+          },
+          "cutoffs": {
+            "0": 0,
+            "1": 0
+          },
+          "frozen": false,
+          "upper": {}
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: projection activation is immutable",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]"
+    ],
+    "lock": {
+      "exclusive": true,
+      "partition": null
+    },
+    "name": "active_cutoffs_cannot_change",
+    "now": 12,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",1]",
+        "epoch": 0,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "",
+        "partition": 1
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "cutover": {
+          "cutoffs": {
+            "0": 1,
+            "1": 0
+          },
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "topic": "account-events"
+        },
+        "op": "activate"
+      }
+    },
+    "want": null
+  },
+  {
+    "error": null,
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "expired_lease_new_owner",
+    "now": 1011,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 1,
+        "expires_ms": 1011,
+        "next_offset": 0,
+        "owner": "worker-a",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-b",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": {
+      "inserts": {},
+      "intents": {},
+      "result": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2011,
+        "next_offset": 0,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "updates": {
+        "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 2,
+          "expires_ms": 2011,
+          "next_offset": 0,
+          "owner": "worker-b",
+          "partition": 0
+        }
+      }
+    }
+  },
+  {
+    "error": "bad_handle: stale projection ownership",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "refresh_retired_owner_epoch",
+    "now": 1012,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 2,
+        "expires_ms": 2011,
+        "next_offset": 0,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease": {
+          "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+          "epoch": 1,
+          "expires_ms": 1010,
+          "next_offset": 0,
+          "owner": "worker-a",
+          "partition": 0
+        },
+        "lease_ms": 1000,
+        "op": "refresh",
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
+      }
+    },
+    "want": null
+  },
+  {
+    "error": "bad_handle: projection epoch exhausted",
+    "keys": [
+      "19:account-balances-v1:[\"projection\",\"manifest\"]",
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]"
+    ],
+    "lock": {
+      "exclusive": false,
+      "partition": 0
+    },
+    "name": "ownership_epoch_exhausted",
+    "now": 1013,
+    "records": {
+      "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]": {
+        "checkpoint_key": "19:account-balances-v1:[\"projection\",\"checkpoint\",\"cluster-42/topic-81\",\"account-events\",0]",
+        "epoch": 9223372036854775807,
+        "expires_ms": 0,
+        "next_offset": 0,
+        "owner": "worker-b",
+        "partition": 0
+      },
+      "19:account-balances-v1:[\"projection\",\"manifest\"]": {
+        "active": true,
+        "contract": {
+          "at_rest": "sealed",
+          "effect_namespace": "account-effects-v1",
+          "envelope_id": "event-v1",
+          "generation": "account-balances-v1",
+          "keying_id": "account-v1",
+          "reducer_id": "balance-v1",
+          "source_history": "no-rollback-policy-1",
+          "source_identity": "cluster-42/topic-81",
+          "starts": {
+            "0": 0,
+            "1": 0
+          },
+          "topic": "account-events"
+        },
+        "cutoffs": {
+          "0": 0,
+          "1": 0
+        },
+        "frozen": false,
+        "upper": {}
+      }
+    },
+    "request": {
+      "contract": {
+        "at_rest": "sealed",
+        "effect_namespace": "account-effects-v1",
+        "envelope_id": "event-v1",
+        "generation": "account-balances-v1",
+        "keying_id": "account-v1",
+        "reducer_id": "balance-v1",
+        "source_history": "no-rollback-policy-1",
+        "source_identity": "cluster-42/topic-81",
+        "starts": {
+          "0": 0,
+          "1": 0
+        },
+        "topic": "account-events"
+      },
+      "operation": {
+        "lease_ms": 1000,
+        "op": "acquire",
+        "owner": "worker-c",
+        "partition": 0,
+        "proof": {
+          "beginning": 0,
+          "end": 100,
+          "history": "no-rollback-policy-1",
+          "identity": "cluster-42/topic-81"
+        }
       }
     },
     "want": null

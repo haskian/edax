@@ -693,3 +693,47 @@ async def test_replay_uses_current_raw_without_replacing_durable_original(
     published = await sink.commit([replay])
     assert published.rejections[replay.source]["published"] is True
     assert await sink.pending() == {}
+
+
+@pytest.mark.parametrize("mode", ["append", "upsert"])
+async def test_numeric_state_preserves_binary64_on_insert_and_update(
+    database: tuple[Any, PostgresTransactor, str], mode: Literal["append", "upsert"]
+) -> None:
+    sink = sink_for(database, mode)
+    memory = MemoryIngestionSink(sink.target)
+    numbers = [5.808820077685227e16, -5.808820077685227e16, 1e21, 1e23]
+    for offset, number in enumerate(numbers):
+        original = replace(
+            record(sink, offset, sequence=offset + 1),
+            private={"total": number, "nested": [number, None]},
+            public={"balance": number},
+        )
+        for target in (memory, sink):
+            assert (await target.commit([original])).outcomes == ("accepted",)
+        key = original.event_id if mode == "append" else "order-summary-42"
+        expected = await memory.get("shop-a", key)
+        actual = await sink.get("shop-a", key)
+        assert actual == expected
+        assert actual is not None
+        assert type(actual["public"]["balance"]) is float
+        assert actual["public"]["balance"] == number
+
+
+async def test_ingestion_row_lock_wait_is_uncounted_contention(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    from edax.errors import InProgress
+
+    pool, _, schema = database
+    sink = sink_for(database)
+    saved = record(sink, 0)
+    await sink.commit([saved])
+    async with pool.acquire() as connection, connection.transaction():
+        await connection.fetchval(
+            f'SELECT key FROM "{schema}".edax_ingest_state WHERE key=$1 FOR UPDATE', saved.key
+        )
+        with pytest.raises(PostgresTransactionFailure) as failed:
+            await sink.commit([record(sink, 1, sequence=2)])
+        assert isinstance(failed.value.cause, InProgress)
+        assert failed.value.rolled_back and not failed.value.commit_started
+    assert (await sink.commit([record(sink, 1, sequence=2)])).outcomes == ("accepted",)

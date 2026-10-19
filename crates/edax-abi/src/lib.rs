@@ -87,6 +87,11 @@ fn count(n: usize) -> u64 {
     u64::try_from(n).unwrap_or(u64::MAX)
 }
 
+/// A boundary count as the host width, saturating rather than truncating on narrower targets.
+fn host_count(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
+}
+
 /// A host dictionary as the kernel's key-ordered map, so encoded bytes are deterministic.
 fn ordered(map: HashMap<String, String>) -> BTreeMap<String, String> {
     map.into_iter().collect()

@@ -850,7 +850,14 @@ async def test_preparation_retry_rewinds_open_batch_without_starving_healthy_par
         assert all(TP not in batch for batch in client.commits)
         assert await sink.get("tenant-7", "order-0") is None
     else:
-        assert sink.batches.count(("p0-0", "p0-1")) == 1
+        # Flush age may split the replay into two committed batches. Both originals must still be
+        # applied once and in source order; scheduler timing does not define the batch boundary.
+        assert [item for batch in sink.batches for item in batch if item.startswith("p0-")] == [
+            "p0-0",
+            "p0-1",
+        ]
+        row = await sink.get("tenant-7", "order-0")
+        assert row is not None and row["sequence"] == 2
     assert runner.retained_records == runner.retained_bytes == 0
 
 
@@ -1111,7 +1118,7 @@ async def test_rejected_input_failure_never_rejects_again(rolled_back: bool, att
     async with running(runner) as task:
         with pytest.raises(TransactionFailure, match="rejection row constraint"):
             await asyncio.wait_for(asyncio.shield(task), 1)
-    assert sink.batches == [("p0-0",)] * attempts
+    assert sink.batches == [("orders/0/0",)] * attempts
     assert client.commits == []
     assert await sink.pending() == {}
 
