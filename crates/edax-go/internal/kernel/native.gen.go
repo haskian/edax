@@ -184,6 +184,22 @@ func (h *MemoryKeys) Close() error {
 	return nil
 }
 
+// MemoryProjectionDatabase owns a native handle. Use Close when it is no longer needed. Do not copy it.
+type MemoryProjectionDatabase struct {
+	*nativeState[*native.MemoryProjectionDatabase]
+	cleanup runtime.Cleanup
+}
+
+// Close releases MemoryProjectionDatabase. It is safe to call more than once.
+func (h *MemoryProjectionDatabase) Close() error {
+	if h == nil || h.nativeState == nil {
+		return nil
+	}
+	h.cleanup.Stop()
+	h.nativeState.close()
+	return nil
+}
+
 // MemoryProjectionStore owns a native handle. Use Close when it is no longer needed. Do not copy it.
 type MemoryProjectionStore struct {
 	*nativeState[*native.MemoryProjectionStore]
@@ -1510,6 +1526,12 @@ func GetMemoryIngestion() *MemoryIngestion {
 func GetMemoryKeys() *MemoryKeys {
 	nativeValue := native.GetMemoryKeys()
 	return wrapMemoryKeys(nativeValue)
+}
+
+// GetMemoryProjectionDatabase calls the shared kernel.
+func GetMemoryProjectionDatabase() *MemoryProjectionDatabase {
+	nativeValue := native.GetMemoryProjectionDatabase()
+	return wrapMemoryProjectionDatabase(nativeValue)
 }
 
 // GetMemoryTransactor calls the shared kernel.
@@ -4056,6 +4078,114 @@ func (h *MemoryKeys) Status(scope KeyScope) (string, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// Read calls the shared kernel.
+func (h *MemoryProjectionDatabase) Read(keys string) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("keys", keys); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Read(keys)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Commit calls the shared kernel.
+func (h *MemoryProjectionDatabase) Commit(versions string, writes string) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("versions", versions); err != nil {
+		return err
+	}
+	if err := checkNativeString("writes", writes); err != nil {
+		return err
+	}
+	return mapNativeError(h.inner.Commit(versions, writes))
+}
+
+// Unpublished calls the shared kernel.
+func (h *MemoryProjectionDatabase) Unpublished(manifestKey string, generation string, limit uint32) (string, error) {
+	var zero string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("manifestKey", manifestKey); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("generation", generation); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Unpublished(manifestKey, generation, limit)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// MarkPublished calls the shared kernel.
+func (h *MemoryProjectionDatabase) MarkPublished(manifestKey string, generation string, keys string) (uint64, error) {
+	var zero uint64
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("manifestKey", manifestKey); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("generation", generation); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("keys", keys); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.MarkPublished(manifestKey, generation, keys)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// Prune calls the shared kernel.
+func (h *MemoryProjectionDatabase) Prune(manifestKey string, generation string, limit uint32) (uint64, error) {
+	var zero uint64
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("MemoryProjectionDatabase")
+	}
+	if err := checkNativeString("manifestKey", manifestKey); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("generation", generation); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := h.inner.Prune(manifestKey, generation, limit)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // Get calls the shared kernel.
 func (h *MemoryProjectionStore) Get(tx int64, projection string, id string) (*ProjectionRow, error) {
 	var zero *ProjectionRow
@@ -4866,6 +4996,15 @@ func wrapMemoryKeys(value *native.MemoryKeys) *MemoryKeys {
 	state := &nativeState[*native.MemoryKeys]{inner: value}
 	handle := &MemoryKeys{nativeState: state}
 	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryKeys]).close, state)
+	return handle
+}
+func wrapMemoryProjectionDatabase(value *native.MemoryProjectionDatabase) *MemoryProjectionDatabase {
+	if value == nil {
+		return nil
+	}
+	state := &nativeState[*native.MemoryProjectionDatabase]{inner: value}
+	handle := &MemoryProjectionDatabase{nativeState: state}
+	handle.cleanup = runtime.AddCleanup(handle, (*nativeState[*native.MemoryProjectionDatabase]).close, state)
 	return handle
 }
 func wrapMemoryProjectionStore(value *native.MemoryProjectionStore) *MemoryProjectionStore {

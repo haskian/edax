@@ -26,7 +26,10 @@ is one JSON text column. Each SDK ships only the client calls around it.
 `crates/edax-postgres/live-check` runs the SQL against a real server. It replays `filter.json`,
 `query.json` and `postgres_query.json`, walks every page of every sorted query, and runs a seeded
 differential over documents built to hit each rule. It checks the inline decimal reading against
-the kernel's, and the contract check against a real catalog. A second SDK replays the same files.
+the kernel's, and the contract check against a real catalog. It commits one sequence of projection
+transitions to the `projection` tables and to `edax-memory`'s `MemoryProjectionState`. Both must then
+hold the same records and page, mark and prune the same intents. A second SDK replays the
+same files.
 
 ## The table contract
 
@@ -202,7 +205,7 @@ contract was violated.
 | SQLSTATE | Verdict |
 |---|---|
 | `23505` on the `events_stream_sequence` key | `concurrency`: another writer appended first |
-| `23505` on an `ingest` | `concurrency`: another commit inserted the key first, so a retry reads it |
+| `23505` on an `ingest` or `projection_state` | `concurrency`: another transaction inserted the key first, so a retry reads it |
 | `55P03`, `57014` on a `claim` | `in_progress`: another unit of work holds the key, and a dispatcher retries it uncounted |
 | `55P03` on an `append`, `projection_save`, `saga_write` or `settle` | `concurrency`: another unit of work holds the row this write compares or fences |
 | `55P03` on any other operation, `57014` on any but a `claim` | `store`, transient: a read or an unversioned write ran out of time, which is no version conflict |

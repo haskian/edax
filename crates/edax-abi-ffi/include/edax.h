@@ -169,6 +169,11 @@ typedef uint64_t EDAXMemoryIngestion;
  */
 typedef uint64_t EDAXMemoryKeys;
 /**
+ * An atomic in-memory projection state database: records and effect intents. Keep this handle for
+ * as long as the state should live.
+ */
+typedef uint64_t EDAXMemoryProjectionDatabase;
+/**
  * The projection store seam of a `MemoryTransactor`: versioned read-model documents, queried by the
  * kernel. See `edax_memory.MemoryProjectionStore`.
  */
@@ -2360,6 +2365,61 @@ char *edax_memory_keys_destroy(EDAXAlefHandle this_,
  */
 char *edax_memory_keys_status(EDAXAlefHandle this_,
                               EDAXAlefHandle scope);
+
+/**
+ * Free a `MemoryProjectionDatabase` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_memory_projection_database_free(EDAXAlefHandle handle);
+
+/**
+ * Read the JSON list `keys`: `{"records": {key: value}, "versions": {key: version}}`, an absent key
+ * at version zero with no record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_projection_database_read(EDAXAlefHandle this_,
+                                           const char *keys);
+
+/**
+ * Commit `writes`, `{"inserts", "updates", "intents"}`, if every record in `versions` is unchanged.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_projection_database_commit(EDAXAlefHandle this_,
+                                               const char *versions,
+                                               const char *writes);
+
+/**
+ * Up to `limit` deliverable intents of `generation`, as a JSON list in delivery order.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_memory_projection_database_unpublished(EDAXAlefHandle this_,
+                                                  const char *manifest_key,
+                                                  const char *generation,
+                                                  uint32_t limit);
+
+/**
+ * Delete each still-eligible intent the JSON list `keys` names; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_mark_published(EDAXAlefHandle this_,
+                                                        const char *manifest_key,
+                                                        const char *generation,
+                                                        const char *keys);
+
+/**
+ * Delete up to `limit` intents a cutover made permanently ineligible; return how many.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+uint64_t edax_memory_projection_database_prune(EDAXAlefHandle this_,
+                                               const char *manifest_key,
+                                               const char *generation,
+                                               uint32_t limit);
 
 /**
  * Free a `MemoryProjectionStore` handle.
@@ -5646,6 +5706,13 @@ EDAXAlefHandle edax_memory_ingestion(void);
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_memory_keys(void);
+
+/**
+ * Build an independent in-memory projection state database.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_memory_projection_database(void);
 
 /**
  * A fresh in-memory database with every seam behind one transaction boundary.

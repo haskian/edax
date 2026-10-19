@@ -441,7 +441,7 @@ async def test_changed_contract_is_refused(stores: Any) -> None:
     await store.initialize()
     changed = stores(replace(target(), reducer_id="balance-reducer-2"))
     if isinstance(store, MemoryProjectionStateStore):
-        changed._records = store._records  # memory stores share nothing unless given the same records
+        changed._database = store._database  # memory stores share nothing unless given the same database
     with pytest.raises(BadHandle, match="changed projection contract"):
         await changed.initialize()
     with pytest.raises(BadHandle, match="changed projection contract"):

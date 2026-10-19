@@ -13,13 +13,13 @@ checkpoint together. :class:`~edax.backend.kafka_projection.KafkaProjection` dri
 
 from __future__ import annotations
 
-import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
 from . import _json, _native
+from ._owned import ThreadBound
 from .errors import BadHandle, StoreError
 from .outbox import check_page
 from .query import Document, Page, Query
@@ -516,78 +516,51 @@ class _MemorySession(ProjectionSession):
     def __init__(self, store: MemoryProjectionStateStore) -> None:
         super().__init__(store.target)
         self._store = store
+        #: The version of every record read; the commit refuses if one has changed since.
+        self.versions: dict[str, int] = {}
 
     async def _lock(self, exclusive: bool, partition: int | None) -> None:
-        pass  # the store's own lock serializes every transaction
+        pass  # the commit checks every read instead, so no lock spans the reducer
 
     async def _read(self, keys: Sequence[str]) -> Mapping[str, Any]:
-        return {key: self._store._records[key] for key in keys if key in self._store._records}
+        read = _json.decode(self._store._database.get().read(_json.encode(keys)))
+        self.versions.update(read["versions"])
+        return cast(Mapping[str, Any], read["records"])
 
     async def _clock(self) -> int:
         return self._store._clock()
 
 
 class MemoryProjectionStateStore(ProjectionStateStore):
-    """Atomic reference for tests; volatile, with a caller-injectable clock."""
+    """Atomic reference for tests; volatile, with a caller-injectable clock. Transactions run without a
+    lock: a commit whose reads another commit changed raises :class:`~edax.errors.ConcurrencyError`, a
+    transient failure the runner retries, as a Postgres insert race does. Native state is bound to the
+    constructing thread, like other memory backends."""
 
     def __init__(self, target: ProjectionTarget, *, clock: Callable[[], int] | None = None) -> None:
         super().__init__(target)
         self._clock = clock or (lambda: _native.current_timestamp() // 1_000_000)
-        self._records: dict[str, Any] = {}
-        self._intents: dict[str, Any] = {}
-        self._lock = asyncio.Lock()
+        self._database = ThreadBound(_native.memory_projection_database(), "MemoryProjectionStateStore")
 
     async def _transaction(self, call: Callable[[ProjectionSession], Awaitable[T]]) -> T:
-        async with self._lock:
-            session = _MemorySession(self)
-            result = await call(session)
-            # Only a finished transaction lands, as a database commit does.
-            self._records.update(session.inserts)
-            self._records.update(session.updates)
-            self._intents.update(session.intents)
-            return result
-
-    def _eligible(self) -> Callable[[Any], bool]:
-        manifest = self._records.get(self.target.manifest_key)
-        if manifest is None:
-            return lambda intent: False
-        encoded = _json.encode(manifest)
-        return lambda intent: bool(_native.projection_intent_eligible(encoded, _json.encode(intent)))
+        session = _MemorySession(self)
+        result = await call(session)
+        # Only a finished transaction lands, as a database commit does.
+        writes = {"inserts": session.inserts, "updates": session.updates, "intents": session.intents}
+        self._database.get().commit(_json.encode(session.versions), _json.encode(writes))
+        return result
 
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         check_page(limit)
-        async with self._lock:
-            eligible = self._eligible()
-            ready = sorted(
-                (value for value in self._intents.values() if eligible(value)),
-                key=lambda value: (value["offset"], value["ordinal"]),
-            )
-            # Offsets of two partitions are not comparable: take each partition's oldest in turn.
-            ranks: dict[int, int] = {}
-            ranked: list[tuple[int, int, Any]] = []
-            for value in ready:
-                rank = ranks.get(value["partition"], 0)
-                ranks[value["partition"]] = rank + 1
-                ranked.append((rank, value["partition"], value))
-            pending = [value for _, _, value in sorted(ranked, key=lambda item: item[:2])]
-            return [effect_intent(_json.decode(_json.encode(value))) for value in pending[:limit]]
+        pending = self._database.get().unpublished(self.target.manifest_key, self.target.generation, limit)
+        return [effect_intent(intent) for intent in _json.decode(pending)]
 
     async def mark_published(self, ids: Sequence[str]) -> None:
-        async with self._lock:
-            eligible = self._eligible()
-            for intent_id in ids:
-                key = self.target.intent_key(intent_id)
-                if key in self._intents and eligible(self._intents[key]):
-                    del self._intents[key]
+        keys = [self.target.intent_key(intent_id) for intent_id in ids]
+        self._database.get().mark_published(
+            self.target.manifest_key, self.target.generation, _json.encode(keys)
+        )
 
     async def prune(self, limit: int = 1000) -> int:
         check_page(limit)
-        async with self._lock:
-            manifest = self._records.get(self.target.manifest_key)
-            if manifest is None or not manifest["active"]:
-                return 0
-            eligible = self._eligible()
-            gone = [key for key, value in self._intents.items() if not eligible(value)][:limit]
-            for key in gone:
-                del self._intents[key]
-            return len(gone)
+        return self._database.get().prune(self.target.manifest_key, self.target.generation, limit)

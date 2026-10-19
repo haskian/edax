@@ -29,6 +29,7 @@ mod ingest;
 mod outbox;
 mod outbox_rows;
 mod projection;
+mod projection_state;
 mod saga;
 #[cfg(test)]
 mod testkit;
@@ -41,6 +42,7 @@ pub use idempotency::MemoryIdempotencyStore;
 pub use ingest::MemoryIngest;
 pub use outbox::MemoryCommandOutbox;
 pub use projection::{Document, MemoryProjectionStore};
+pub use projection_state::{MemoryProjectionState, Read, Writes};
 pub use saga::{MemorySagaStore, SagaRow};
 pub use tx::{MemoryTransactor, Tx};
 pub use versioned::Versioned;

@@ -314,6 +314,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -337,6 +338,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "edax-kafka"
+version = "0.12.0"
+dependencies = [
+ "base64",
+ "edax-core",
+ "edax-event",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "edax-memory"
+version = "0.12.0"
+dependencies = [
+ "edax-core",
+ "edax-cqrs",
+ "edax-event",
+ "edax-kafka",
+ "edax-seal",
+ "serde_json",
+]
+
+[[package]]
 name = "edax-postgres"
 version = "0.12.0"
 dependencies = [
@@ -356,6 +381,7 @@ dependencies = [
  "edax-cqrs",
  "edax-event",
  "edax-golden",
+ "edax-memory",
  "edax-postgres",
  "postgres",
  "serde_json",
@@ -812,6 +838,8 @@ dependencies = [
  "bytes",
  "fallible-iterator",
  "postgres-protocol",
+ "serde_core",
+ "serde_json",
 ]
 
 [[package]]

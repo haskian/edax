@@ -71,9 +71,9 @@ impl Op {
 /// Exact states first:
 ///
 /// - `23505`, a unique violation: of the events' `(stream, sequence)` a `concurrency` conflict (another
-///   writer appended first); on an ingestion commit `concurrency` too (another commit inserted the key
-///   first, so a retry reads the committed row); of any other key a reused id, `codec`, which fails the
-///   same way again.
+///   writer appended first); on an ingestion commit or projection state `concurrency` too (another
+///   transaction inserted the key first, so a retry reads the committed row); of any other key a reused
+///   id, `codec`, which fails the same way again.
 /// - `55P03` (a lock wait ran out) and `57014` (a statement ran out) on a claim: `in_progress`, since
 ///   another unit of work holds the key. `55P03` on projection state: `in_progress`, since another
 ///   runner holds the generation lock.
@@ -93,7 +93,7 @@ impl Op {
 pub fn verdict(op: Op, sqlstate: &str, unique: Option<UniqueKey>, message: &str) -> Error {
     let code = match (sqlstate, op) {
         ("23505", _) if unique == Some(UniqueKey::EventsStreamSequence) => ErrorCode::Concurrency,
-        ("23505", Op::Ingest) => ErrorCode::Concurrency,
+        ("23505", Op::Ingest | Op::ProjectionState) => ErrorCode::Concurrency,
         ("55P03" | "57014", Op::Claim) | ("55P03", Op::ProjectionState) => ErrorCode::InProgress,
         ("55P03", _) if op.waits_on_a_writer() => ErrorCode::Concurrency,
         ("40001" | "40P01" | "25006" | "25P02" | "55P03" | "57014", _) => ErrorCode::Store,
@@ -144,7 +144,7 @@ mod tests {
 
     #[test]
     fn verdict_branches() {
-        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 20] = [
+        let cases: [(&str, Op, &str, Option<UniqueKey>, ErrorCode); 21] = [
             (
                 "stream_race",
                 Op::Append,
@@ -177,6 +177,13 @@ mod tests {
             ("missing_table", Op::Load, "42P01", None, ErrorCode::BadHandle),
             ("check_violation", Op::Ingest, "23514", None, ErrorCode::Codec),
             ("ingest_unique_race", Op::Ingest, "23505", None, ErrorCode::Concurrency),
+            (
+                "projection_insert_race",
+                Op::ProjectionState,
+                "23505",
+                None,
+                ErrorCode::Concurrency,
+            ),
             ("ingest_lock_wait", Op::Ingest, "55P03", None, ErrorCode::Store),
             ("data_class", Op::Ingest, "22012", None, ErrorCode::Codec),
             ("missing_database", Op::Ingest, "3D000", None, ErrorCode::BadHandle),

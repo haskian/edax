@@ -736,7 +736,13 @@ fn golden_error() {
     ];
     // Every state on three operations, and the two timeout states, whose verdict turns on the operation,
     // on every operation.
-    let full = [Op::Append, Op::Claim, Op::ProjectionSave, Op::Ingest];
+    let full = [
+        Op::Append,
+        Op::Claim,
+        Op::ProjectionSave,
+        Op::Ingest,
+        Op::ProjectionState,
+    ];
     for op in Op::ALL.iter().copied() {
         let states: &[(&str, Option<UniqueKey>)] = if full.contains(&op) {
             &states
