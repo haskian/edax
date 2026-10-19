@@ -26,7 +26,7 @@ from edax.backend.kafka_projection import KafkaProjection
 from edax.backend.postgres import PostgresTransactor
 from edax.backend.projection_postgres import PostgresProjectionStateStore, reference_projection_state_ddl
 from edax.projection import ProjectionTarget, SourceProof
-from test_kafka_projection import decode
+from test_kafka_projection import decode, wire
 from test_projection_state import event, reducer
 
 BOOTSTRAP = os.environ.get("EDAX_KAFKA_BOOTSTRAP")
@@ -169,7 +169,7 @@ async def test_real_source_loss_cannot_advance_database_checkpoint(
         assert assigned.lease is not None and assigned.lease.next_offset == 0
         for sequence in range(1, 4):
             await resources.producer.send_and_wait(
-                topic, _json.encode(event(sequence, f"credit-{sequence}")).encode(), partition=0
+                topic, wire(event(sequence, f"credit-{sequence}")), partition=0
             )
 
         async def consume() -> None:
@@ -187,7 +187,7 @@ async def test_real_source_loss_cannot_advance_database_checkpoint(
 
         # An unrelated aggregate has no prior sequence to expose its complete loss.
         await resources.producer.send_and_wait(
-            topic, _json.encode(replace(event(), aggregate="account-43")).encode(), partition=0
+            topic, wire(replace(event(), aggregate="account-43")), partition=0
         )
         if discontinuity == "retention":
             deleted = await kafka_tool(

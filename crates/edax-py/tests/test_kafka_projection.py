@@ -9,10 +9,13 @@ from typing import Any
 
 import pytest
 from aiokafka import TopicPartition
+from conftest import build_message
 from edax import _json
 from edax.backend.kafka_projection import KafkaProjection
 from edax.errors import BadHandle
+from edax.message import EventMessage
 from edax.projection import MemoryProjectionStateStore, ProjectionEvent
+from edax.serializer import KernelSerializer
 from test_projection_state import event, proof, reducer, target
 
 TP = TopicPartition("account-events", 0)
@@ -29,7 +32,7 @@ class Client:
                 partition=0,
                 offset=i,
                 key=b"account-42",
-                value=_json.encode(event(i + 1, f"credit-{i + 1}")).encode(),
+                value=wire(event(i + 1, f"credit-{i + 1}")),
                 headers=[],
                 timestamp=0,
                 timestamp_type=0,
@@ -66,8 +69,32 @@ class Source:
         return replace(proof(self.beginning), identity=self.identity, history=self.history)
 
 
-def decode(record: Any) -> ProjectionEvent:
-    return ProjectionEvent(**_json.decode(record.value))
+def wire(event: ProjectionEvent) -> bytes:
+    """``event`` as the edax record a producer publishes."""
+    message = build_message(
+        event.aggregate,
+        event.event_type,
+        event.sequence,
+        id=event.event_id,
+        version=int(event.schema_version),
+        data=_json.encode(event.payload).encode(),
+        metadata=dict(event.metadata),
+        tenant=event.tenant,
+    )
+    return KernelSerializer().encode(message)
+
+
+def decode(message: EventMessage) -> ProjectionEvent:
+    return ProjectionEvent(
+        message.tenant,
+        message.aggregate_id,
+        message.id,
+        message.sequence or 0,
+        message.name,
+        str(message.version),
+        _json.decode(message.data),
+        dict(message.metadata),
+    )
 
 
 async def runner() -> tuple[KafkaProjection, Client, Source, MemoryProjectionStateStore]:
@@ -126,9 +153,9 @@ async def test_snapshot_decoder_output_before_callback_reuses_dictionary() -> No
     run, _, _, store = await runner()
     shared: dict[str, Any] = {"amount_minor": 0, "currency": "EUR"}
 
-    def mutate(record: Any) -> ProjectionEvent:
-        shared["amount_minor"] = record.offset + 1
-        return replace(event(record.offset + 1, f"credit-{record.offset}"), payload=shared)
+    def mutate(message: Any) -> ProjectionEvent:
+        shared["amount_minor"] = message.sequence
+        return replace(event(message.sequence, f"credit-{message.sequence - 1}"), payload=shared)
 
     run.decode = mutate
     await run._partition(TP, run._parts[TP])

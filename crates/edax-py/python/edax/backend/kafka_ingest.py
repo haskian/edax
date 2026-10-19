@@ -11,18 +11,18 @@ import inspect
 import logging
 from collections import deque
 from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
-from contextlib import AsyncExitStack, suppress
+from contextlib import suppress
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 
 from .. import _json, _native, _values, errors
 from ..batch import BatchSettings, recover
 from ..delivery import DeadLetter
-from ..errors import BadHandle, CodecError, KeyRevoking
+from ..errors import BadHandle, CodecError
 from ..ingestion import BatchInput, BatchResult, BatchSink, MappedRow, Rejection
 from ..message import EventMessage
 from ..pacing import Pacing
-from ..sealing import Sealing
+from ..sealing import Scope, Sealing
 from ..serializer import KernelSerializer, Serializer
 from . import _kafka
 from ._kafka import (
@@ -81,7 +81,7 @@ class _Partition:
     # The open batch's sealing view: each scope's keys are read once and dropped with the batch.
     keys: Sealing | None = None
     # Source of each sealed original the batch may write, to its (tenant, subject) write fence.
-    scopes: dict[str, tuple[str | None, str]] = field(default_factory=dict)
+    scopes: dict[str, Scope] = field(default_factory=dict)
 
 
 class KafkaIngestion:
@@ -645,43 +645,26 @@ class KafkaIngestion:
     async def _commit(
         self, part: _Partition, inputs: tuple[BatchInput, ...]
     ) -> tuple[tuple[BatchInput, ...], BatchResult]:
-        """Commit ``inputs`` under the write fence of every sealed scope they may write. A scope the
-        provider now reports destroyed turns its originals erased; a revoking one waits. The fence decides
-        the race against an erasure that lands after this read: a refused commit whose scope is no
-        longer active waits as contention, and the next attempt reads the new status."""
+        """Commit ``inputs`` under the write fence of every sealed scope they may write; the originals of a
+        scope the provider reports destroyed commit erased."""
         if self.sealing is None:
             return inputs, await self._operation(self.sink.commit(inputs))
-        sealing = self.sealing
-        live = {
+        scopes = {
             part.scopes[item.source]
             for item in inputs
             if item.source in part.scopes and not item.erased and item.failure is None
         }
-        destroyed: set[tuple[str | None, str]] = set()
-        for scope in sorted(live, key=lambda s: (s[0] or "", s[1])):
-            status = await sealing.keys.status(sealing.scope(*scope))
-            if status == "destroyed":
-                destroyed.add(scope)
-            elif status == "revoking":
-                raise KeyRevoking("an ingested subject's revocation awaits destruction")
-        if destroyed:
-            inputs = tuple(
+
+        async def write(destroyed: frozenset[Scope]) -> tuple[tuple[BatchInput, ...], BatchResult]:
+            final = tuple(
                 replace(item, erased=True, private=None, public=None, fingerprint=None)
                 if part.scopes.get(item.source) in destroyed
                 else item
                 for item in inputs
             )
-        fenced = sorted(live - destroyed, key=lambda s: (s[0] or "", s[1]))
-        try:
-            async with AsyncExitStack() as guards:
-                for scope in fenced:
-                    await guards.enter_async_context(sealing.write_guard(*scope))
-                return inputs, await self._operation(self.sink.commit(inputs))
-        except Exception as error:
-            for scope in fenced:
-                if await sealing.keys.status(sealing.scope(*scope)) not in ("active", "unknown"):
-                    raise KeyRevoking("an ingested subject was erased during the commit") from error
-            raise
+            return final, await self._operation(self.sink.commit(final))
+
+        return await self.sealing.fenced_write(scopes, write)
 
     async def _flush(self) -> None:
         for attempt in range(1, self.settings.max_attempts + 1):

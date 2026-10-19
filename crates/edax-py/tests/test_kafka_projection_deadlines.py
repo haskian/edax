@@ -10,12 +10,11 @@ from typing import Any
 
 import pytest
 from aiokafka import TopicPartition
-from edax import _json
 from edax.backend.kafka_projection import KafkaProjection
 from edax.batch import BatchSettings
 from edax.errors import StoreError
 from edax.projection import MemoryProjectionStateStore, ProjectionEvent
-from test_kafka_projection import Client, Source, decode, runner
+from test_kafka_projection import Client, Source, decode, runner, wire
 from test_projection_state import event, proof, reducer, target
 
 BLOCKED = TopicPartition("account-events", 0)
@@ -47,8 +46,10 @@ class PartitionClient:
                     partition=tp.partition,
                     offset=0,
                     key=value.aggregate.encode(),
-                    value=_json.encode(value).encode(),
+                    value=wire(value),
                     headers=[],
+                    timestamp=0,
+                    timestamp_type=0,
                 )
             ]
         }
@@ -161,7 +162,7 @@ async def test_elapsed_flush_age_cuts_before_fetching_another_record() -> None:
     decoded: list[int] = []
 
     def small_bounded_decode(record: Any) -> ProjectionEvent:
-        decoded.append(record.offset)
+        decoded.append(record.sequence - 1)
         time.sleep(0.003)
         return decode(record)
 
@@ -189,12 +190,12 @@ async def test_reassigned_partition_does_not_overlap_an_unresolved_old_fetch() -
             super().__init__()
             self.calls = 0
             for record in self.records:
-                record.value = _json.encode(
+                record.value = wire(
                     replace(
                         event(event_id=f"credit-{record.offset}"),
                         aggregate=f"independent-{record.offset}",
                     )
-                ).encode()
+                )
 
         async def getmany(self, *partitions: Any, **kwargs: Any) -> dict[Any, Any]:
             self.calls += 1

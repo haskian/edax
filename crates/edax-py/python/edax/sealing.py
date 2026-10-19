@@ -8,17 +8,23 @@ and tombstones on restart. Neither adapter nor :class:`Sealing` caches key mater
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Iterator, Sequence
-from contextlib import AbstractAsyncContextManager, asynccontextmanager, contextmanager, nullcontext
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
+from contextlib import (
+    AbstractAsyncContextManager,
+    AsyncExitStack,
+    asynccontextmanager,
+    contextmanager,
+    nullcontext,
+)
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Any, Literal, Protocol, cast, get_args, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, cast, get_args, runtime_checkable
 
 from . import _names, _native
 from ._owned import ThreadBound
 from ._values import give_value_semantics
-from .errors import BadHandle, CodecError, Shredded
+from .errors import BadHandle, CodecError, KeyRevoking, Shredded
 from .message import CommandMessage, EventDraft, EventMessage
 
 __all__ = [
@@ -35,6 +41,10 @@ __all__ = [
     "TransactionFence",
     "WriteFence",
 ]
+
+T = TypeVar("T")
+#: A write fence's scope: tenant and subject.
+Scope = tuple[str | None, str]
 
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
@@ -354,6 +364,35 @@ class Sealing:
         )
         view._fencing = self._fencing
         return view
+
+    async def fenced_write(
+        self, scopes: Collection[Scope], write: Callable[[frozenset[Scope]], Awaitable[T]]
+    ) -> T:
+        """Run a batch ``write`` under the write fence of every scope in ``scopes``, entered in one order.
+        Each scope's status is read fresh first. A revoking one raises :class:`~edax.errors.KeyRevoking`,
+        which a runner waits on uncounted. Destroyed ones are handed to ``write``, which must leave their
+        data out. The fence decides the race against an erasure that lands after this read: a refused
+        write whose scope is no longer active raises ``KeyRevoking`` too, so the next attempt reads the
+        new status."""
+        order = sorted(set(scopes), key=lambda scope: (scope[0] or "", scope[1]))
+        destroyed: set[Scope] = set()
+        for scope in order:
+            status = await self.keys.status(self.scope(*scope))
+            if status == "destroyed":
+                destroyed.add(scope)
+            elif status == "revoking":
+                raise KeyRevoking("a written subject's revocation awaits destruction")
+        fenced = [scope for scope in order if scope not in destroyed]
+        try:
+            async with AsyncExitStack() as guards:
+                for scope in fenced:
+                    await guards.enter_async_context(self.write_guard(*scope))
+                return await write(frozenset(destroyed))
+        except Exception as error:
+            for scope in fenced:
+                if await self.keys.status(self.scope(*scope)) not in ("active", "unknown"):
+                    raise KeyRevoking("a written subject was erased during the write") from error
+            raise
 
     async def fingerprint_key(self, tenant: str | None, subject: str | None) -> bytes:
         """The scope's fingerprint key: what a keyed fingerprint of its plaintext binds."""

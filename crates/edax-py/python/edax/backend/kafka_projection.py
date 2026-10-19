@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Collection, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from contextlib import suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
 
-from .. import _json, _native
+from .. import _json, _native, _values
 from ..batch import BatchSettings, recover
-from ..errors import BadHandle, CodecError, StoreError, TransactionFailure
+from ..errors import BadHandle, CodecError, KeyRevoking, StoreError, TransactionFailure
+from ..message import EventMessage
 from ..pacing import Pacing
 from ..projection import (
     ProjectionEvent,
@@ -21,8 +22,19 @@ from ..projection import (
     Reducer,
     SourceProof,
 )
+from ..sealing import Scope, Sealing
+from ..serializer import Serializer
 from . import _kafka
-from ._kafka import FetchedRecord, check_consumer, check_durations, check_listener
+from ._kafka import (
+    FetchedRecord,
+    KafkaFetched,
+    Poison,
+    RecordDecoder,
+    RecordMiddleware,
+    check_consumer,
+    check_durations,
+    check_listener,
+)
 
 if TYPE_CHECKING:
     from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
@@ -53,7 +65,10 @@ class ProjectionSource(Protocol):
 
 
 class ProjectionDecoder(Protocol):
-    def __call__(self, record: FetchedRecord, /) -> ProjectionEvent: ...
+    """The reducer's view of an opened event. With sealing, the runner refuses an event whose tenant,
+    aggregate, id or sequence differs from its envelope: an erased copy carries only the envelope's."""
+
+    def __call__(self, event: EventMessage, /) -> ProjectionEvent: ...
 
 
 @dataclass
@@ -93,6 +108,10 @@ class KafkaProjection:
         operation_timeout_s: float = 10,
         drain_timeout_s: float = 30,
         pacing: Pacing | None = None,
+        serializer: Serializer | None = None,
+        serializers: Sequence[Serializer] = (),
+        middleware: Sequence[RecordMiddleware] = (),
+        sealing: Sealing | None = None,
     ) -> None:
         check_consumer(cast(Any, client))
         reset = getattr(client, "_auto_offset_reset", None)
@@ -111,6 +130,8 @@ class KafkaProjection:
             raise BadHandle("projection lease must exceed the operation deadline")
         self.client, self.store, self.source = client, store, source
         self.decode, self.reducer = decode, reducer
+        self.sealing = sealing
+        self._decoder = RecordDecoder(serializer, serializers, middleware)
         self.settings = settings or BatchSettings()
         self._reserve = _native.batch_reserve(self.settings.json)
         self.lease_ms, self.timeout, self.drain_timeout = lease_ms, operation_timeout_s, drain_timeout_s
@@ -211,6 +232,65 @@ class KafkaProjection:
                 assigned.unresolved = task
                 task.cancel()
 
+    async def _input(self, keys: Sealing | None, record: FetchedRecord) -> ProjectionInput:
+        """The batch input ``record`` holds: decoded, opened with ``keys`` when sealed, and erased when the
+        key is destroyed. A sealed event's receipts bind the keyed fingerprint of its opened form."""
+        decoded = self._decoder(KafkaFetched.of(record))
+        if isinstance(decoded, Poison):
+            raise CodecError(str(decoded.cause)) from decoded.cause
+        if not isinstance(decoded, EventMessage):
+            raise CodecError("projection requires an event message")
+        if keys is None:
+            return ProjectionInput(record.offset, self.decode(decoded))
+        opened = await keys.open_event_for_consumer(decoded)
+        if opened is None:
+            # Nothing of an erased event can be read: its receipts take the envelope's identity.
+            erased = ProjectionEvent(
+                decoded.tenant,
+                decoded.aggregate_id,
+                decoded.id,
+                decoded.sequence or 0,
+                decoded.name,
+                str(decoded.version),
+                None,
+                {},
+                decoded.subject,
+            )
+            return ProjectionInput(record.offset, erased, erased=True)
+        event = self.decode(_values.replace(decoded, data=opened.data, encryption=None))
+        if (event.tenant, event.aggregate, event.event_id, event.sequence) != (
+            decoded.tenant,
+            decoded.aggregate_id,
+            decoded.id,
+            decoded.sequence,
+        ):
+            raise BadHandle("a sealed projection event must keep its envelope's identity")
+        event = replace(event, subject=decoded.subject)
+        fingerprint = None
+        if decoded.subject is not None:
+            key = await keys.fingerprint_key(decoded.tenant, decoded.subject)
+            fingerprint = _native.projection_keyed_fingerprint(key, _json.encode(event))
+        return ProjectionInput(record.offset, event, fingerprint=fingerprint)
+
+    async def _fenced(
+        self, assigned: _Assigned, inputs: Sequence[ProjectionInput], commit: Callable[[], Awaitable[T]]
+    ) -> T:
+        """Commit under the write fence of every sealed scope the batch writes. A scope destroyed since the
+        batch was staged waits as contention: the next attempt stages its events erased."""
+        if self.sealing is None:
+            return await self._operation(assigned, commit())
+        scopes: set[Scope] = set()
+        for item in inputs:
+            if not item.erased and item.event.subject is not None:
+                scopes.add((item.event.tenant, item.event.subject))
+
+        async def write(destroyed: frozenset[Scope]) -> T:
+            if destroyed:
+                raise KeyRevoking("a staged subject was erased before its commit")
+            return await self._operation(assigned, commit())
+
+        return await self.sealing.fenced_write(scopes, write)
+
     async def _proof(
         self, tp: TopicPartition, assigned: _Assigned, lease: ProjectionLease | None = None
     ) -> SourceProof:
@@ -253,6 +333,8 @@ class KafkaProjection:
                 self.client.seek(tp, lease.next_offset)
                 assigned.seek_needed = False
         inputs: list[ProjectionInput] = []
+        # The batch's sealing view reads each scope's keys once and drops them with the batch.
+        keys = None if self.sealing is None else self.sealing.for_batch()
         size = charged = 0
         opened = asyncio.get_running_loop().time()
         try:
@@ -300,8 +382,7 @@ class KafkaProjection:
                 raw_bytes = _kafka.record_bytes(record)
                 if raw_bytes > self.settings.max_record_bytes:
                     raise CodecError("projection record exceeds configured input limit")
-                event = self.decode(record)
-                item = ProjectionInput(record.offset, event)
+                item = await self._input(keys, record)
                 encoded = _json.encode(item)
                 serialized = len(encoded.encode())
                 if serialized > self.settings.max_mapped_bytes:
@@ -321,7 +402,7 @@ class KafkaProjection:
                 charged += charge
                 self._retained_records += 1
                 self._retained_bytes += charge
-                del record, records, fetched, event, item, decoded
+                del record, records, fetched, item, decoded
             if not current():
                 return
             if inputs and current():
@@ -329,9 +410,10 @@ class KafkaProjection:
                 if not current():
                     return
                 # One transaction extends the lease and commits the batch; staging cannot spend it.
-                assigned.lease = await self._operation(
+                assigned.lease = await self._fenced(
                     assigned,
-                    self.store.commit(
+                    inputs,
+                    lambda: self.store.commit(
                         lease, inputs, proof, self.reducer, lease_ms=self.lease_ms, is_current=current
                     ),
                 )

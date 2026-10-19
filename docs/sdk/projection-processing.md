@@ -178,8 +178,9 @@ the readable end stops the partition.
 Topic recreation, history change or unprovable continuity also stops it. In read-committed
 mode, the verifier uses the last stable offset as the readable end.
 
-The application supplies `verified_source` and `decode_event`; the decoder must validate and return
-a `ProjectionEvent`. Pass the `reduce_balance` function above as the reducer:
+The application supplies `verified_source` and `decode_event`. The runner decodes each record to an
+`EventMessage` with its serializers, as `KafkaConsumer` does; `decode_event` validates that message
+and returns a `ProjectionEvent`. Pass the `reduce_balance` function above as the reducer:
 
 ```python
 from edax.backend.kafka_projection import KafkaProjection
@@ -214,6 +215,22 @@ it leaves owned operations running and tracked. Stop the Kafka consumer before w
 unfinished fetches can end. Keep the database pool and other resources used by outstanding
 operations alive until `wait_closed()` finishes. Custom source verifiers must also provide a
 way to end their outstanding reads.
+
+## Sealed events
+
+Pass `sealing=` to read sealed events. The runner opens each event before `decode_event` sees it, and
+reads each subject's keys once per batch. `decode_event` must keep the envelope's tenant, aggregate,
+id and sequence. The runner sets the event's `subject` from the envelope, and the state sits under it.
+
+| Key state | What the runner does |
+|---|---|
+| Active | Reduces the opened event; its receipts bind an HMAC under the subject's fingerprint key |
+| Revoking or unavailable | Waits without spending attempts |
+| Missing or unauthorized | Stops the partition |
+| Destroyed | Records the event's receipts and moves past it, without a reducer call or a state change |
+
+Each commit runs under the write fence of every subject it writes. A subject erased between staging
+and the commit makes the fence refuse; the runner waits, stages the batch again and finds it erased.
 
 ## Ownership and transaction boundary
 

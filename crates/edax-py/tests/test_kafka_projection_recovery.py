@@ -12,11 +12,10 @@ from typing import Any
 
 import pytest
 from aiokafka import TopicPartition
-from edax import _json
 from edax.backend.kafka_projection import KafkaProjection
 from edax.errors import CodecError, StoreError
 from edax.projection import MemoryProjectionStateStore, ProjectionEvent, ProjectionInput, ProjectionResult
-from test_kafka_projection import TP, Client, Source, decode, runner
+from test_kafka_projection import TP, Client, Source, decode, runner, wire
 from test_projection_state import event, reducer, target
 
 
@@ -94,7 +93,7 @@ class PartitionClient(Client):
                     partition=tp.partition,
                     offset=0,
                     key=value.aggregate.encode(),
-                    value=_json.encode(value).encode(),
+                    value=wire(value),
                     headers=[],
                     timestamp=0,
                     timestamp_type=0,

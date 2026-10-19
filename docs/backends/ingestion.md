@@ -123,6 +123,23 @@ before replacing it or closing resources that unfinished work still uses. Keep t
 pool alive until that wait completes. Cancelling `wait_closed()` leaves those operations tracked;
 call it again to wait for their completion. `run(stop)` drains admitted work on a normal stop.
 
+## Sealed events
+
+Pass `sealing=` to `KafkaIngestion` to read sealed events. The runner opens each event before the
+mapper sees it, and reads each subject's keys once per batch. Keys are dropped with the batch.
+
+| Key state | What the runner does |
+|---|---|
+| Active | Maps the opened event; the row's fingerprint is an HMAC under the subject's fingerprint key |
+| Revoking or unavailable | Waits without spending attempts |
+| Missing or unauthorized | Stops the runner |
+| Destroyed | Accepts the record without a write; the offset still commits |
+
+A sealed record's mapper failure keeps only its error code, so a rejection or dead letter cannot
+quote its plaintext. Each commit runs under the write fence of every subject it writes. A subject
+erased between mapping and the commit makes the fence refuse; the runner waits, then commits those
+records erased.
+
 ## State and replay contract
 
 An `IngestionTarget` fixes `mode`, `generation`, `source_incarnation` and `mapper_id`. The durable
