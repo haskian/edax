@@ -292,6 +292,16 @@ class RecordMiddleware(Protocol):
     def on_poll(self, record: KafkaRecord) -> KafkaRecord: ...
 
 
+@dataclass(frozen=True)
+class Drained:
+    """What a revoke drain left: the retired commit's failure, if it ended in one, and the other
+    operations it waited on, split into those that finished and those still running at the deadline."""
+
+    commit_failure: BaseException | None
+    done: set[asyncio.Future[Any]]
+    unfinished: set[asyncio.Future[Any]]
+
+
 class OffsetCommitter:
     """The consumer's offset bookkeeping and its commits. The kernel's tracker books every fetched offset
     and settles it; a flush commits the watermarks it says are due, in one call, under the commit
@@ -346,6 +356,31 @@ class OffsetCommitter:
         async with self._serial:
             self.check_idle()
             await self._commit(self.tracker.get().due())
+
+    async def drain_revoked(
+        self, revoked: Collection[TopicPartition], others: Collection[asyncio.Future[Any]], deadline: float
+    ) -> Drained:
+        """Retire ``revoked`` and commit their last watermarks while ``others`` finish, all by ``deadline``
+        (event-loop time). A client commit still running after its waiter gave up counts as unfinished.
+        Anything unfinished, or a cancellation, cancels a commit still queued behind another: it must not
+        begin once the partitions have changed owners."""
+        # Retire synchronously, before commit serialization or any wait.
+        commit = asyncio.create_task(self.commit_retired(self.retire(revoked)))
+        commit.add_done_callback(retrieve_failure)
+        loop = asyncio.get_running_loop()
+        try:
+            done, unfinished = await asyncio.wait({commit, *others}, timeout=max(0, deadline - loop.time()))
+            running = self.unfinished()
+            if running is not None:
+                _, remaining = await asyncio.wait({running}, timeout=max(0, deadline - loop.time()))
+                unfinished.update(remaining)
+        except asyncio.CancelledError:
+            commit.cancel()
+            raise
+        if unfinished:
+            commit.cancel()
+        failure = commit.exception() if commit.done() and not commit.cancelled() else None
+        return Drained(failure, done - {commit}, unfinished)
 
     async def _commit(self, due: Sequence[_native.KafkaDue]) -> None:
         """Commit ``due`` in one call, under the commit deadline, and report each row back. A row of a

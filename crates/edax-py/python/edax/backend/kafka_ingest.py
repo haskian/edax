@@ -182,9 +182,7 @@ class KafkaIngestion:
 
     async def _revoke(self, revoked: Collection[TopicPartition]) -> None:
         deadline = asyncio.get_running_loop().time() + self._drain_timeout
-        # Retire synchronously, before commit serialization or any task drain.
-        last = self._offsets.retire(revoked)
-        workers: set[asyncio.Task[Any]] = set()
+        workers: set[asyncio.Future[Any]] = set()
         for tp in revoked:
             self._epochs[tp] = self._epochs.get(tp, 0) + 1
             part = self._parts.pop(tp, None)
@@ -199,34 +197,21 @@ class KafkaIngestion:
         if self._fetch_partition in revoked and self._fetch is not None and not self._fetch.done():
             self._fetch.cancel()
             workers.add(self._fetch)
-        commit = asyncio.create_task(self._offsets.commit_retired(last))
-        self._track(commit)
-        workers.add(commit)
         try:
-            done, pending = await asyncio.wait(
-                workers, timeout=max(0, deadline - asyncio.get_running_loop().time())
-            )
-            # A timed-out commit waiter can leave its actual client call running.
-            running_commit = self._offsets.unfinished()
-            if running_commit is not None:
-                _, remaining = await asyncio.wait(
-                    {running_commit}, timeout=max(0, deadline - asyncio.get_running_loop().time())
-                )
-                pending.update(remaining)
-            for task in done:
+            drained = await self._offsets.drain_revoked(revoked, workers, deadline)
+            for task in drained.done:
                 if not task.cancelled() and task.exception() is not None:
-                    error = cast(BaseException, task.exception())
-                    if task is not commit or errors.is_fatal(error):
-                        self._fail(error)
-                    else:
-                        logger.warning(
-                            "kafka revoke commit failed; uncommitted records will replay", exc_info=error
-                        )
-            if pending:
-                commit.cancel()
+                    self._fail(cast(BaseException, task.exception()))
+            failure = drained.commit_failure
+            if failure is not None and errors.is_fatal(failure):
+                self._fail(failure)
+            elif failure is not None:
+                logger.warning(
+                    "kafka revoke commit failed; uncommitted records will replay", exc_info=failure
+                )
+            if drained.unfinished:
                 self._fail(BadHandle("revoke deadline expired; stop the client and await wait_closed"))
         except asyncio.CancelledError:
-            commit.cancel()
             self._fail(BadHandle("revoke cancelled with unresolved operations"))
             raise
         finally:
@@ -248,12 +233,14 @@ class KafkaIngestion:
         self._offsets.check_idle()
 
     async def _bounded(self, call: Awaitable[T]) -> T:
+        """Await ``call`` under the operation deadline; past it, stop admission and cancel the call."""
         task = asyncio.ensure_future(call)
         self._track(cast(asyncio.Task[Any], task))
         try:
             done, _ = await asyncio.wait({task}, timeout=self._timeout)
             if not done:
                 self._fail(BadHandle("ingestion operation deadline expired; stop and await wait_closed"))
+                task.cancel()
                 self._check()
             return task.result()
         finally:
@@ -261,18 +248,12 @@ class KafkaIngestion:
                 task.cancel()
 
     async def _operation(self, call: Awaitable[T]) -> T:
+        """:meth:`_bounded`, holding the caller until the call has actually ended."""
         task = asyncio.ensure_future(call)
-        self._track(cast(asyncio.Task[Any], task))
         try:
-            done, _ = await asyncio.wait({task}, timeout=self._timeout)
-            if not done:
-                self._fail(BadHandle("ingestion operation deadline expired; stop and await wait_closed"))
-                task.cancel()
-                self._check()
-            return task.result()
+            return await self._bounded(task)
         finally:
             if not task.done():
-                task.cancel()
                 # The worker retains its slot and every data credit until the operation ends.
                 # Shield repeated cancellation too: cancellation never proves rollback/release.
                 while not task.done():

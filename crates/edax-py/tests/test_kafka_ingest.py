@@ -352,6 +352,43 @@ async def test_late_fetch_cannot_be_booked_after_reassignment() -> None:
     assert runner._fetch is None
 
 
+async def test_revoke_deadline_counts_a_client_commit_still_running() -> None:
+    release = asyncio.Event()
+
+    class HeldCommit(BatchClient):
+        async def commit(self, offsets: dict[TopicPartition, int]) -> None:
+            await release.wait()
+            await super().commit(offsets)
+
+    messages = events(1)
+    client = HeldCommit(records(messages))
+    runner = KafkaIngestion(
+        client,
+        RecordingSink(),
+        mapper,
+        no_dead,
+        settings=settings(max_records=1),
+        serializer=EventIds(messages),
+        commit_timeout_s=0.01,
+        drain_timeout_s=0.02,
+    )
+    async with running(runner) as task:
+        try:
+            # The batch's flush gave up waiting, but its client call still runs.
+            await until(lambda: runner._offsets.unfinished() is not None)
+            listener = runner.rebalance_listener()
+            await listener.on_partitions_revoked({TP})
+            with pytest.raises(BadHandle, match="revoke deadline"):
+                await listener.on_partitions_assigned({TP})
+        finally:
+            release.set()
+        # The run ends on its own flush, which saw the same commit still running.
+        with pytest.raises(StoreError, match="commit still running"):
+            await asyncio.wait_for(asyncio.shield(task), 1)
+    # The late commit lands once; the retired commit never starts behind it.
+    assert client.commits == [{TP: 1}]
+
+
 async def test_cancelled_sink_keeps_memory_credits_until_actual_release() -> None:
     entered, release = asyncio.Event(), asyncio.Event()
 

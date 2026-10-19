@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Collection, Sequence
+from collections.abc import Collection, Sequence
 from typing import TYPE_CHECKING, Any, Final, cast
 
 from .. import _native, errors
@@ -311,20 +311,18 @@ class KafkaConsumer:
     async def _flush_quietly(self) -> Exception | None:
         """Flush, and log a failure rather than raise it: the commit is retried at the next interval, and a
         lost commit only means redelivery after a restart. Returns the failure, ``None`` once it landed."""
-        return await self._quietly(self.flush())
-
-    async def _quietly(self, commit: Awaitable[None]) -> Exception | None:
-        """Await ``commit``, and log and observe a failure rather than raise it. Returns the failure,
-        ``None`` once it landed."""
         try:
-            await commit
-        except Exception as e:
-            logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=True)
-            # Absent for a flush called outside `run`, whose failure the log line carries.
-            if self._dispatcher is not None:
-                self._dispatcher.observer.commit_failed(e)
+            await self.flush()
+        except Exception as e:  # noqa: BLE001 - _commit_failed logs and observes it
+            self._commit_failed(e)
             return e
         return None
+
+    def _commit_failed(self, error: BaseException) -> None:
+        logger.warning("edax kafka: commit failed; the watermarks stay due", exc_info=error)
+        # Absent for a flush called outside `run`, whose failure the log line carries.
+        if self._dispatcher is not None:
+            self._dispatcher.observer.commit_failed(error)
 
     async def _commit_loop(self) -> None:
         """Commit on the interval until cancelled. A fatal commit failure ends the loop, raised: every later
@@ -427,29 +425,14 @@ class KafkaConsumer:
             self._invalidate(tp)
             self._revoked.add(tp)
             self._rewinds.pop(tp, None)
-        last = self._offsets.retire(revoked)
         fetch = self._fetch_task
         if fetch is not None and not fetch.done():
             fetch.cancel()
-        commit = asyncio.create_task(self._quietly(self._offsets.commit_retired(last)))
-        commit.add_done_callback(_kafka.retrieve_failure)
-        pending: set[asyncio.Future[Any]] = {commit}
-        if fetch is not None:
-            pending.add(fetch)
         try:
-            _, unfinished = await asyncio.wait(
-                pending, timeout=max(0, deadline - asyncio.get_running_loop().time())
-            )
-            # The commit waiter can time out before the revoke deadline while its client call survives.
-            running_commit = self._offsets.unfinished()
-            if running_commit is not None:
-                _, remaining = await asyncio.wait(
-                    {running_commit}, timeout=max(0, deadline - asyncio.get_running_loop().time())
-                )
-                unfinished.update(remaining)
-            if unfinished:
-                # A queued commit must not begin after the partition has changed owners.
-                commit.cancel()
+            drained = await self._offsets.drain_revoked(revoked, () if fetch is None else (fetch,), deadline)
+            if drained.commit_failure is not None:
+                self._commit_failed(drained.commit_failure)
+            if drained.unfinished:
                 self._stopped = BadHandle(
                     "kafka revoke deadline expired with unfinished operations; stop this consumer"
                 )
@@ -469,7 +452,6 @@ class KafkaConsumer:
             # The next assignment may gain partitions absent from this revoke, including an empty revoke.
             self._awaiting_assignment = self._stopped is None
         except asyncio.CancelledError:
-            commit.cancel()
             self._stopped = BadHandle("kafka revoke cancelled with unfinished operations; stop this consumer")
             raise
         finally:
