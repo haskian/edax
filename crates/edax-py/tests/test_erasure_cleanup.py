@@ -19,7 +19,7 @@ from edax.erasure import ErasureCoordinator, ErasureOperation, ErasureStore, Mem
 from edax.errors import Rejected
 from edax.ingestion import IngestionTarget, MemoryIngestionSink
 from edax.projection import MemoryProjectionStateStore, ProjectionInput, ProjectionResult
-from edax.sealing import KeyScope, MemoryKeys
+from edax.sealing import KeyScope, MemoryKeys, Sealing
 from test_projection_state import event, proof, target
 
 TENANTS = ("shop-a", "shop-b")
@@ -95,9 +95,11 @@ def projection(store: MemoryProjectionStateStore | PostgresProjectionStateStore)
                 (tenant, owner) for tenant in TENANTS for owner in OWNERS
             )
         ]
-        await store.commit(
-            lease, inputs, proof(), lambda _, e: ProjectionResult(private={"email": e.aggregate})
-        )
+        # Admit fixture writes without binding the later cleanup to a default namespace.
+        with store._using_sealing(Sealing(MemoryKeys(), "customers")):
+            await store.commit(
+                lease, inputs, proof(), lambda _, e: ProjectionResult(private={"email": e.aggregate})
+            )
 
     async def rows() -> set[tuple[str, str | None, str]]:
         return {

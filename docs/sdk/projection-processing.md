@@ -256,6 +256,11 @@ id and sequence. The runner sets the event's `subject` from the envelope, and th
 
 Each commit runs under the write fence of every subject it writes. A subject erased between staging
 and the commit makes the fence refuse; the runner waits, stages the batch again and finds it erased.
+Direct `store.commit()` calls take the same fences through transaction completion, including plaintext
+state and empty seal plans. They require the store's `sealing=` for subject inputs. The runner supplies
+its effective provider for its own store call; the store owns admission and releases it only after
+persistence settles. Custom adapters implement the transaction seam. Any extra writes outside that
+transaction need their own admission.
 
 ### State and intents at rest
 
@@ -276,8 +281,8 @@ delivers the rest.
 
 The store opens `private` for the reducer and in `get`. It reads keys once per commit and reserves one
 key per subject. The kernel refuses a subject's plaintext `private` part on a sealed target, and a
-subject's plaintext intent payload. A store without `sealing=` therefore stops at the first such
-commit and writes nothing.
+subject's plaintext intent payload. A subject commit without a provider on the store or its runner
+stops before reduction and writes nothing.
 
 ## Ownership and transaction boundary
 

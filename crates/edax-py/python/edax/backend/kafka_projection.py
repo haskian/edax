@@ -312,8 +312,8 @@ class KafkaProjection:
     async def _fenced(
         self, assigned: _Assigned, inputs: Sequence[ProjectionInput], commit: Callable[[], Awaitable[T]]
     ) -> T:
-        """Commit under the write fence of every subject the batch writes. A subject destroyed since the
-        batch was staged waits as contention: the next attempt stages its events erased."""
+        """Let the store own admission through persistence. Confirmed destruction since staging waits
+        as contention: the next attempt stages those events erased."""
 
         async def fenced() -> T:
             with provider_deadline(self.timeout):
@@ -327,12 +327,17 @@ class KafkaProjection:
                 scopes: set[Scope] = {
                     (item.event.tenant, item.event.subject) for item in inputs if not item.erased
                 }
-                async with self.sealing.fenced(scopes, timeout_s=self.timeout) as destroyed:
-                    if destroyed:
-                        raise KeyRevoking("a staged scope was erased before its commit")
-                    # This task owns both the guard and commit. If the driver suppresses cancellation,
-                    # it retains the guard while the runner moves on to other partitions.
-                    return await commit()
+                try:
+                    with self.store._using_sealing(self.sealing):
+                        return await commit()
+                except Exception:
+                    # A fence may refuse with a storage error. Only the provider can authorize skipping.
+                    for status in await self.sealing._statuses(list(scopes), self.timeout):
+                        try:
+                            _native.check_key_write_status(status)
+                        except (Shredded, KeyRevoking) as erased:
+                            raise KeyRevoking("a staged scope was erased before its commit") from erased
+                    raise
 
         return await self._operation(assigned, fenced())
 

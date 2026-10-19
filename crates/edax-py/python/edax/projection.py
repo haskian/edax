@@ -14,7 +14,9 @@ checkpoint together. :class:`~edax.backend.kafka_projection.KafkaProjection` dri
 from __future__ import annotations
 
 import functools
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+from contextlib import AsyncExitStack, contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
@@ -25,7 +27,7 @@ from .erasure import ScopeCleanup
 from .errors import BadHandle, KeyRevoking, KeyUnavailable, Shredded
 from .outbox import check_page
 from .query import Document, Page, Query
-from .sealing import AtRest, KeyScope, Sealing, SealPart
+from .sealing import AtRest, KeyScope, ScopeGuard, Sealing, SealPart
 from .unit_of_work import TxT_contra
 
 __all__ = [
@@ -415,6 +417,11 @@ class _ReducerFailure(Exception):
         super().__init__(str(error))
 
 
+_commit_sealing: ContextVar[tuple[object, Sealing] | None] = ContextVar(
+    "edax_projection_commit_sealing", default=None
+)
+
+
 class ProjectionStateStore:
     """Transaction interface shared by the memory reference and the PostgreSQL adapter. A subclass runs
     :meth:`_transaction` over its own :class:`ProjectionSession` and serves the outbox read side.
@@ -428,8 +435,19 @@ class ProjectionStateStore:
     ) -> None:
         self.target = target
         self.sealing = sealing
+        # Context snapshots identify this store without retaining its thread-bound native database.
+        self._sealing_identity = object()
         #: Deadline of each key-provider call delivery makes; a hung provider then reads as unavailable.
         self.key_timeout_s = key_timeout_s
+
+    @contextmanager
+    def _using_sealing(self, sealing: Sealing) -> Iterator[None]:
+        """Supply the runner's provider to this store call without changing shared configuration."""
+        token = _commit_sealing.set((self._sealing_identity, sealing))
+        try:
+            yield
+        finally:
+            _commit_sealing.reset(token)
 
     def _keys(self, keys: Sealing | None = None) -> Sealing:
         if keys is not None:
@@ -459,7 +477,9 @@ class ProjectionStateStore:
             private = await self._keys(keys).open_stored(part, private)
         return ProjectionState(private, record["public"])
 
-    async def _seal(self, novel: Sequence[tuple[Mapping[str, Any], dict[str, Any]]]) -> None:
+    async def _seal(
+        self, novel: Sequence[tuple[Mapping[str, Any], dict[str, Any]]], sealing: Sealing | None = None
+    ) -> None:
         """Seal, in place, what the kernel's seal plan names in ``novel``, a batch's ``(event, result)``
         pairs: one reservation per subject for all of them."""
         reductions = [{"event": event, "reduced": result} for event, result in novel]
@@ -476,7 +496,7 @@ class ProjectionStateStore:
             )
         values = [holder[name] for holder, name in places]
         sealed = (
-            await self._keys()
+            await self._keys(sealing)
             .for_batch(self.key_timeout_s)
             .seal_stored([(placed["part"], value) for placed, value in zip(plan, values, strict=True)])
         )
@@ -590,10 +610,22 @@ class ProjectionStateStore:
         is_current: AssignmentGuard = lambda: True,
     ) -> ProjectionLease:
         """Fold one batch in one transaction: extend the lease, run ``reducer`` once per novel event in
-        source order, and commit state, receipts, intents and the next offset together."""
+        source order, and commit state, receipts, intents and the next offset together. Hold every
+        non-erased input's scope fence through completion, even when no value needs encryption."""
         # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits.
         originals = _json.decode(_json.encode(inputs))
-        keys = None if self.sealing is None else self.sealing.for_batch(self.key_timeout_s)
+        supplied = _commit_sealing.get()
+        sealing = (
+            supplied[1] if supplied is not None and supplied[0] is self._sealing_identity else self.sealing
+        )
+        keys = None if sealing is None else sealing.for_batch(self.key_timeout_s)
+        scopes = {
+            (item["event"]["tenant"], item["event"]["subject"]) for item in originals if not item["erased"]
+        }
+        if sealing is None and any(subject is not None for _, subject in scopes):
+            raise BadHandle(
+                "a subject's state needs sealing= on the runner or the store for the erasure fence"
+            )
 
         async def apply(session: ProjectionSession) -> ProjectionLease:
             # One read for the whole batch: the batch's records with the extension's checkpoint.
@@ -627,7 +659,7 @@ class ProjectionStateStore:
                 reduced.append(result)
                 novel.append((item["event"], result))
             _guard(is_current)
-            await self._seal(novel)
+            await self._seal(novel, sealing)
             committed = ProjectionLease(
                 **await session.execute(
                     op="apply_batch", lease=current, inputs=originals, proof=proof, reduced=reduced
@@ -638,7 +670,22 @@ class ProjectionStateStore:
 
         original: Exception | None = None
         try:
-            return await self._transaction(apply)
+            async with AsyncExitStack() as guards:
+                if sealing is not None:
+                    for scope in sorted(
+                        scopes,
+                        key=lambda scope: (
+                            scope[0] is not None,
+                            scope[0] or "",
+                            scope[1] is not None,
+                            scope[1] or "",
+                        ),
+                    ):
+                        guard = sealing.write_guard(*scope)
+                        if isinstance(guard, ScopeGuard):
+                            guard = guard.for_owned_write()
+                        await guards.enter_async_context(guard)
+                return await self._transaction(apply)
         except Exception as error:
             cause: BaseException | None = error
             seen: set[int] = set()

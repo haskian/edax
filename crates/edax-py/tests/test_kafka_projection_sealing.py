@@ -191,7 +191,9 @@ async def test_erasure_racing_the_commit_restages_the_batch_erased() -> None:
 
 async def test_unsealed_replay_of_a_sealed_event_conflicts_with_its_keyed_receipt() -> None:
     sealing, records = await sealed_records(MemoryKeys())
-    run, store = await projection(sealing, records, balance([]))
+    run, store = await projection(
+        sealing, records, balance([]), MemoryProjectionStateStore(target(), sealing=sealing)
+    )
     await run._partition(TP, run._parts[TP])
     # The same event id and sequence published unsealed: its plaintext hash cannot match the keyed receipt.
     plain = replace(
@@ -275,13 +277,19 @@ async def test_a_commit_past_its_deadline_holds_the_write_fence_until_it_ends() 
     release = asyncio.Event()
 
     class Slow(MemoryProjectionStateStore):
-        async def commit(self, *args: Any, **options: Any) -> ProjectionLease:
-            while not release.is_set():
-                try:
-                    await release.wait()
-                except asyncio.CancelledError:
-                    continue
-            return await super().commit(*args, **options)
+        async def _transaction(self, call: Any) -> Any:
+            async def pending(session: Any) -> Any:
+                result = await call(session)
+                # Hold the state commit before persistence, after admission and reduction.
+                if call.__name__ == "apply":
+                    while not release.is_set():
+                        try:
+                            await release.wait()
+                        except asyncio.CancelledError:
+                            continue
+                return result
+
+            return await super()._transaction(pending)
 
     store = Slow(target())
     await store.initialize()
