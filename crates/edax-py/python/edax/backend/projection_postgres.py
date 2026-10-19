@@ -13,8 +13,8 @@ from ..projection import (
     ProjectionSession,
     ProjectionStateStore,
     ProjectionTarget,
-    effect_intent,
 )
+from ..sealing import Sealing
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
 T = TypeVar("T")
@@ -80,8 +80,9 @@ class PostgresProjectionStateStore(ProjectionStateStore):
         schema: str = "public",
         table: str = "edax_projection_state",
         intents: str = "edax_projection_intents",
+        sealing: Sealing | None = None,
     ) -> None:
-        super().__init__(target)
+        super().__init__(target, sealing=sealing)
         self._transactor = transactor
         self._sql = _statements(schema, table, intents)
         self._checked = False
@@ -124,14 +125,14 @@ class PostgresProjectionStateStore(ProjectionStateStore):
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         check_page(limit)
 
-        async def read(conn: PgConnection) -> list[EffectIntent]:
+        async def read(conn: PgConnection) -> list[Any]:
             await self._lock(conn, False, None)
             rows = await self._call(
                 conn.fetch(self._sql["pending"], self.target.manifest_key, self.target.generation, str(limit))
             )
-            return [effect_intent(_json.decode(row["value"])) for row in rows]
+            return [_json.decode(row["value"]) for row in rows]
 
-        return await self._owned(read)
+        return await self._delivered(await self._owned(read))
 
     async def mark_published(self, ids: Sequence[str]) -> None:
         if not ids:

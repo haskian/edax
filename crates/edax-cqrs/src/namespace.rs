@@ -65,7 +65,7 @@ pub fn check_sealed(private: Option<&Value>, tenant: Option<&str>, subject: &str
     let sealed = edax_event::sealing::decode_protected_state(&private.to_string())?;
     if sealed.is_none_or(|state| state.tenant.as_deref() != tenant || state.subject.as_deref() != Some(subject)) {
         return Err(Error::bad_handle(
-            "a sealed generation stores a subject's private part sealed under its own scope",
+            "a subject's private data must arrive sealed under its own scope",
         ));
     }
     Ok(())

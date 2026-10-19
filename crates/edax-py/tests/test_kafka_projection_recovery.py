@@ -46,7 +46,7 @@ async def test_reassignment_releases_previous_owner_and_resumes_database_cursor(
     assert current.next_offset == 3
     assert client.seeks == [0, 1]  # a new assignment resumes the durable cursor
     state = await store.get("bank-eu", "account-42")
-    assert state is not None and state["value"]["balance_minor"] == 3750
+    assert state is not None and state["public"]["balance_minor"] == 3750
     await run.wait_closed()
 
 
@@ -72,7 +72,7 @@ async def test_expired_current_lease_refences_and_preserves_committed_progress()
     assert current.next_offset == 3 and current.expires_ms > now[0]
     assert client.seeks == [0]  # healthy refresh preserves the already-correct fetch position
     state = await store.get("bank-eu", "account-42")
-    assert state is not None and state["value"]["balance_minor"] == 3750
+    assert state is not None and state["public"]["balance_minor"] == 3750
     await run.wait_closed()
 
 
@@ -138,7 +138,7 @@ async def test_poison_partition_halts_without_stopping_healthy_partition() -> No
         assert observed_lease is not None
         assert observed_lease.next_offset == 1
         state = await store.get("bank-eu", "account-43")
-        assert state is not None and state["value"]["balance_minor"] == 1250
+        assert state is not None and state["public"]["balance_minor"] == 1250
     finally:
         await run.stop()
         await run.wait_closed()
@@ -216,5 +216,5 @@ async def test_expired_refresh_commit_with_lost_reply_recovers_same_owner(
     assert recovered.epoch == previous.epoch + 1
     assert recovered.next_offset == 3 and recovered.owner == previous.owner
     state = await store.get("bank-eu", "account-42")
-    assert state is not None and state["value"]["balance_minor"] == 3750
+    assert state is not None and state["public"]["balance_minor"] == 3750
     await run.wait_closed()

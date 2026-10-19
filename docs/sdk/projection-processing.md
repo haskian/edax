@@ -18,11 +18,11 @@ inside this repository. Its internal imports are not available to external Go mo
 
 ```python
 from edax.errors import CodecError
-from edax.projection import ProjectionEvent, ProjectionResult
+from edax.projection import ProjectionEvent, ProjectionResult, ProjectionState
 
 
-def reduce_balance(state: dict[str, int] | None, event: ProjectionEvent) -> ProjectionResult:
-    balance = state["balance_minor"] if state is not None else 0
+def reduce_balance(state: ProjectionState | None, event: ProjectionEvent) -> ProjectionResult:
+    balance = state.public["balance_minor"] if state is not None else 0
     amount = event.payload["amount_minor"]  # The decoder validates the event schema.
     if event.event_type == "MoneyDeposited":
         balance += amount
@@ -30,7 +30,7 @@ def reduce_balance(state: dict[str, int] | None, event: ProjectionEvent) -> Proj
         balance -= amount
     else:
         raise CodecError(f"Unsupported balance event: {event.event_type}")
-    return ProjectionResult({"balance_minor": balance})
+    return ProjectionResult(public={"balance_minor": balance})
 ```
 
 A command handler decides whether a requested withdrawal is allowed. This reducer applies a
@@ -38,9 +38,10 @@ withdrawal that already happened. A command handler can reuse a reducer when upd
 aggregate, but does not need the Kafka projection runner for that transaction. Event sourcing stores the
 authoritative event history; this runner consumes events to maintain derived state.
 
-The first event receives `state=None`. Later events receive the previously committed state, or
-the state produced by an earlier event in the same batch. A stored `None` is also a valid state;
-it does not remove the aggregate's sequence history. The runner calls the reducer only for a
+The first event receives `state=None`. Later events receive a `ProjectionState` holding the
+previously committed `private` and `public` parts, or the parts an earlier event in the same batch
+produced. Both parts `None` is also a valid state; it does not remove the aggregate's sequence
+history. The runner calls the reducer only for a
 new event. A rolled-back attempt can call it again, so it must be deterministic and have no
 external side effects. Return `ProjectionIntent` values for effects that should be delivered after commit.
 
@@ -89,8 +90,8 @@ different content stops that partition. An identical event at a new offset advan
 its checkpoint. Deltas are never compacted.
 
 Reducers and decoders are synchronous, pure, deterministic and bounded by the host.
-They must not perform I/O. A reducer returns `ProjectionResult(state, intents)`; `None` is a real
-replacement state. Each `ProjectionIntent` has a stable key within its event, a destination and
+They must not perform I/O. A reducer returns `ProjectionResult(private=..., public=..., intents=...)`.
+`private` holds what belongs to the event's erasure subject; `public` stays queryable plaintext. Each `ProjectionIntent` has a stable key within its event, a destination and
 payload. A poison event or sequence gap never advances progress, even if an operator
 publishes a diagnostic copy elsewhere.
 
@@ -231,6 +232,22 @@ id and sequence. The runner sets the event's `subject` from the envelope, and th
 
 Each commit runs under the write fence of every subject it writes. A subject erased between staging
 and the commit makes the fence refuse; the runner waits, stages the batch again and finds it erased.
+
+### State and intents at rest
+
+Pass the same `sealing=` to the store. A subject's data is sealed before it reaches the kernel:
+
+| Data | Stored as | After the key is destroyed |
+|---|---|---|
+| `private` state, target `at_rest="sealed"` (default) | Protected-state envelope | Unreadable; `get` raises `Shredded` |
+| `private` state, target `at_rest="plaintext"` | Plaintext | The store's cleanup participant deletes it |
+| `public` state | Plaintext | Stays; it must hold nothing personal |
+| Intent payload of a subject | Protected-state envelope, whatever `at_rest` says | Deleted on the next `unpublished`, never delivered |
+
+The store opens `private` for the reducer and in `get`. It reads keys once per commit and reserves one
+key per subject. The kernel refuses a subject's plaintext `private` part on a sealed target, and a
+subject's plaintext intent payload. A store without `sealing=` therefore stops at the first such
+commit and writes nothing.
 
 ## Ownership and transaction boundary
 

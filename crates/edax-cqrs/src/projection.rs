@@ -71,6 +71,9 @@ pub struct Contract {
     #[serde(deserialize_with = "partition_map")]
     /// Complete explicit partition start vector.
     pub starts: BTreeMap<i32, i64>,
+    /// How state stores a subject's private part: [`namespace::AtRest`] by name. Intent payloads of a
+    /// subject are sealed either way: they wait for delivery, never for queries.
+    pub at_rest: String,
 }
 
 /// Evidence obtained from a trusted source capability, not inferred from event sequences.
@@ -206,12 +209,15 @@ pub struct Intent {
     pub payload: Value,
 }
 
-/// Pure reducer output.
+/// Pure reducer output: the replacement state in two parts, as an ingestion row holds them.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reduced {
-    /// Replacement aggregate state, including JSON null.
-    pub state: Value,
+    /// The subject's part of the state, sealed before it reaches the kernel unless the generation is
+    /// `plaintext`. JSON null when absent.
+    pub private: Value,
+    /// The queryable part of the state. JSON null when absent.
+    pub public: Value,
     /// Deterministic external effects.
     pub intents: Vec<Intent>,
 }
@@ -386,7 +392,8 @@ fn staged<'a>(
 struct State {
     sequence: i64,
     partition: i32,
-    value: Value,
+    private: Value,
+    public: Value,
 }
 
 fn required(value: &str) -> Result<(), Error> {
@@ -410,6 +417,9 @@ impl Contract {
             &self.effect_namespace,
         ] {
             required(value)?;
+        }
+        if namespace::AtRest::by_name(&self.at_rest).is_none() {
+            return Err(Error::bad_handle("projection at_rest must be sealed or plaintext"));
         }
         if self.starts.is_empty() || self.starts.iter().any(|(p, o)| *p < 0 || *o < 0) {
             return Err(Error::bad_handle(
@@ -438,7 +448,8 @@ impl Contract {
             partition
         ]))
     }
-    fn state_key(&self, tenant: &Option<String>, subject: &Option<String>, aggregate: &str) -> Result<String, Error> {
+    /// The storage key of one aggregate's state: what sealing its private part binds.
+    pub fn state_key(&self, tenant: &Option<String>, subject: &Option<String>, aggregate: &str) -> Result<String, Error> {
         required(aggregate)?;
         subject.as_deref().map(namespace::check_subject).transpose()?;
         self.key(json!(["projection", "state", tenant, subject, aggregate]))
@@ -726,9 +737,7 @@ fn run_batch(
             if reduced.is_none() {
                 // The reducer starts from the state the batch read; the host carries it between deltas.
                 let first = !duplicate && sent_state.insert(state_key.clone());
-                let before = first
-                    .then(|| records.get(&state_key).and_then(|v| v.get("value")))
-                    .flatten();
+                let before = first.then(|| records.get(&state_key)).flatten();
                 batch
                     .items
                     .push(json!({"novel": !duplicate, "state": before, "event": normalized_event}));
@@ -737,13 +746,16 @@ fn run_batch(
                 let result = match reduced.and_then(|r| r.get(index)) {
                     None => None,
                     Some(None) => return Err(Error::bad_handle("projection reducer result missing for a novel event")),
-                    Some(Some(result)) => Some(checked(result)?),
+                    Some(Some(result)) => Some(checked(c, event, result)?),
                 };
-                let value = result.as_ref().map_or(Value::Null, |r| r.state.clone());
+                let (private, public) = result
+                    .as_ref()
+                    .map_or((Value::Null, Value::Null), |r| (r.private.clone(), r.public.clone()));
                 let state = json!(State {
                     sequence: event.sequence,
                     partition: checkpoint.partition,
-                    value
+                    private,
+                    public,
                 });
                 for (key, value) in [
                     (state_key, state),
@@ -759,6 +771,7 @@ fn run_batch(
                         "id": id,
                         "generation": c.generation,
                         "tenant": event.tenant,
+                        "subject": event.subject,
                         "aggregate": event.aggregate,
                         "destination": intent.destination,
                         "payload": intent.payload,
@@ -808,15 +821,29 @@ pub fn keyed_fingerprint(key: &[u8], event: &Event) -> Result<String, Error> {
     keyed_digest(key, b"edax.projection.event/v1\0", &canonical_event(event)?)
 }
 
-/// A reducer result in canonical form, refused as `codec` when no store could keep it.
-fn checked(reduced: &Reduced) -> Result<Reduced, Error> {
+/// A reducer result in canonical form, refused as `codec` when no store could keep it. A subject's
+/// private part on a sealed generation, and every intent payload of a subject, must arrive sealed under
+/// the event's scope: a host that forgot to seal fails here, before anything is written.
+fn checked(c: &Contract, event: &Event, reduced: &Reduced) -> Result<Reduced, Error> {
     let bytes = canonical_json(&serde_json::to_vec(reduced).map_err(Error::codec)?)?;
     canonical_json(&bytes)?;
     let reduced: Reduced = serde_json::from_slice(&bytes).map_err(Error::codec)?;
-    if holds_nul(&reduced.state) || reduced.intents.iter().any(|intent| holds_nul(&intent.payload)) {
+    if holds_nul(&reduced.private)
+        || holds_nul(&reduced.public)
+        || reduced.intents.iter().any(|intent| holds_nul(&intent.payload))
+    {
         return Err(Error::codec(
             "projection reducer output holds a NUL character, which Postgres cannot store",
         ));
+    }
+    if let Some(subject) = &event.subject {
+        let tenant = event.tenant.as_deref();
+        if c.at_rest == namespace::AtRest::Sealed.as_str() {
+            namespace::check_sealed(Some(&reduced.private), tenant, subject)?;
+        }
+        for intent in &reduced.intents {
+            namespace::check_sealed(Some(&intent.payload), tenant, subject)?;
+        }
     }
     Ok(reduced)
 }

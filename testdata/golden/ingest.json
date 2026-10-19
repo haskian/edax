@@ -3313,7 +3313,7 @@
       "mode": "upsert",
       "source_incarnation": "cluster-a/orders-v1"
     },
-    "error": "bad_handle: a sealed generation stores a subject's private part sealed under its own scope",
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
     "inputs": [
       {
         "content": {
@@ -3399,7 +3399,7 @@
       "mode": "upsert",
       "source_incarnation": "cluster-a/orders-v1"
     },
-    "error": "bad_handle: a sealed generation stores a subject's private part sealed under its own scope",
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
     "inputs": [
       {
         "content": {
@@ -3448,7 +3448,7 @@
       "mode": "upsert",
       "source_incarnation": "cluster-a/orders-v1"
     },
-    "error": "bad_handle: a sealed generation stores a subject's private part sealed under its own scope",
+    "error": "bad_handle: a subject's private data must arrive sealed under its own scope",
     "inputs": [
       {
         "content": {

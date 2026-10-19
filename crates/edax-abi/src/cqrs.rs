@@ -498,6 +498,35 @@ pub fn projection_intent_key(contract_json: &str, intent_id: &str) -> Result<Str
     contract.intent_key(intent_id).map_err(to_wire)
 }
 
+/// The storage key of one aggregate's state: the identity sealing its private part binds.
+pub fn projection_state_key(
+    contract_json: &str,
+    aggregate: &str,
+    subject: Option<String>,
+    tenant: Option<String>,
+) -> Result<String, String> {
+    let contract: edax_cqrs::projection::Contract = projection_value(contract_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    contract.validate().map_err(to_wire)?;
+    contract.state_key(&tenant, &subject, aggregate).map_err(to_wire)
+}
+
+/// The stable ID of the effect intent `intent_json` of `event_json`: the identity sealing its payload binds.
+pub fn projection_intent_id(contract_json: &str, event_json: &str, intent_json: &str) -> Result<String, String> {
+    let contract: edax_cqrs::projection::Contract = projection_value(contract_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    contract.validate().map_err(to_wire)?;
+    let event = projection_value(event_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    let intent = projection_value(intent_json)
+        .map_err(edax_core::Error::codec)
+        .map_err(to_wire)?;
+    edax_cqrs::projection::intent_id(&contract, &event, &intent).map_err(to_wire)
+}
+
 /// The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.
 pub fn projection_state_scope_range(
     contract_json: &str,

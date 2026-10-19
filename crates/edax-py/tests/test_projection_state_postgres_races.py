@@ -160,7 +160,7 @@ async def test_generation_lock_serializes_takeover_and_freeze(
         state = await store.get("bank-eu", "account-42")
         assert (state is not None) == bool(expected)
         if state is not None:
-            assert state["sequence"] == 1 and state["value"]["balance_minor"] == 1250
+            assert state["sequence"] == 1 and state["public"]["balance_minor"] == 1250
         assert len(await store.unpublished(100)) == expected
         with pytest.raises(BadHandle, match=r"stale projection|frozen"):
             await store.commit(lease, [ProjectionInput(1, event(2, "credit-2"))], proof(), reducer)
@@ -234,7 +234,7 @@ async def test_real_commit_with_lost_response_recovers_runner_without_reducing_a
     assert assigned.lease.next_offset == 3
     assert reduced == ["credit-1", "credit-2", "credit-3"]
     state = await store.get("bank-eu", "account-42")
-    assert state and state["sequence"] == 3 and state["value"]["balance_minor"] == 3750
+    assert state and state["sequence"] == 3 and state["public"]["balance_minor"] == 3750
     after = await _snapshot(pool, schema)
     # Renewal may change the lease expiry, but cannot replace any data or intent.
     for key, value in committed_records.items():

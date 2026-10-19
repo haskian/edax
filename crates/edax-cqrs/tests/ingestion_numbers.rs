@@ -50,9 +50,9 @@ fn request(field: &str, token: &str) -> String {
     let payload = if field == "payload" { token } else { "null" };
     let metadata = if field == "metadata" { token } else { "null" };
     let reduced = match field {
-        "state" => format!(r#", "reduced":[{{"state":{token},"intents":[]}}]"#),
+        "state" => format!(r#", "reduced":[{{"private":null,"public":{token},"intents":[]}}]"#),
         "intent" => format!(
-            r#", "reduced":[{{"state":null,"intents":[{{"key":"receipt","destination":"billing","payload":{token}}}]}}]"#
+            r#", "reduced":[{{"private":null,"public":null,"intents":[{{"key":"receipt","destination":"billing","payload":{token}}}]}}]"#
         ),
         _ => String::new(),
     };
@@ -62,7 +62,7 @@ fn request(field: &str, token: &str) -> String {
         "apply_batch"
     };
     format!(
-        r#"{{"contract":{{"generation":"orders-v1","source_identity":"source-v1","source_history":"history-v1","topic":"orders","reducer_id":"order-v1","envelope_id":"event-v1","keying_id":"key-v1","effect_namespace":"effects-v1","starts":{{"0":9223372036854775807}}}},"operation":{{"op":"{op}","lease":{{"checkpoint_key":"checkpoint","partition":0,"owner":"worker","epoch":9223372036854775807,"next_offset":9223372036854775807,"expires_ms":9223372036854775807}},"inputs":[{{"offset":9223372036854775807,"event":{{"tenant":"tenant-7","aggregate":"order-42","event_id":"order-paid","sequence":9223372036854775807,"event_type":"OrderPaid","schema_version":"1","payload":{payload},"metadata":{metadata}}}}}],"proof":{{"identity":"source-v1","history":"history-v1","beginning":0,"end":9223372036854775807}}{reduced}}}}}"#
+        r#"{{"contract":{{"generation":"orders-v1","source_identity":"source-v1","source_history":"history-v1","topic":"orders","reducer_id":"order-v1","envelope_id":"event-v1","keying_id":"key-v1","effect_namespace":"effects-v1","starts":{{"0":9223372036854775807}},"at_rest":"sealed"}},"operation":{{"op":"{op}","lease":{{"checkpoint_key":"checkpoint","partition":0,"owner":"worker","epoch":9223372036854775807,"next_offset":9223372036854775807,"expires_ms":9223372036854775807}},"inputs":[{{"offset":9223372036854775807,"event":{{"tenant":"tenant-7","aggregate":"order-42","event_id":"order-paid","sequence":9223372036854775807,"event_type":"OrderPaid","schema_version":"1","payload":{payload},"metadata":{metadata}}}}}],"proof":{{"identity":"source-v1","history":"history-v1","beginning":0,"end":9223372036854775807}}{reduced}}}}}"#
     )
 }
 

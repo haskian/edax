@@ -557,7 +557,10 @@ overwriting. The kernel does no I/O and never invokes a reducer.
 Two receipts bind each event to its event ID and aggregate sequence. Each holds a hash of the
 canonical event, not the event itself. For a sealed event the hash is `keyed_fingerprint`, an HMAC
 under the subject's fingerprint key. State keys carry the event's erasure subject, so an aggregate cannot change
-subjects. `state_scope_range` names one subject's state for a plaintext generation's cleanup. An
+subjects. `state_scope_range` names one subject's state for a plaintext generation's cleanup. A reducer result holds a `private` and a `public` part. On a `sealed` generation (`Contract.at_rest`),
+`ApplyBatch` refuses a subject's `private` part unless the host sealed it under the event's scope. It
+refuses a subject's intent payload unless sealed whatever `at_rest` says. `state_key` and `intent_id`
+name the identities that sealing binds. An
 `erased` input, whose key was destroyed, writes its receipts and advances the cursor. It calls no
 reducer and changes no state. An erased replay matches a receipt from before erasure. Identical replay skips the reducer. A sequence gap or conflict stops processing rather than dropping a delta. Source proof
 checks cover physical source identity, history and retained/readable boundaries. These checks

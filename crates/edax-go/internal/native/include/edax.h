@@ -6907,6 +6907,27 @@ int32_t edax_projection_intent_eligible(const char *manifest_json,
                                         const char *intent_json);
 
 /**
+ * The stable ID of the effect intent `intent_json` of `event_json`: the identity sealing its payload
+ * binds.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_intent_id(const char *contract_json,
+                                const char *event_json,
+                                const char *intent_json);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_intent_id` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_intent_id`.
+ */
+uintptr_t edax_projection_intent_id_len(const char *_contract_json,
+                                        const char *_event_json,
+                                        const char *_intent_json);
+
+/**
  * The storage key of effect intent `intent_id` in the generation `contract_json` names.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -6999,6 +7020,28 @@ char *edax_projection_sealed_input(int64_t offset,
 uintptr_t edax_projection_sealed_input_len(int64_t _offset,
                                            const char *_envelope_json,
                                            const char *_event_json);
+
+/**
+ * The storage key of one aggregate's state: the identity sealing its private part binds.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_projection_state_key(const char *contract_json,
+                                const char *aggregate,
+                                const char *subject,
+                                const char *tenant);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_projection_state_key` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_projection_state_key`.
+ */
+uintptr_t edax_projection_state_key_len(const char *_contract_json,
+                                        const char *_aggregate,
+                                        const char *_subject,
+                                        const char *_tenant);
 
 /**
  * The erasure key range `[start, end)` of one tenant and subject's state records, as a JSON pair.

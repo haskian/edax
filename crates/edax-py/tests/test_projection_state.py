@@ -58,10 +58,10 @@ def event(sequence: int = 1, event_id: str = "credit-1", *, amount: int = 1250) 
 
 
 def reducer(state: Any, value: ProjectionEvent) -> ProjectionResult:
-    balance = (state or {}).get("balance_minor", 0) + value.payload["amount_minor"]
+    balance = (state.public if state else {}).get("balance_minor", 0) + value.payload["amount_minor"]
     return ProjectionResult(
-        {"balance_minor": balance, "currency": "EUR"},
-        [ProjectionIntent("receipt", "account-notifications", {"account": value.aggregate})],
+        public={"balance_minor": balance, "currency": "EUR"},
+        intents=[ProjectionIntent("receipt", "account-notifications", {"account": value.aggregate})],
     )
 
 
@@ -105,7 +105,7 @@ async def test_deltas_duplicate_new_offset_and_uncertain_commit(stores: Any) -> 
     recovered = await store.commit(recovered, [ProjectionInput(8, event())], proof(), reducer)
     assert recovered.next_offset == 9
     state = await store.get("bank-eu", "account-42")
-    assert state and state["value"]["balance_minor"] == 1250
+    assert state and state["public"]["balance_minor"] == 1250
     assert not await store.unpublished(100)  # rebuilding suppresses delivery
     await store.activate(initial_cutover(store.target))
     assert len(await store.unpublished(100)) == 1
@@ -153,10 +153,10 @@ async def test_noop_advances_sequence_and_null_state_is_real(stores: Any) -> Non
         lease,
         [ProjectionInput(0, event()), ProjectionInput(1, event(2, "noop"))],
         proof(),
-        lambda state, value: ProjectionResult(None),
+        lambda state, value: ProjectionResult(),
     )
     state = await store.get("bank-eu", "account-42")
-    assert state == {"partition": 0, "sequence": 2, "value": None}
+    assert state == {"partition": 0, "sequence": 2, "private": None, "public": None}
     assert lease.next_offset == 2
 
 
@@ -268,7 +268,7 @@ async def test_canonical_reducer_input_and_state_match_across_rebuilds(stores: A
 
         def inspect(state: Any, value: ProjectionEvent) -> ProjectionResult:
             return ProjectionResult(
-                {
+                public={
                     "first_key": next(iter(value.payload)),
                     "number_type": type(value.payload["number"]).__name__,
                     "zero": -0.0,
@@ -278,7 +278,7 @@ async def test_canonical_reducer_input_and_state_match_across_rebuilds(stores: A
         await store.commit(lease, [ProjectionInput(0, replace(event(), payload=payload))], proof(), inspect)
         states.append(await store.get("bank-eu", "account-42"))
     assert states[0] == states[1]
-    assert states[0]["value"] == {"first_key": "number", "number_type": "int", "zero": 0}
+    assert states[0]["public"] == {"first_key": "number", "number_type": "int", "zero": 0}
 
 
 async def test_expired_current_assignment_refreshes_fence(stores: Any) -> None:
@@ -386,8 +386,10 @@ async def test_normalized_unsafe_integer_is_refused_before_persistence(stores: A
 
     def unsafe(state: Any, value: ProjectionEvent) -> ProjectionResult:
         return ProjectionResult(
-            {"amount": 1e18} if where == "state" else {"amount": "1000000000000000000"},
-            [ProjectionIntent("receipt", "notifications", {"amount": 1e18})] if where == "intent" else [],
+            public={"amount": 1e18} if where == "state" else {"amount": "1000000000000000000"},
+            intents=[ProjectionIntent("receipt", "notifications", {"amount": 1e18})]
+            if where == "intent"
+            else [],
         )
 
     with pytest.raises(Exception, match="integer"):
@@ -574,7 +576,7 @@ async def test_cross_partition_absent_insert_race_has_one_winner(
     assert cursors[loser] == 0 and cursors[1 - loser] == 1
     winner = values[1 - loser]
     state = await store.get(winner.tenant, winner.aggregate)
-    assert state is not None and state["sequence"] == 1 and state["value"]["balance_minor"] == 1250
+    assert state is not None and state["sequence"] == 1 and state["public"]["balance_minor"] == 1250
     if not same_aggregate:
         assert await store.get(values[loser].tenant, values[loser].aggregate) is None
     await store.activate(initial_cutover(store.target))

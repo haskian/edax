@@ -103,7 +103,7 @@ async def test_cancellation_suppression_does_not_starve_healthy_partition(
         assert await store.get("bank-eu", "account-0") is None
         saved = await store.get("bank-eu", "account-1")
         assert saved is not None
-        assert saved["value"]["balance_minor"] == 1250
+        assert saved["public"]["balance_minor"] == 1250
         observed_lease = run._parts[HEALTHY].lease
         assert observed_lease is not None
         assert (await store.recover(observed_lease)).next_offset == 1
@@ -178,7 +178,7 @@ async def test_elapsed_flush_age_cuts_before_fetching_another_record() -> None:
     assert observed_lease.next_offset == 1
     saved = await store.get("bank-eu", "account-42")
     assert saved is not None
-    assert saved["value"]["balance_minor"] == 1250
+    assert saved["public"]["balance_minor"] == 1250
     assert run.retained_records == run.retained_bytes == 0
 
 

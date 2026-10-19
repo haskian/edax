@@ -2463,6 +2463,22 @@ func ProjectionIntentEligible(manifestJSON string, intentJSON string) (bool, err
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// ProjectionIntentID calls the shared kernel.
+func ProjectionIntentID(contractJSON string, eventJSON string, intentJSON string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("eventJSON", eventJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("intentJSON", intentJSON); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.ProjectionIntentID(contractJSON, eventJSON, intentJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // ProjectionIntentKey calls the shared kernel.
 func ProjectionIntentKey(contractJSON string, intentID string) (string, error) {
 	var zero string
@@ -2518,6 +2534,29 @@ func ProjectionSealedInput(offset int64, envelopeJSON string, eventJSON *string)
 		}
 	}
 	nativeValue, nativeError := native.ProjectionSealedInput(offset, envelopeJSON, eventJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// ProjectionStateKey calls the shared kernel.
+func ProjectionStateKey(contractJSON string, aggregate string, subject *string, tenant *string) (string, error) {
+	var zero string
+	if err := checkNativeString("contractJSON", contractJSON); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("aggregate", aggregate); err != nil {
+		return zero, err
+	}
+	if subject != nil {
+		if err := checkNativeString("subject", *subject); err != nil {
+			return zero, err
+		}
+	}
+	if tenant != nil {
+		if err := checkNativeString("tenant", *tenant); err != nil {
+			return zero, err
+		}
+	}
+	nativeValue, nativeError := native.ProjectionStateKey(contractJSON, aggregate, subject, tenant)
 	return nativeValue, mapNativeError(nativeError)
 }
 

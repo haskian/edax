@@ -65,8 +65,8 @@ async def test_projection_state_refuses_original_integer_before_any_mutation(
 
     def reduce(state: Any, received: Any) -> ProjectionResult:
         return ProjectionResult(
-            {"balance_minor": number if field == "state" else 1250},
-            (ProjectionIntent("receipt", "notifications", {"amount_minor": number}),)
+            public={"balance_minor": number if field == "state" else 1250},
+            intents=(ProjectionIntent("receipt", "notifications", {"amount_minor": number}),)
             if field == "intent"
             else (),
         )

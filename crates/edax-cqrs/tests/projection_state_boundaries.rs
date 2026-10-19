@@ -4,7 +4,7 @@ use edax_cqrs::projection::{self, Contract, Proof, Request};
 use serde_json::{json, Value};
 
 fn contract() -> Value {
-    json!({"generation":"balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-v1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"receipt-v1","starts":{"0":0,"1":10}})
+    json!({"generation":"balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-v1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"receipt-v1","starts":{"0":0,"1":10},"at_rest":"sealed"})
 }
 
 fn case(mut input: Value, result: Result<Value, Error>) -> Value {

@@ -213,7 +213,7 @@ mod tests {
     use serde_json::json;
 
     fn contract() -> Contract {
-        serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0}})).unwrap()
+        serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0},"at_rest":"sealed"})).unwrap()
     }
 
     fn proof() -> Value {
@@ -249,7 +249,7 @@ mod tests {
             .collect();
         let reduced: Vec<Value> = inputs
             .iter()
-            .map(|_| json!({"state":{"balance":"12.50","currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":{"account":aggregate}}]}))
+            .map(|_| json!({"private":null,"public":{"balance":"12.50","currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":{"account":aggregate}}]}))
             .collect();
         run(
             store,

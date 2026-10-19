@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 use std::collections::BTreeMap;
 
 fn contract() -> Contract {
-    serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0}})).unwrap()
+    serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0},"at_rest":"sealed"})).unwrap()
 }
 fn event(sequence: i64, id: &str) -> Value {
     json!({"tenant":"bank-eu","aggregate":"account-42","event_id":id,"sequence":sequence,"event_type":"CreditPosted","schema_version":"1","payload":{"currency":"EUR","amount":"12.50"},"metadata":{"correlation_id":"payment-99"}})
@@ -16,7 +16,29 @@ fn proof() -> Value {
     json!({"identity":"cluster-42/topic-81","history":"no-rollback-policy-1","beginning":0,"end":100})
 }
 fn reduce(balance: &str) -> Value {
-    json!({"state":{"balance":balance,"currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":{"account":"account-42"}}]})
+    json!({"private":null,"public":{"balance":balance,"currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":{"account":"account-42"}}]})
+}
+/// A protected-state envelope of `subject` in tenant `bank-eu`, as a host seals a private part.
+fn envelope(subject: &str) -> Value {
+    let encryption = edax_seal::EncryptionInfo {
+        format_version: 1,
+        key_namespace: "accounts".into(),
+        key_id: "generation-7".into(),
+        cipher: edax_seal::Cipher::XChaCha20Poly1305,
+        nonce: vec![0x24; edax_seal::Cipher::XChaCha20Poly1305.nonce_len()],
+    };
+    let state = edax_event::sealing::ProtectedState::new(
+        Some("bank-eu".into()),
+        Some(subject.into()),
+        false,
+        encryption,
+        vec![0x5a; 40],
+    );
+    serde_json::from_str(&edax_event::sealing::encode_protected_state(&state).unwrap()).unwrap()
+}
+/// A subject's reducer result: its private part and its receipt's payload sealed.
+fn reduce_sealed(subject: &str) -> Value {
+    json!({"private":envelope(subject),"public":{"currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":envelope(subject)}]})
 }
 fn prepare(lease: &Value, inputs: Vec<Value>) -> Value {
     json!({"op":"prepare_batch","lease":lease,"inputs":inputs,"proof":proof()})
@@ -114,7 +136,7 @@ fn ordered_projection_fences_and_cutovers() {
         apply(
             &l,
             vec![input(0, event(1, "credit-1"))],
-            vec![json!({"state":{"amount":1e18},"intents":[]})],
+            vec![json!({"private":null,"public":{"amount":1e18},"intents":[]})],
         ),
         12,
         false,
@@ -204,7 +226,7 @@ fn ordered_projection_fences_and_cutovers() {
         .collect();
     assert_eq!(novel, [json!(true), json!(false), json!(true)]);
     // The aggregate's stored state is sent once; the host carries the reducer's state to the next delta.
-    assert_eq!(prepared["items"][0]["state"]["balance"], "12.50");
+    assert_eq!(prepared["items"][0]["state"]["public"]["balance"], "12.50");
     assert_eq!(prepared["items"][2]["state"], Value::Null);
     let l4 = m.call(
         "batch_applies_every_delta_in_one_plan",
@@ -238,7 +260,7 @@ fn ordered_projection_fences_and_cutovers() {
         apply(
             &l4,
             vec![input(9, event(4, "credit-4"))],
-            vec![json!({"state":{"balance":"50.00","currency":"EUR"},"intents":[receipt, receipt]})],
+            vec![json!({"private":null,"public":{"balance":"50.00","currency":"EUR"},"intents":[receipt, receipt]})],
         ),
         18,
         false,
@@ -263,7 +285,7 @@ fn ordered_projection_fences_and_cutovers() {
         apply(
             &l4,
             vec![input(9, event(4, "credit-4"))],
-            vec![json!({"state":{"note":"x\u{0}y"},"intents":[]})],
+            vec![json!({"private":null,"public":{"note":"x\u{0}y"},"intents":[]})],
         ),
         18,
         false,
@@ -419,7 +441,7 @@ fn ordered_projection_fences_and_cutovers() {
     let sealed_input = json!({"offset":11,"event":sealed,"fingerprint":keyed});
     let fresh = m.call(
         "keyed_fingerprint_binds_the_receipts",
-        apply(&fresh, vec![sealed_input.clone()], vec![reduce("12.50")]),
+        apply(&fresh, vec![sealed_input.clone()], vec![reduce_sealed("person-7")]),
         2025,
         true,
     );
@@ -446,7 +468,7 @@ fn ordered_projection_fences_and_cutovers() {
     moved["subject"] = json!("person-8");
     m.call(
         "aggregate_cannot_change_its_subject",
-        apply(&fresh, vec![input(12, moved)], vec![reduce("25.00")]),
+        apply(&fresh, vec![input(12, moved)], vec![reduce_sealed("person-8")]),
         2025,
         false,
     );
@@ -459,12 +481,30 @@ fn ordered_projection_fences_and_cutovers() {
         apply(
             &fresh,
             vec![json!({"offset":12,"event":short_mac,"fingerprint":"abc"})],
-            vec![reduce("25.00")],
+            vec![reduce_sealed("person-7")],
         ),
         2025,
         false,
     );
     m.expect_error("bad_handle");
+    // A sealed generation never stores a subject's private part or intent payload as plaintext.
+    let mut next = event(2, "credit-77d");
+    next["aggregate"] = json!("account-77");
+    next["subject"] = json!("person-7");
+    let next_parsed: edax_cqrs::projection::Event = serde_json::from_value(next.clone()).unwrap();
+    let next_input = json!({"offset":12,"event":next,"fingerprint":projection::keyed_fingerprint(&[7u8; 32], &next_parsed).unwrap()});
+    let mut plaintext_payload = reduce_sealed("person-7");
+    plaintext_payload["intents"][0]["payload"] = json!({"account":"account-77"});
+    let mut foreign_private = reduce_sealed("person-7");
+    foreign_private["private"] = envelope("person-8");
+    for (name, reduced) in [
+        ("plaintext_private_of_a_subject_refused", reduce("25.00")),
+        ("plaintext_intent_payload_of_a_subject_refused", plaintext_payload),
+        ("private_sealed_for_another_subject_refused", foreign_private),
+    ] {
+        m.call(name, apply(&fresh, vec![next_input.clone()], vec![reduced]), 2025, false);
+        m.expect_error("bad_handle");
+    }
     for (name, subject) in [
         ("empty_subject_refused", json!("")),
         ("nul_subject_refused", json!("person\u{0}-7")),

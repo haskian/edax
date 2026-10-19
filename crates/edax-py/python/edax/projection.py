@@ -16,14 +16,15 @@ from __future__ import annotations
 import functools
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
-from typing import Any, Protocol, TypeVar, cast, runtime_checkable
+from typing import Any, Literal, Protocol, TypeVar, cast, runtime_checkable
 
 from . import _json, _native
 from ._owned import ThreadBound
 from ._units import own_write
-from .errors import BadHandle, StoreError
+from .errors import BadHandle, Shredded, StoreError
 from .outbox import check_page
 from .query import Document, Page, Query
+from .sealing import Sealing, StoredPart
 from .unit_of_work import TxT_contra
 
 __all__ = [
@@ -38,6 +39,7 @@ __all__ = [
     "ProjectionQuery",
     "ProjectionResult",
     "ProjectionSession",
+    "ProjectionState",
     "ProjectionStateStore",
     "ProjectionStore",
     "ProjectionTarget",
@@ -148,6 +150,9 @@ class ProjectionTarget:
 
     ``starts`` is the complete partition/start vector. Partition additions use a new generation.
     ``source_history`` identifies an enforced no-truncation history or a verified history lineage.
+    ``at_rest`` is how state stores a subject's ``private`` part: ``"sealed"`` under the subject's key,
+    which needs the store's ``sealing=``, or ``"plaintext"``, whose erasure needs the store's cleanup
+    participant. A subject's intent payloads are sealed either way.
     """
 
     generation: str
@@ -159,6 +164,7 @@ class ProjectionTarget:
     keying_id: str
     effect_namespace: str
     starts: Mapping[int, int]
+    at_rest: Literal["sealed", "plaintext"] = "sealed"
     _contract: str = field(init=False, repr=False)
     _manifest_key: str = field(init=False, repr=False)
 
@@ -180,6 +186,14 @@ class ProjectionTarget:
     def intent_key(self, intent_id: str) -> str:
         """The storage key of effect intent ``intent_id`` in this generation."""
         return _native.projection_intent_key(self._contract, intent_id)
+
+    def state_key(self, tenant: str | None, subject: str | None, aggregate: str) -> str:
+        """The storage key of one aggregate's state: what sealing its ``private`` part binds."""
+        return _native.projection_state_key(self._contract, aggregate, subject, tenant)
+
+    def intent_id(self, event: Mapping[str, Any], intent: Mapping[str, Any]) -> str:
+        """The stable ID of ``intent``, a reducer's effect for ``event``: what sealing its payload binds."""
+        return _native.projection_intent_id(self._contract, _json.encode(event), _json.encode(intent))
 
     @property
     def manifest_key(self) -> str:
@@ -226,10 +240,22 @@ class ProjectionIntent:
 
 @dataclass(frozen=True)
 class ProjectionResult:
-    """Replacement state, including None, and optional deterministic effects."""
+    """A reducer's replacement state, in two parts, and its deterministic effects. ``private`` holds what
+    belongs to the event's erasure subject: the store seals it unless the target is
+    ``at_rest="plaintext"``. ``public`` stays queryable plaintext. Both ``None`` keep an empty state at
+    the event's sequence."""
 
-    state: Any
+    private: Any = None
+    public: Any = None
     intents: Sequence[ProjectionIntent] = ()
+
+
+@dataclass(frozen=True)
+class ProjectionState:
+    """The state a reducer folds an event into, as the previous :class:`ProjectionResult` left it, opened."""
+
+    private: Any
+    public: Any
 
 
 @dataclass(frozen=True)
@@ -299,7 +325,7 @@ def effect_intent(record: Mapping[str, Any]) -> EffectIntent:
     )
 
 
-Reducer = Callable[[Any, ProjectionEvent], ProjectionResult]
+Reducer = Callable[[ProjectionState | None, ProjectionEvent], ProjectionResult]
 AssignmentGuard = Callable[[], bool]
 
 
@@ -379,10 +405,83 @@ def _canonical(value: Any) -> Any:
 
 class ProjectionStateStore:
     """Transaction interface shared by the memory reference and the PostgreSQL adapter. A subclass runs
-    :meth:`_transaction` over its own :class:`ProjectionSession` and serves the outbox read side."""
+    :meth:`_transaction` over its own :class:`ProjectionSession` and serves the outbox read side.
 
-    def __init__(self, target: ProjectionTarget) -> None:
+    ``sealing`` seals a subject's ``private`` state and intent payloads before they reach the kernel, and
+    opens them for the reducer, :meth:`get` and delivery. Each commit reads keys once through
+    :meth:`~edax.sealing.Sealing.for_batch` and reserves one key per subject."""
+
+    def __init__(self, target: ProjectionTarget, *, sealing: Sealing | None = None) -> None:
         self.target = target
+        self.sealing = sealing
+
+    def _sealed(self, subject: str | None) -> bool:
+        return subject is not None and self.target.at_rest == "sealed"
+
+    def _keys(self) -> Sealing:
+        if self.sealing is None:
+            raise BadHandle("a subject's sealed projection data needs the store's sealing=")
+        return self.sealing
+
+    async def _state(
+        self,
+        keys: Sealing | None,
+        tenant: str | None,
+        subject: str | None,
+        aggregate: str,
+        record: Mapping[str, Any] | None,
+    ) -> ProjectionState | None:
+        """``record``, a stored state, with its sealed ``private`` part opened through ``keys``."""
+        if record is None:
+            return None
+        private = record["private"]
+        if private is not None and self._sealed(subject):
+            identity = self.target.state_key(tenant, subject, aggregate)
+            opener = keys if keys is not None else self._keys()
+            private = await opener.open_stored("projection", identity, record["sequence"], private)
+        return ProjectionState(private, record["public"])
+
+    async def _seal(self, novel: Sequence[tuple[Mapping[str, Any], dict[str, Any]]]) -> None:
+        """Seal, in place, each subject's ``private`` state and intent payloads of ``novel``, the
+        ``(event, result)`` pairs of a batch: one reservation per subject for all of them."""
+        parts: list[StoredPart] = []
+        places: list[tuple[dict[str, Any], str]] = []
+        for event, result in novel:
+            tenant, subject = event["tenant"], event.get("subject")
+            if subject is None:
+                continue
+            if self._sealed(subject) and result["private"] is not None:
+                identity = self.target.state_key(tenant, subject, event["aggregate"])
+                parts.append(("projection", identity, event["sequence"], tenant, subject, result["private"]))
+                places.append((result, "private"))
+            for intent in result["intents"]:
+                if intent["payload"] is not None:
+                    identity = self.target.intent_id(event, intent)
+                    parts.append(("intent", identity, 0, tenant, subject, intent["payload"]))
+                    places.append((intent, "payload"))
+        if parts:
+            for (holder, name), sealed in zip(places, await self._keys().seal_stored(parts), strict=True):
+                holder[name] = sealed
+
+    async def _delivered(self, records: Sequence[Mapping[str, Any]]) -> list[EffectIntent]:
+        """``records``, stored intents, with their sealed payloads opened. An intent whose key was
+        destroyed is deleted, never delivered: nothing of it can be read."""
+        keys = None if self.sealing is None else self.sealing.for_batch()
+        intents: list[EffectIntent] = []
+        shredded: list[str] = []
+        for record in records:
+            payload = record["payload"]
+            if record.get("subject") is not None and payload is not None:
+                opener = keys if keys is not None else self._keys()
+                try:
+                    payload = await opener.open_stored("intent", record["id"], 0, payload)
+                except Shredded:
+                    shredded.append(record["id"])
+                    continue
+            intents.append(effect_intent({**record, "payload": payload}))
+        if shredded:
+            await self.mark_published(shredded)
+        return intents
 
     async def _transaction(self, call: Callable[[ProjectionSession], Awaitable[T]]) -> T:
         raise NotImplementedError
@@ -457,6 +556,7 @@ class ProjectionStateStore:
         source order, and commit state, receipts, intents and the next offset together."""
         # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits.
         originals = _json.decode(_json.encode(inputs))
+        keys = None if self.sealing is None else self.sealing.for_batch()
 
         async def apply(session: ProjectionSession) -> ProjectionLease:
             # One read for the whole batch: the batch's records with the extension's checkpoint.
@@ -468,8 +568,9 @@ class ProjectionStateStore:
                 # retry from it rather than skip or repeat records.
                 raise StoreError("projection cursor moved; reload it and fetch again")
             prepared = await session.execute(op="prepare_batch", lease=current, inputs=originals, proof=proof)
-            states: dict[tuple[str | None, str], Any] = {}
+            states: dict[tuple[str | None, str], ProjectionState | None] = {}
             reduced: list[Any] = []
+            novel: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
             for item in prepared["items"]:
                 _guard(is_current)
                 if not item["novel"]:
@@ -477,10 +578,17 @@ class ProjectionStateStore:
                     continue
                 event = ProjectionEvent(**item["event"])
                 key = (event.tenant, event.aggregate)
+                if key not in states:
+                    states[key] = await self._state(
+                        keys, event.tenant, event.subject, event.aggregate, item["state"]
+                    )
                 # Serialize now: reducer aliases cannot change an earlier event's staged result.
-                result = _canonical(reducer(states[key] if key in states else item["state"], event))
-                states[key] = result["state"]
+                result = _canonical(reducer(states[key], event))
+                states[key] = ProjectionState(result["private"], result["public"])
                 reduced.append(result)
+                novel.append((item["event"], result))
+            _guard(is_current)
+            await self._seal(novel)
             committed = ProjectionLease(
                 **await session.execute(
                     op="apply_batch", lease=current, inputs=originals, proof=proof, reduced=reduced
@@ -504,11 +612,13 @@ class ProjectionStateStore:
     async def get(
         self, tenant: str | None, aggregate: str, subject: str | None = None
     ) -> dict[str, Any] | None:
-        """The stored state of one aggregate, ``{"sequence", "partition", "value"}``, or ``None``."""
-        return cast(
-            dict[str, Any] | None,
-            await self._execute(op="get", tenant=tenant, subject=subject, aggregate=aggregate),
-        )
+        """The stored state of one aggregate, ``{"sequence", "partition", "private", "public"}`` with
+        ``private`` opened, or ``None``. A destroyed subject raises :class:`~edax.errors.Shredded`."""
+        record = await self._execute(op="get", tenant=tenant, subject=subject, aggregate=aggregate)
+        state = await self._state(None, tenant, subject, aggregate, record)
+        if state is None:
+            return None
+        return {**record, "private": state.private}
 
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         """Committed effect intents the generation's activation allows, oldest offset first: the
@@ -549,8 +659,14 @@ class MemoryProjectionStateStore(ProjectionStateStore):
     transient failure the runner retries, as a Postgres insert race does. Native state is bound to the
     constructing thread, like other memory backends."""
 
-    def __init__(self, target: ProjectionTarget, *, clock: Callable[[], int] | None = None) -> None:
-        super().__init__(target)
+    def __init__(
+        self,
+        target: ProjectionTarget,
+        *,
+        clock: Callable[[], int] | None = None,
+        sealing: Sealing | None = None,
+    ) -> None:
+        super().__init__(target, sealing=sealing)
         self._clock = clock or (lambda: _native.current_timestamp() // 1_000_000)
         self._database = ThreadBound(_native.memory_projection_database(), "MemoryProjectionStateStore")
 
@@ -566,7 +682,7 @@ class MemoryProjectionStateStore(ProjectionStateStore):
     async def unpublished(self, limit: int) -> list[EffectIntent]:
         check_page(limit)
         pending = self._database.get().unpublished(self.target.manifest_key, self.target.generation, limit)
-        return [effect_intent(intent) for intent in _json.decode(pending)]
+        return await self._delivered(_json.decode(pending))
 
     async def mark_published(self, ids: Sequence[str]) -> None:
         keys = [self.target.intent_key(intent_id) for intent_id in ids]

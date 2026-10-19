@@ -26,6 +26,7 @@ from edax.projection import (
     ProjectionInput,
     ProjectionIntent,
     ProjectionResult,
+    ProjectionState,
     ProjectionTarget,
     SourceProof,
 )
@@ -44,13 +45,15 @@ def deposit(sequence: int, amount_minor: int) -> ProjectionEvent:
     )
 
 
-def balance(state: Any, event: ProjectionEvent) -> ProjectionResult:
-    """Pure, deterministic calculation; the store commits state and intents together."""
-    previous = 0 if state is None else state["balance_minor"]
+def balance(state: ProjectionState | None, event: ProjectionEvent) -> ProjectionResult:
+    """Pure, deterministic calculation; the store commits state and intents together. These events
+    carry no erasure subject, so the balance is public state; a subject's personal fields go in
+    ``private``, which the store seals."""
+    previous = 0 if state is None else state.public["balance_minor"]
     total = previous + event.payload["amount_minor"]
     return ProjectionResult(
-        {"balance_minor": total, "currency": "EUR"},
-        [
+        public={"balance_minor": total, "currency": "EUR"},
+        intents=[
             ProjectionIntent(
                 "receipt", "account-receipts", {"account": event.aggregate, "balance_minor": total}
             )
@@ -85,7 +88,7 @@ async def main() -> None:
     ]
     lease = await store.commit(lease, log[:2], proof, balance)
     saved = await store.get("bank-eu", "account-42")
-    assert saved is not None and saved["value"]["balance_minor"] == 1250
+    assert saved is not None and saved["public"]["balance_minor"] == 1250
     assert lease.next_offset == 2
     print("replay: two source offsets, one deposit, balance 1250")
 
@@ -99,7 +102,7 @@ async def main() -> None:
     assert await store.get("bank-eu", "account-42") == saved
     lease = await store.commit(lease, [log[2]], proof, balance)
     saved = await store.get("bank-eu", "account-42")
-    assert saved is not None and saved["value"]["balance_minor"] == 1750
+    assert saved is not None and saved["public"]["balance_minor"] == 1750
     print("sequence: gap refused; sequence 2 applied, balance 1750")
 
     # 3. A new generation starts building with delivery disabled. For this first deployment, every

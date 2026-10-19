@@ -73,7 +73,7 @@ async def test_offline_restore_repeats_effect_and_checks_required_history() -> N
         assert later.next_offset == 2
         saved = await old.get("bank-eu", "account-42")
         assert saved is not None
-        assert saved["value"]["balance_minor"] == 2500
+        assert saved["public"]["balance_minor"] == 2500
 
         # This pool is the only writer/dispatcher capability for this isolated schema.
         # Terminate its actual server session and close the pool before touching storage.
@@ -131,7 +131,7 @@ async def test_offline_restore_repeats_effect_and_checks_required_history() -> N
         assert recovered.epoch == later.epoch  # restore can repeat an old fencing epoch
         saved = await fresh.get("bank-eu", "account-42")
         assert saved is not None
-        assert saved["value"]["balance_minor"] == 1250
+        assert saved["public"]["balance_minor"] == 1250
         pending = await fresh.unpublished(100)
         assert len(pending) == 1 and pending[0].id == first_intent.id
         assert await Relay(fresh, destination).drain() == 1
@@ -144,7 +144,7 @@ async def test_offline_restore_repeats_effect_and_checks_required_history() -> N
         assert recovered.next_offset == 2
         saved = await fresh.get("bank-eu", "account-42")
         assert saved is not None
-        assert saved["value"]["balance_minor"] == 1250
+        assert saved["public"]["balance_minor"] == 1250
         assert not await fresh.unpublished(100)
     finally:
         old_pool.terminate()

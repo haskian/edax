@@ -60,7 +60,7 @@ async def test_staging_expiry_refreshes_only_the_current_owner(takeover: bool) -
         else:
             assert run.partition_failures == {}
             saved = await store.get("bank-eu", "account-42")
-            assert saved is not None and saved["value"]["balance_minor"] == 3750
+            assert saved is not None and saved["public"]["balance_minor"] == 3750
             assert assigned.lease is not None
             assert assigned.lease.epoch == 2 and assigned.lease.next_offset == 3
     finally:
@@ -118,7 +118,7 @@ async def test_commit_past_its_deadline_recovers_without_applying_twice(
         monkeypatch.setattr(store, "commit", original_commit)
         await run._partition(TP, run._parts[TP])
         saved = await store.get("bank-eu", "account-42")
-        assert saved is not None and saved["value"]["balance_minor"] == 3750
+        assert saved is not None and saved["public"]["balance_minor"] == 3750
     finally:
         await run.wait_closed()
     assert run.retained_records == run.retained_bytes == 0
@@ -173,7 +173,7 @@ async def test_timed_out_commit_keeps_the_live_lease(monkeypatch: pytest.MonkeyP
     await run._partition(TP, assigned)
     assert assigned.failure is None
     state = await store.get("bank-eu", "account-42")
-    assert state is not None and state["value"]["balance_minor"] == 3750
+    assert state is not None and state["public"]["balance_minor"] == 3750
 
 
 async def test_stop_releases_every_lease_while_a_rebalance_changes_partitions(

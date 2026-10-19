@@ -13,11 +13,17 @@ import (
 	"github.com/haskian/edax/crates/edax-go/internal/kernel"
 )
 
-const contract = `{"generation":"balances-v1","source_identity":"accounts-source-v1","source_history":"no-truncation-v1","topic":"accounts","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"receipts-v1","starts":{"0":0}}`
+const contract = `{"generation":"balances-v1","source_identity":"accounts-source-v1","source_history":"no-truncation-v1","topic":"accounts","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"receipts-v1","starts":{"0":0},"at_rest":"sealed"}`
 const proof = `{"identity":"accounts-source-v1","history":"no-truncation-v1","beginning":0,"end":4}`
 
 type state struct {
 	BalanceCents int64 `json:"balance_cents"`
+}
+
+// storedState is a state record as the kernel keeps it: its sequence and its two parts.
+type storedState struct {
+	Sequence int64  `json:"sequence"`
+	Public   *state `json:"public"`
 }
 type delta struct {
 	AmountCents int64 `json:"amount_cents"`
@@ -122,9 +128,9 @@ func run() (err error) {
 	}
 	var prepared struct {
 		Items []struct {
-			Novel bool   `json:"novel"`
-			State *state `json:"state"`
-			Event event  `json:"event"`
+			Novel bool         `json:"novel"`
+			State *storedState `json:"state"`
+			Event event        `json:"event"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(text, &prepared); err != nil {
@@ -140,12 +146,13 @@ func run() (err error) {
 			calls++
 			key := aggregateKey{item.Event.Tenant, item.Event.Aggregate}
 			previous, seen := current[key]
-			if !seen {
-				previous = item.State
+			if !seen && item.State != nil {
+				previous = item.State.Public
 			}
 			next := reduceBalance(previous, item.Event)
 			current[key] = &next
-			reduced[i] = map[string]any{"state": next, "intents": []any{}}
+			// A balance names no person: it is public, queryable state with no private part.
+			reduced[i] = map[string]any{"private": nil, "public": next, "intents": []any{}}
 		}
 		fmt.Printf("offset %d: novel=%t, reducer calls=%d\n", i, item.Novel, calls)
 	}
@@ -157,14 +164,11 @@ func run() (err error) {
 	if err != nil {
 		return err
 	}
-	var stored struct {
-		Sequence int64 `json:"sequence"`
-		Value    state `json:"value"`
-	}
+	var stored storedState
 	if err := json.Unmarshal(text, &stored); err != nil {
 		return err
 	}
-	if calls != 2 || stored.Value.BalanceCents != 950 || stored.Sequence != 2 {
+	if calls != 2 || stored.Public == nil || stored.Public.BalanceCents != 950 || stored.Sequence != 2 {
 		return fmt.Errorf("unexpected state %s after %d reducer calls", text, calls)
 	}
 	gap := second

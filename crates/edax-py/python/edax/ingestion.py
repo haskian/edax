@@ -218,11 +218,10 @@ async def seal_private(
         if item.subject is not None and not item.erased and item.failure is None and item.private is not None
     ]
     sealed = await sealing.seal_stored(
-        "ingestion",
         [
-            (item.key, item.sequence or 0, item.tenant, cast(str, item.subject), item.private)
+            ("ingestion", item.key, item.sequence or 0, item.tenant, cast(str, item.subject), item.private)
             for item in (originals[index] for index in chosen)
-        ],
+        ]
     )
     result = list(originals)
     for index, private in zip(chosen, sealed, strict=True):

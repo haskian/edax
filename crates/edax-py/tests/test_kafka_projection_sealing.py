@@ -66,7 +66,9 @@ async def sealed_records(keys: MemoryKeys, count: int = 1) -> tuple[Sealing, lis
 def balance(seen: list[Any]) -> Reducer:
     def reduce(state: Any, event: ProjectionEvent) -> ProjectionResult:
         seen.append(event.payload)
-        return ProjectionResult({"balance_minor": (state or {}).get("balance_minor", 0) + 1250})
+        return ProjectionResult(
+            public={"balance_minor": (state.public if state else {}).get("balance_minor", 0) + 1250}
+        )
 
     return reduce
 
@@ -90,7 +92,7 @@ async def test_sealed_event_reduces_its_opened_payload_under_its_subject() -> No
     await run._partition(TP, run._parts[TP])
     assert seen == [PAYLOAD]
     saved = await store.get("bank-eu", "account-42", "person-42")
-    assert saved is not None and saved["value"] == {"balance_minor": 1250}
+    assert saved is not None and saved["public"] == {"balance_minor": 1250}
     assert await store.get("bank-eu", "account-42") is None, "state sits under its subject"
 
 

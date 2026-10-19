@@ -114,7 +114,7 @@ async def test_committed_database_cursor_overrides_client_position() -> None:
     assert observed_lease is not None
     assert observed_lease.next_offset == 3
     state = await store.get("bank-eu", "account-42")
-    assert state and state["value"]["balance_minor"] == 3750
+    assert state and state["public"]["balance_minor"] == 3750
     assert run.retained_records == run.retained_bytes == 0
 
 
@@ -161,7 +161,7 @@ async def test_snapshot_decoder_output_before_callback_reuses_dictionary() -> No
     await run._partition(TP, run._parts[TP])
     saved = await store.get("bank-eu", "account-42")
     assert saved is not None
-    assert saved["value"]["balance_minor"] == 6
+    assert saved["public"]["balance_minor"] == 6
 
 
 async def test_topic_incarnation_change_stops_before_seek() -> None:

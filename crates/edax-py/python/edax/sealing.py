@@ -41,6 +41,7 @@ __all__ = [
     "SealedValue",
     "Sealing",
     "StoredKind",
+    "StoredPart",
     "TransactionFence",
     "WriteFence",
 ]
@@ -53,6 +54,8 @@ Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 #: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
 #: projection intent's payload.
 StoredKind = Literal["ingestion", "projection", "intent"]
+#: One part :meth:`Sealing.seal_stored` seals: kind, identity, version, tenant, subject and value.
+StoredPart = tuple[StoredKind, str, int, str | None, str, Any]
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
 #: How :meth:`Sealing.write_guard` fences a write: ``"guard"`` holds the provider's ``guard`` from before
 #: the transaction through its commit; ``"transaction"`` fences inside each transaction that opens.
@@ -561,14 +564,12 @@ class Sealing:
         key = await self.resolve(info, tenant, subject)
         return bytes(_native.open_bytes(info, key, context, bytes(value.data)))
 
-    async def seal_stored(
-        self, kind: StoredKind, parts: Sequence[tuple[str, int, str | None, str, Any]]
-    ) -> list[Any]:
-        """Seal each ``(identity, version, tenant, subject, value)`` part as its protected-state envelope.
-        ``identity`` is the kernel's storage key and ``version`` the row's sequence, both bound as
-        authenticated context. One reservation per scope covers all its parts, each sealed under its own
-        nonce, so a batch costs one provider call per subject rather than one per row."""
-        counts = Counter((tenant, subject) for _, _, tenant, subject, _ in parts)
+    async def seal_stored(self, parts: Sequence[StoredPart]) -> list[Any]:
+        """Seal each part as its protected-state envelope. A part's kind, identity (the kernel's storage
+        key or intent ID) and version (the row's sequence) are bound as authenticated context. One
+        reservation per scope covers all its parts, each sealed under its own nonce, so a batch costs one
+        provider call per subject rather than one per row."""
+        counts = Counter((tenant, subject) for _, _, _, tenant, subject, _ in parts)
         scopes = list(counts)
         reservations = await asyncio.gather(
             *(
@@ -580,7 +581,7 @@ class Sealing:
         )
         reserved = dict(zip(scopes, reservations, strict=True))
         sealed: list[Any] = []
-        for identity, version, tenant, subject, value in parts:
+        for kind, identity, version, tenant, subject, value in parts:
             reservation = reserved[(tenant, subject)]
             info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
             context = _native.state_encryption_context(

@@ -181,7 +181,7 @@ async def test_real_source_loss_cannot_advance_database_checkpoint(
         assert assigned.lease is not None
         assert (await store.recover(assigned.lease)).next_offset == 3
         state = await store.get("bank-eu", "account-42")
-        assert state is not None and state["value"]["balance_minor"] == 3750
+        assert state is not None and state["public"]["balance_minor"] == 3750
         assert await client.committed(partition) is None, "database progress needs no broker commit"
         original_identity = (await resources.source.verify(partition)).identity
 

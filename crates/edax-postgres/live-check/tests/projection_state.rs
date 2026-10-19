@@ -15,7 +15,7 @@ use postgres::Client;
 use serde_json::{json, Value};
 
 fn contract() -> Contract {
-    serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0}})).unwrap()
+    serde_json::from_value(json!({"generation":"account-balances-v1","source_identity":"cluster-42/topic-81","source_history":"no-rollback-policy-1","topic":"account-events","reducer_id":"balance-v1","envelope_id":"event-v1","keying_id":"account-v1","effect_namespace":"account-effects-v1","starts":{"0":0,"1":0},"at_rest":"plaintext"})).unwrap()
 }
 
 fn proof() -> Value {
@@ -81,9 +81,15 @@ impl Stores {
                 json!({"offset": offset, "event": {"tenant":"bank-eu","subject":subject,"aggregate":aggregate,"event_id":format!("{aggregate}-credit-{sequence}"),"sequence":sequence,"event_type":"CreditPosted","schema_version":"1","payload":{"currency":"EUR","amount":"12.50"},"metadata":{"correlation_id":"payment-99"}}})
             })
             .collect();
+        // A plaintext generation keeps a subject's state readable, which is what its cleanup deletes. A
+        // subject's intent payloads would still need sealing, so its credits ask for no receipt.
+        let intents = match subject {
+            None => json!([{"key":"receipt","destination":"email","payload":{"account":aggregate}}]),
+            Some(_) => json!([]),
+        };
         let reduced: Vec<Value> = inputs
             .iter()
-            .map(|_| json!({"state":{"balance":"12.50","currency":"EUR"},"intents":[{"key":"receipt","destination":"email","payload":{"account":aggregate}}]}))
+            .map(|_| json!({"private":{"holder":subject},"public":{"balance":"12.50","currency":"EUR"},"intents":intents}))
             .collect();
         self.run(
             json!({"op":"apply_batch","lease":lease,"inputs":inputs,"proof":proof(),"reduced":reduced}),
