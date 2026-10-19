@@ -1188,6 +1188,17 @@ func IngestBindContract(previous string, expected string) error {
 	return mapNativeError(native.IngestBindContract(previous, expected))
 }
 
+// IngestCheckSealed calls the shared kernel.
+func IngestCheckSealed(manifest string, inputs string) error {
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return err
+	}
+	return mapNativeError(native.IngestCheckSealed(manifest, inputs))
+}
+
 // IngestKeyedFingerprint calls the shared kernel.
 func IngestKeyedFingerprint(key []byte, state string) (string, error) {
 	var zero string
@@ -4027,7 +4038,7 @@ func (h *MemoryIngestion) Published(source string, fingerprint string) error {
 }
 
 // Reserve calls the shared kernel.
-func (h *MemoryKeys) Reserve(scope KeyScope, cipher string) (*KeyReservation, error) {
+func (h *MemoryKeys) Reserve(scope KeyScope, cipher string, count uint64) (*KeyReservation, error) {
 	var zero *KeyReservation
 	if h == nil || h.nativeState == nil {
 		return zero, ClosedHandle("MemoryKeys")
@@ -4044,7 +4055,7 @@ func (h *MemoryKeys) Reserve(scope KeyScope, cipher string) (*KeyReservation, er
 	if err := checkNativeValue("scope", scope); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := h.inner.Reserve(normalizeNative(scope), cipher)
+	nativeValue, nativeError := h.inner.Reserve(normalizeNative(scope), cipher, count)
 	return nativeValue, mapNativeError(nativeError)
 }
 

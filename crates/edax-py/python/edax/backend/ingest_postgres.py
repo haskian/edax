@@ -11,8 +11,9 @@ from typing import Any, TypeVar, cast
 
 from .. import _json, _native
 from ..errors import BadHandle
-from ..ingestion import BatchInput, BatchResult, IngestionTarget
+from ..ingestion import BatchInput, BatchResult, IngestionTarget, open_private, seal_private
 from ..outbox import check_page
+from ..sealing import Sealing
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
 __all__ = ["PostgresIngestionSink", "reference_ingestion_ddl"]
@@ -39,6 +40,8 @@ class PostgresIngestionSink:
 
     One target generation binds an immutable mode, source incarnation and mapper identity.
     Callers own migrations and the pool. Calls inside an ambient unit of work are refused.
+    ``sealing`` seals each subject's ``private`` part of a sealed target before the transaction, and
+    opens it in :meth:`get`.
     """
 
     def __init__(
@@ -48,9 +51,11 @@ class PostgresIngestionSink:
         *,
         schema: str = "public",
         tables: Mapping[str, str] | None = None,
+        sealing: Sealing | None = None,
     ) -> None:
         self._transactor = transactor
         self._target = target
+        self.sealing = sealing
         self._role = "events" if target.mode == "append" else "state"
         self._sql = _statements(schema, tables)
         self._manifest_key = target.key(["manifest"])
@@ -115,9 +120,9 @@ class PostgresIngestionSink:
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         """Commit accepted state and durable rejections together; retain each original outcome."""
-        originals = tuple(inputs)
-        self.target.validate(originals)
+        originals = await seal_private(self.target, self.sealing, inputs)
         encoded = _json.encode(originals)
+        _native.ingest_check_sealed(self.target.manifest, encoded)
         sources = _json.encode([item.source for item in originals])
         keys = [item.key for item in originals]
 
@@ -180,4 +185,4 @@ class PostgresIngestionSink:
         async def read(conn: PgConnection) -> dict[str, Any] | None:
             return (await self._read(conn, self._role, [key])).get(key)
 
-        return await self._typed(read)
+        return await open_private(self.target, self.sealing, key, subject, await self._typed(read))

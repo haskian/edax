@@ -72,7 +72,7 @@ async def test_sealed_record_maps_its_opened_payload_with_a_keyed_fingerprint() 
         seen.append(event.data)
         return private_row(event)
 
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, messages, sink, mapper, await dead_letters([]))
     async with running(run):
         await until(lambda: client.commits == [{TP: 1}])
@@ -96,7 +96,7 @@ async def test_plaintext_event_under_sealing(allow_plaintext: bool) -> None:
         build_message("order-42", "OrderPlaced", 1, id="e1", data=SECRET, tenant="acme"), subject="person-42"
     )
     letters: list[DeadLetter[Any]] = []
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, [plain], sink, private_row, await dead_letters(letters))
     async with running(run):
         await until(lambda: client.commits == [{TP: 1}])
@@ -116,7 +116,7 @@ async def test_erased_subject_commits_nothing_and_revocation_waits(destroyed: bo
     await keys.revoke(scope)
     if destroyed:
         await keys.destroy(scope)
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, messages, sink, private_row, await dead_letters([]))
     async with running(run) as task:
         if not destroyed:
@@ -147,7 +147,7 @@ async def test_sealed_mapper_failure_keeps_only_its_code() -> None:
         raise CodecError(f"bad email in {event.data.decode()}")
 
     letters: list[DeadLetter[Any]] = []
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, messages, sink, refuse, await dead_letters(letters))
     async with running(run):
         await until(lambda: client.commits == [{TP: 1}])
@@ -167,7 +167,7 @@ async def test_revocation_while_the_key_is_read_returns_the_record_to_the_new_ow
 
     keys = SlowKeys()
     sealing, messages = await sealed(keys)
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, messages, sink, private_row, await dead_letters([]))
     await run._assign({TP})
     part = run._parts[TP]
@@ -186,7 +186,7 @@ async def test_erasure_racing_the_commit_turns_the_batch_erased() -> None:
 
     class ErasedDuringCommit(MemoryIngestionSink):
         def __init__(self) -> None:
-            super().__init__(target())
+            super().__init__(target(), sealing=sealing)
             self.attempts: list[tuple[bool, ...]] = []
 
         async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
@@ -216,11 +216,11 @@ async def test_revocation_waits_back_off_and_reset_on_progress() -> None:
     steps: list[int] = []
 
     class Recorded(Pacing):
-        def delay(self, step: int) -> float:
-            steps.append(step)
+        def delay(self, attempt: int) -> float:
+            steps.append(attempt)
             return 0.001
 
-    sink = MemoryIngestionSink(target())
+    sink = MemoryIngestionSink(target(), sealing=sealing)
     run, client = runner(sealing, messages, sink, private_row, await dead_letters([]))
     run._pacing = Recorded()
     async with running(run):

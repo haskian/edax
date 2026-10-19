@@ -120,7 +120,7 @@ func (k *MemoryKeys) Reserve(ctx context.Context, scope KeyScope, cipher string)
 	if err := k.ready(ctx); err != nil {
 		return KeyReservation{}, err
 	}
-	reserved, err := k.native.Reserve(scope, cipher)
+	reserved, err := k.native.Reserve(scope, cipher, 1)
 	if err != nil {
 		return KeyReservation{}, err
 	}

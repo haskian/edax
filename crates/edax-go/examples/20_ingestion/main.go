@@ -51,6 +51,7 @@ func run() (err error) {
 		generation := "orders-" + mode + "-v1"
 		manifest, err := json.Marshal(map[string]string{
 			"mode": mode, "generation": generation, "source_incarnation": "orders-source-v1", "mapper_id": "order-state-v1",
+			"at_rest": "sealed",
 		})
 		if err != nil {
 			return err

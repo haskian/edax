@@ -171,14 +171,15 @@ async def test_erasure_racing_the_commit_restages_the_batch_erased() -> None:
             return await super().commit(lease, inputs, proof, reducer, **options)
 
     seen: list[Any] = []
-    run, store = await projection(sealing, records, balance(seen), RefusedDuringCleanup())
+    refused = RefusedDuringCleanup()
+    run, store = await projection(sealing, records, balance(seen), refused)
     with pytest.raises(KeyRevoking):
         await run._partition(TP, run._parts[TP])
     keys.raced = False
     await keys.revoke(scope)
     await keys.destroy(scope)
     await run._partition(TP, run._parts[TP])
-    assert store.attempts == [(False,), (True,)]
+    assert refused.attempts == [(False,), (True,)]
     lease = run._parts[TP].lease
     assert lease is not None and lease.next_offset == 1
     assert await store.get("bank-eu", "account-42", "person-42") is None

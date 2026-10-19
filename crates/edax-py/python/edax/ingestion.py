@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import contextlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal, Protocol, cast
 
 from . import _native
 from ._json import decode, encode
 from ._owned import ThreadBound
 from ._units import own_write
-from .errors import CodecError
+from .errors import BadHandle, CodecError
+from .sealing import Sealing
 
 __all__ = [
     "BatchInput",
@@ -33,8 +34,9 @@ __all__ = [
 @dataclass(frozen=True)
 class MappedRow:
     """A mapper's row key and complete state, in two parts. ``private`` holds what belongs to the event's
-    erasure subject; ``public`` stays queryable. Both are stored as plaintext today: sealing ``private`` at
-    rest is planned, not yet done. Both ``None`` retains a deletion marker."""
+    erasure subject: a sink seals it under the subject's key unless its target is
+    ``at_rest="plaintext"``. ``public`` stays queryable plaintext. Both ``None`` retains a deletion
+    marker."""
 
     key: str
     private: Any = None
@@ -72,12 +74,18 @@ class IngestionTarget:
 
     Use a new generation when the mapper or source changes. Upserts require one aggregate stream
     per row key and complete state. Append keys are event identities within their tenant.
+
+    ``at_rest`` is how the target stores a subject's ``private`` part. ``"sealed"`` keeps it under the
+    subject's key, so destroying the key erases it, backups included; the sink needs ``sealing=``.
+    ``"plaintext"`` keeps it readable: register the sink's ``cleanup()`` with the erasure coordinator,
+    which edax does not check. A generation never changes it.
     """
 
     mode: Literal["append", "upsert"]
     generation: str
     source_incarnation: str
     mapper_id: str
+    at_rest: Literal["sealed", "plaintext"] = "sealed"
 
     def __post_init__(self) -> None:
         self.validate(())
@@ -195,15 +203,60 @@ class BatchSink(Protocol):
     ) -> dict[str, Any] | None: ...
 
 
+async def seal_private(
+    target: IngestionTarget, sealing: Sealing | None, inputs: Sequence[BatchInput]
+) -> tuple[BatchInput, ...]:
+    """``inputs`` as a sealed target stores them: each written subject's ``private`` sealed under its
+    scope, with one key reservation per subject. The kernel's ``check_sealed`` then refuses anything left
+    plaintext, so a sink without ``sealing`` fails before it writes."""
+    originals = tuple(inputs)
+    if target.at_rest == "plaintext" or sealing is None:
+        return originals
+    chosen = [
+        index
+        for index, item in enumerate(originals)
+        if item.subject is not None and not item.erased and item.failure is None and item.private is not None
+    ]
+    sealed = await sealing.seal_stored(
+        "ingestion",
+        [
+            (item.key, item.sequence or 0, item.tenant, cast(str, item.subject), item.private)
+            for item in (originals[index] for index in chosen)
+        ],
+    )
+    result = list(originals)
+    for index, private in zip(chosen, sealed, strict=True):
+        result[index] = replace(originals[index], private=private)
+    return tuple(result)
+
+
+async def open_private(
+    target: IngestionTarget,
+    sealing: Sealing | None,
+    key: str,
+    subject: str | None,
+    row: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """``row``, as a sink stores it at ``key`` under ``subject``, with its sealed ``private`` part opened."""
+    if row is None or row["private"] is None or subject is None or target.at_rest == "plaintext":
+        return row
+    if sealing is None:
+        raise BadHandle("opening a sealed ingestion row needs the sink's sealing=")
+    private = await sealing.open_stored("ingestion", key, row["sequence"] or 0, row["private"])
+    return {**row, "private": private}
+
+
 class MemoryIngestionSink:
     """Atomic reference sink whose state lives as long as this object.
 
     Keep the instance across runner restarts to exercise replay. Native state is bound to the
     constructing thread, like other memory backends. Calls perform no asynchronous native work.
+    ``sealing`` seals each subject's ``private`` part of a sealed target, and opens it in :meth:`get`.
     """
 
-    def __init__(self, target: IngestionTarget) -> None:
+    def __init__(self, target: IngestionTarget, *, sealing: Sealing | None = None) -> None:
         self._target = target
+        self.sealing = sealing
         self._database = ThreadBound(_native.memory_ingestion(), "MemoryIngestionSink")
 
     @property
@@ -211,7 +264,7 @@ class MemoryIngestionSink:
         return self._target
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
-        originals = tuple(inputs)
+        originals = await seal_private(self.target, self.sealing, inputs)
         async with own_write():
             return BatchResult.from_json(self._database.get().commit(self.target.manifest, encode(originals)))
 
@@ -229,7 +282,8 @@ class MemoryIngestionSink:
         self, tenant: str | None, row_key: str, subject: str | None = None
     ) -> dict[str, Any] | None:
         key = self.target.row_key(tenant, row_key, subject)
-        return cast(dict[str, Any] | None, decode(self._database.get().get(key)))
+        row = cast(dict[str, Any] | None, decode(self._database.get().get(key)))
+        return await open_private(self.target, self.sealing, key, subject, row)
 
 
 @dataclass(frozen=True)

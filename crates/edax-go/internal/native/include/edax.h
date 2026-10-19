@@ -2310,13 +2310,14 @@ int32_t edax_memory_ingestion_published(EDAXAlefHandle this_,
 void edax_memory_keys_free(EDAXAlefHandle handle);
 
 /**
- * Reserve one write before encrypting; failed writes still consume the reservation.
+ * Reserve `count` writes under one generation before encrypting; failed writes still consume them.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_memory_keys_reserve(EDAXAlefHandle this_,
                                         EDAXAlefHandle scope,
-                                        const char *cipher);
+                                        const char *cipher,
+                                        uint64_t count);
 
 /**
  * Resolve only the requested existing generation, exact scope, and encryption purpose.
@@ -5268,6 +5269,15 @@ uintptr_t edax_idempotency_states_len(void);
  */
 int32_t edax_ingest_bind_contract(const char *previous,
                                   const char *expected);
+
+/**
+ * Validate the inputs, then refuse what a sealed target would store as plaintext. A sink calls it
+ * after sealing and before its transaction.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_ingest_check_sealed(const char *manifest,
+                                 const char *inputs);
 
 /**
  * The keyed fingerprint of a sealed ingestion record, from the subject's fingerprint key. `state` is

@@ -9,6 +9,7 @@ each scope's keys once through :meth:`Sealing.for_batch` and drops them with tha
 from __future__ import annotations
 
 import asyncio
+from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Iterator, Sequence
 from contextlib import (
     AbstractAsyncContextManager,
@@ -22,7 +23,7 @@ from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Literal, Protocol, TypeVar, cast, get_args, runtime_checkable
 
-from . import _names, _native
+from . import _json, _names, _native
 from ._owned import ThreadBound
 from ._values import give_value_semantics
 from .errors import BadHandle, CodecError, KeyRevoking, KeyUnavailable, Shredded
@@ -39,6 +40,7 @@ __all__ = [
     "Opened",
     "SealedValue",
     "Sealing",
+    "StoredKind",
     "TransactionFence",
     "WriteFence",
 ]
@@ -48,6 +50,9 @@ T = TypeVar("T")
 Scope = tuple[str | None, str]
 
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
+#: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
+#: projection intent's payload.
+StoredKind = Literal["ingestion", "projection", "intent"]
 KeyStatus = Literal["unknown", "active", "revoking", "destroyed"]
 #: How :meth:`Sealing.write_guard` fences a write: ``"guard"`` holds the provider's ``guard`` from before
 #: the transaction through its commit; ``"transaction"`` fences inside each transaction that opens.
@@ -75,14 +80,15 @@ give_value_semantics(SealedValue)
 class KeyProvider(Protocol):
     """Async I/O port. A missing key is an error, never evidence of destruction.
 
-    ``reserve`` charges an invocation atomically and rotates exhausted generations. ``resolve`` never
-    creates material and checks exact ownership and purpose before returning ``Shredded``. Revoking a
-    tenant scope fences every current and future subject. Returned keys belong to one operation only: a
-    batch runner's :meth:`Sealing.for_batch` view, which keeps them until its batch ends, is one operation.
+    ``reserve`` charges ``count`` invocations to one generation atomically, rotating one with fewer left.
+    ``resolve`` never creates material and checks exact ownership and purpose before returning
+    ``Shredded``. Revoking a tenant scope fences every current and future subject. Returned keys belong
+    to one operation only: a batch runner's :meth:`Sealing.for_batch` view, which keeps them until its
+    batch ends, is one operation, as is a store's sealing of one batch.
     Production providers must retain permanent tombstones across restarts and backup restoration.
     """
 
-    async def reserve(self, scope: KeyScope, cipher: Cipher) -> KeyReservation: ...
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation: ...
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes: ...
     async def fingerprint(self, scope: KeyScope) -> KeyReservation: ...
     async def resolve_fingerprint(self, scope: KeyScope, key_id: str) -> bytes: ...
@@ -164,9 +170,9 @@ class MemoryKeys:
         self._guard_owner: object | None = None
         self._guard_depth = 0
 
-    async def reserve(self, scope: KeyScope, cipher: Cipher) -> KeyReservation:
+    async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
         native = self._native.get()
-        reserved = native.reserve(scope, cipher)
+        reserved = native.reserve(scope, cipher, count)
         return KeyReservation(reserved.key_id, bytes(native.resolve(scope, cipher, reserved.key_id)))
 
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
@@ -554,6 +560,50 @@ class Sealing:
         )
         key = await self.resolve(info, tenant, subject)
         return bytes(_native.open_bytes(info, key, context, bytes(value.data)))
+
+    async def seal_stored(
+        self, kind: StoredKind, parts: Sequence[tuple[str, int, str | None, str, Any]]
+    ) -> list[Any]:
+        """Seal each ``(identity, version, tenant, subject, value)`` part as its protected-state envelope.
+        ``identity`` is the kernel's storage key and ``version`` the row's sequence, both bound as
+        authenticated context. One reservation per scope covers all its parts, each sealed under its own
+        nonce, so a batch costs one provider call per subject rather than one per row."""
+        counts = Counter((tenant, subject) for _, _, tenant, subject, _ in parts)
+        scopes = list(counts)
+        reservations = await asyncio.gather(
+            *(
+                self.keys.reserve(
+                    _native.protected_scope(self.key_namespace, *scope), self.cipher, counts[scope]
+                )
+                for scope in scopes
+            )
+        )
+        reserved = dict(zip(scopes, reservations, strict=True))
+        sealed: list[Any] = []
+        for identity, version, tenant, subject, value in parts:
+            reservation = reserved[(tenant, subject)]
+            info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
+            context = _native.state_encryption_context(
+                kind, identity, "", version, "", False, info, tenant, subject
+            )
+            data = _native.seal_bytes(info, reservation.key, context, _json.encode(value).encode())
+            state = _native.ProtectedState(False, info, data, tenant, subject)
+            sealed.append(_json.decode(_native.encode_protected_state(state)))
+        return sealed
+
+    async def open_stored(self, kind: StoredKind, identity: str, version: int, stored: Any) -> Any:
+        """Open a part :meth:`seal_stored` sealed. A destroyed scope raises
+        :class:`~edax.errors.Shredded`; any other envelope, or none, raises
+        :class:`~edax.errors.CodecError`."""
+        state = _native.decode_protected_state(_json.encode(stored)).value
+        if state is None:
+            raise CodecError("a sealed part is not a protected-state envelope")
+        info = state.encryption
+        context = _native.state_encryption_context(
+            kind, identity, "", version, "", False, info, state.tenant, state.subject
+        )
+        key = await self.resolve(info, state.tenant, state.subject)
+        return _json.decode(bytes(_native.open_bytes(info, key, context, bytes(state.data))))
 
 
 # An opened view never replaces the ciphertext used by guards or nested saga runners.

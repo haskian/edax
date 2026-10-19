@@ -45,6 +45,32 @@ pub fn range(generation: &str, parts: &Value) -> Result<(String, String), Error>
     Ok((format!("{head},\""), format!("{head},#")))
 }
 
+edax_core::closed_names! {
+    /// How a generation stores the private part of a subject's data.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum AtRest {
+        /// Sealed under the subject's key, so destroying the key erases it, backups included.
+        Sealed = "sealed",
+        /// Plaintext: an erasure cleanup participant must delete it.
+        Plaintext = "plaintext",
+    }
+}
+
+/// Refuse a subject's private part that a sealed generation would store as plaintext: it must be
+/// absent or the protected-state envelope of `tenant` and `subject`. Opening still authenticates it.
+pub fn check_sealed(private: Option<&Value>, tenant: Option<&str>, subject: &str) -> Result<(), Error> {
+    let Some(private) = private.filter(|value| !value.is_null()) else {
+        return Ok(());
+    };
+    let sealed = edax_event::sealing::decode_protected_state(&private.to_string())?;
+    if sealed.is_none_or(|state| state.tenant.as_deref() != tenant || state.subject.as_deref() != Some(subject)) {
+        return Err(Error::bad_handle(
+            "a sealed generation stores a subject's private part sealed under its own scope",
+        ));
+    }
+    Ok(())
+}
+
 /// Refuse an erasure subject a key cannot carry: the kernel's subject rule (1 to 256 bytes), and no NUL,
 /// which Postgres cannot store. One rule for every key that names a subject.
 pub fn check_subject(subject: &str) -> Result<(), Error> {

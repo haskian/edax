@@ -2231,6 +2231,7 @@ fn ingest_cases() -> Vec<Value> {
         generation: target.into(),
         source_incarnation: "cluster-a/orders-v1".into(),
         mapper_id: "order-state-v1".into(),
+        at_rest: "sealed".into(),
     };
     for (name, previous, expected) in [
         ("bind_new_target", None, contract.clone()),
@@ -2248,6 +2249,22 @@ fn ingest_cases() -> Vec<Value> {
             Some(contract.clone()),
             Contract {
                 source_incarnation: "cluster-b/orders-v1".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "changed_at_rest_refused",
+            Some(contract.clone()),
+            Contract {
+                at_rest: "plaintext".into(),
+                ..contract.clone()
+            },
+        ),
+        (
+            "unsupported_at_rest_refused",
+            None,
+            Contract {
+                at_rest: "hashed".into(),
                 ..contract.clone()
             },
         ),
@@ -2409,6 +2426,112 @@ fn ingest_cases() -> Vec<Value> {
     ] {
         let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
         rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    // A sealed target stores a subject's private part only as its protected-state envelope.
+    let envelope = |tenant: &str, subject: &str| -> Value {
+        let encryption = edax_seal::EncryptionInfo {
+            format_version: 1,
+            key_namespace: "people".into(),
+            key_id: "generation-7".into(),
+            cipher: edax_seal::Cipher::XChaCha20Poly1305,
+            nonce: vec![0x24; edax_seal::Cipher::XChaCha20Poly1305.nonce_len()],
+        };
+        let state = edax_event::sealing::ProtectedState::new(
+            Some(tenant.into()),
+            Some(subject.into()),
+            false,
+            encryption,
+            vec![0x5a; 40],
+        );
+        serde_json::from_str(&edax_event::sealing::encode_protected_state(&state).unwrap()).unwrap()
+    };
+    let personal = Input {
+        key: ingest::row_key(target, "upsert", Some("acme"), Some("person-7"), "order-42").unwrap(),
+        fingerprint: Some("ab".repeat(32)),
+        private: Some(envelope("acme", "person-7")),
+        ..created.clone()
+    };
+    let plaintext_contract = Contract {
+        at_rest: "plaintext".into(),
+        ..contract.clone()
+    };
+    for (name, contract, input) in [
+        ("sealed_subject_row_accepted", &contract, personal.clone()),
+        (
+            "sealed_subject_plaintext_private_refused",
+            &contract,
+            Input {
+                private: Some(json!({"email":"person-7@example.com"})),
+                ..personal.clone()
+            },
+        ),
+        (
+            "sealed_subject_without_keyed_fingerprint_refused",
+            &contract,
+            Input {
+                fingerprint: None,
+                ..personal.clone()
+            },
+        ),
+        (
+            "envelope_of_another_subject_refused",
+            &contract,
+            Input {
+                private: Some(envelope("acme", "person-8")),
+                ..personal.clone()
+            },
+        ),
+        (
+            "envelope_of_another_tenant_refused",
+            &contract,
+            Input {
+                private: Some(envelope("globex", "person-7")),
+                ..personal.clone()
+            },
+        ),
+        (
+            "sealed_deletion_marker_accepted",
+            &contract,
+            Input {
+                private: None,
+                public: None,
+                ..personal.clone()
+            },
+        ),
+        (
+            "erased_subject_row_accepted",
+            &contract,
+            Input {
+                private: None,
+                fingerprint: None,
+                erased: true,
+                ..personal.clone()
+            },
+        ),
+        (
+            "refused_subject_row_accepted",
+            &contract,
+            Input {
+                private: None,
+                fingerprint: None,
+                failure: Some("codec: sealed record refused".into()),
+                ..personal.clone()
+            },
+        ),
+        ("row_without_subject_stays_plaintext", &contract, created.clone()),
+        (
+            "plaintext_target_keeps_subject_private",
+            &plaintext_contract,
+            Input {
+                private: Some(json!({"email":"person-7@example.com"})),
+                fingerprint: None,
+                ..personal.clone()
+            },
+        ),
+    ] {
+        let inputs = vec![input];
+        let result = ingest::check_sealed(contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"check_sealed","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
     let append_contract = Contract {
         mode: "append".into(),

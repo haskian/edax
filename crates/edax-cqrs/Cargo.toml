@@ -8,6 +8,7 @@ description = "Command-and-query consistency kernel of edax: canonical JSON, com
 
 [dependencies]
 edax-seal.workspace = true
+edax-event.workspace = true
 edax-core.workspace = true
 serde.workspace = true
 serde_json = { version = "1", features = ["raw_value"] }

@@ -163,8 +163,11 @@ func TestIngestionGolden(t *testing.T) {
 			case "validate":
 				err := IngestValidateInputs(string(row.Contract), string(row.Inputs))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, true, err)
+			case "check_sealed":
+				err := IngestCheckSealed(string(row.Contract), string(row.Inputs))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, true, err)
 			case "row_key":
-				manifest, err := json.Marshal(map[string]string{"generation": row.Target, "mode": row.Mode, "mapper_id": "test-mapper", "source_incarnation": "test-source"})
+				manifest, err := json.Marshal(map[string]string{"generation": row.Target, "mode": row.Mode, "mapper_id": "test-mapper", "source_incarnation": "test-source", "at_rest": "sealed"})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -175,7 +178,7 @@ func TestIngestionGolden(t *testing.T) {
 				got, err := IngestRowKey(string(manifest), string(identity))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
 			case "scope_range":
-				manifest, err := json.Marshal(map[string]string{"generation": row.Target, "mode": row.Mode, "mapper_id": "test-mapper", "source_incarnation": "test-source"})
+				manifest, err := json.Marshal(map[string]string{"generation": row.Target, "mode": row.Mode, "mapper_id": "test-mapper", "source_incarnation": "test-source", "at_rest": "sealed"})
 				if err != nil {
 					t.Fatal(err)
 				}

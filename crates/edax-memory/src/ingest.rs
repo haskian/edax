@@ -23,7 +23,7 @@ impl MemoryIngest {
     /// Decide and apply a whole batch under one lock.
     pub fn commit(&self, contract: &Contract, inputs: &[Input]) -> Result<Plan, Error> {
         let mut state = lock(&self.state);
-        ingest::validate_inputs(contract, inputs)?;
+        ingest::check_sealed(contract, inputs)?;
         ingest::bind_contract(state.contracts.get(&contract.generation), contract)?;
         let result = ingest::plan(&contract.mode, inputs, &state.rows, &state.rejected)?;
         state.contracts.insert(contract.generation.clone(), contract.clone());
@@ -84,6 +84,7 @@ mod tests {
             generation: "orders-v1".into(),
             source_incarnation: "cluster-a".into(),
             mapper_id: "orders-v1".into(),
+            at_rest: "sealed".into(),
         };
         let original = Input {
             source: ingest::source_key("orders-v1", "cluster-a", "orders", 0, 1).unwrap(),
@@ -137,6 +138,7 @@ mod tests {
             generation: "people-v1".into(),
             source_incarnation: "cluster-a".into(),
             mapper_id: "people-v1".into(),
+            at_rest: "plaintext".into(),
         };
         let input = |offset: i64, subject: &str, row: &str, failure: Option<&str>| Input {
             source: ingest::source_key("people-v1", "cluster-a", "people", 0, offset).unwrap(),

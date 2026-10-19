@@ -265,3 +265,24 @@ fn creation_and_revocation_are_serialized_by_the_host_lock() {
         assert_eq!(keys.status(&owner).unwrap(), KeyStatus::Destroyed);
     }
 }
+
+#[test]
+fn reserve_many_charges_one_generation_or_rotates() {
+    let mut keys = MemoryKeyProvider::with_aes_limit(5).unwrap();
+    let owner = scope(Some("customer-42"));
+    let batch = keys.reserve_many(&owner, Cipher::Aes256Gcm, 3).unwrap();
+    let next = keys.reserve_many(&owner, Cipher::Aes256Gcm, 2).unwrap();
+    assert_eq!(batch.key_id, next.key_id, "five uses fit one generation");
+    let rotated = keys.reserve_many(&owner, Cipher::Aes256Gcm, 1).unwrap();
+    assert_ne!(rotated.key_id, batch.key_id, "an exhausted generation rotates");
+    let short = keys.reserve_many(&owner, Cipher::Aes256Gcm, 5).unwrap();
+    assert_ne!(short.key_id, rotated.key_id, "a generation with too few uses left rotates");
+    for count in [0, 6] {
+        assert_eq!(
+            keys.reserve_many(&owner, Cipher::Aes256Gcm, count).unwrap_err().code,
+            ErrorCode::BadHandle
+        );
+    }
+    let unlimited = keys.reserve_many(&owner, Cipher::XChaCha20Poly1305, u64::MAX).unwrap();
+    assert_eq!(keys.resolve(&owner, Cipher::XChaCha20Poly1305, &unlimited.key_id).unwrap().as_bytes(), unlimited.key.as_bytes());
+}

@@ -80,6 +80,7 @@ fn row_keys_match_validated_input_identities() {
             generation: "projection-v1".into(),
             source_incarnation: "orders-v1".into(),
             mapper_id: "orders-mapper-v1".into(),
+            at_rest: "sealed".into(),
         };
         let mut input = event(0, 1, "open");
         let row_id = if mode == "append" { &input.event_id } else { "order-42" };

@@ -10,7 +10,7 @@ use edax_core::{Error, ErrorCode};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::namespace::{self, key, prefix};
+use crate::namespace::{self, key, prefix, AtRest};
 use crate::{canonical_json, holds_nul, is_digest_hex, keyed_digest, payload_hash};
 
 edax_core::closed_names! {
@@ -85,12 +85,15 @@ pub struct Contract {
     pub source_incarnation: String,
     /// Immutable mapping and keying implementation identity.
     pub mapper_id: String,
+    /// How the target stores a subject's private part: [`AtRest`] by name.
+    pub at_rest: String,
 }
 
 /// A restored/reused target cannot silently change how records are interpreted.
 pub fn bind_contract(previous: Option<&Contract>, expected: &Contract) -> Result<(), Error> {
     prefix(&expected.generation)?;
     if Mode::by_name(&expected.mode).is_none()
+        || AtRest::by_name(&expected.at_rest).is_none()
         || expected.source_incarnation.is_empty()
         || expected.mapper_id.is_empty()
         || expected.source_incarnation.contains('\0')
@@ -102,23 +105,24 @@ pub fn bind_contract(previous: Option<&Contract>, expected: &Contract) -> Result
     Ok(())
 }
 
+/// The parts of `value`, a canonical key of the target's generation.
+fn identity(contract: &Contract, value: &str) -> Result<Vec<Value>, Error> {
+    let suffix = value
+        .strip_prefix(&prefix(&contract.generation)?)
+        .ok_or_else(|| Error::bad_handle("input belongs to another ingestion target"))?;
+    let parts: Vec<Value> = serde_json::from_str(suffix).map_err(Error::codec)?;
+    if key(&contract.generation, suffix)? != value {
+        return Err(Error::bad_handle("ingestion identity is not canonical"));
+    }
+    Ok(parts)
+}
+
 /// Prevent a caller from escaping the target manifest through hand-built input keys.
 pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Error> {
     bind_contract(None, contract)?;
-    let namespace = prefix(&contract.generation)?;
     for input in inputs {
-        let parse = |value: &str| -> Result<Vec<Value>, Error> {
-            let suffix = value
-                .strip_prefix(&namespace)
-                .ok_or_else(|| Error::bad_handle("input belongs to another ingestion target"))?;
-            let parts: Vec<Value> = serde_json::from_str(suffix).map_err(Error::codec)?;
-            if key(&contract.generation, suffix)? != value {
-                return Err(Error::bad_handle("ingestion identity is not canonical"));
-            }
-            Ok(parts)
-        };
-        let source = parse(&input.source)?;
-        let row = parse(&input.key)?;
+        let source = identity(contract, &input.source)?;
+        let row = identity(contract, &input.key)?;
         if source.len() != 5
             || source.first().and_then(Value::as_str) != Some("source")
             || source.get(1).and_then(Value::as_str) != Some(&contract.source_incarnation)
@@ -154,6 +158,28 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
                 "ingestion keyed fingerprint must be an HMAC-SHA-256 digest in lowercase hex",
             ));
         }
+    }
+    Ok(())
+}
+
+/// Refuse what a sealed target would store as plaintext, before the sink writes: every written input
+/// whose row key names a subject must carry a keyed fingerprint (a hash of ciphertext would never match
+/// a replay), and its `private` must be absent or sealed under the key's tenant and subject. A plaintext
+/// target passes; its erasure cleanup deletes the subject's rows instead.
+pub fn check_sealed(contract: &Contract, inputs: &[Input]) -> Result<(), Error> {
+    validate_inputs(contract, inputs)?;
+    if contract.at_rest == AtRest::Plaintext.as_str() {
+        return Ok(());
+    }
+    for input in inputs.iter().filter(|input| !input.erased && input.failure.is_none()) {
+        let row = identity(contract, &input.key)?;
+        let Some(subject) = row.get(2).and_then(Value::as_str) else {
+            continue;
+        };
+        if input.fingerprint.is_none() {
+            return Err(Error::bad_handle("a sealed ingestion row needs a keyed fingerprint"));
+        }
+        namespace::check_sealed(input.private.as_ref(), row.get(1).and_then(Value::as_str), subject)?;
     }
     Ok(())
 }

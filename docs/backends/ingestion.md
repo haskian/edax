@@ -140,9 +140,25 @@ quote its plaintext. Each commit runs under the write fence of every subject it 
 erased between mapping and the commit makes the fence refuse; the runner waits, then commits those
 records erased.
 
+### The private part at rest
+
+`MappedRow(key, private=..., public=...)` splits a row in two. `public` is stored as queryable
+plaintext. Where `private` goes depends on the target's `at_rest`:
+
+| `at_rest` | A subject's `private` part | Erasure |
+|---|---|---|
+| `"sealed"` (default) | Sealed under the subject's key, in the protected-state envelope | Destroying the key erases it, backups included |
+| `"plaintext"` | Stored readable | The sink's cleanup participant deletes the subject's rows |
+
+Pass the same `sealing=` to the sink as to the runner. The sink seals before its transaction, with
+one key reservation per subject per batch. `get` returns the row with `private` opened, and raises
+`Shredded` once the subject's key is destroyed. A sealed target whose sink has no `sealing=`
+refuses a subject's row with `BadHandle` and writes nothing. A row with no subject stays plaintext.
+`at_rest` is part of the target contract, so changing it needs a new generation.
+
 ## State and replay contract
 
-An `IngestionTarget` fixes `mode`, `generation`, `source_incarnation` and `mapper_id`. The durable
+An `IngestionTarget` fixes `mode`, `generation`, `source_incarnation`, `mapper_id` and `at_rest`. The durable
 manifest lives beside the physical target rows and in the shared rejection table.
 Changing mode or target tables cannot reuse rejections from a different contract. The sink binds
 both manifests atomically under a lock before any read, write or publication operation, and caches

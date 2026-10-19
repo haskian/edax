@@ -114,18 +114,27 @@ impl MemoryKeyProvider {
 
     /// Reserve before encryption, even if the later write fails. Exhausted generations remain readable.
     pub fn reserve(&mut self, scope: &KeyScope, cipher: Cipher) -> Result<ReservedKey, Error> {
+        self.reserve_many(scope, cipher, 1)
+    }
+
+    /// Reserve `count` encryptions under one generation, for a batch that seals each value with its
+    /// own nonce. Unused uses stay charged. A generation with fewer than `count` left rotates.
+    pub fn reserve_many(&mut self, scope: &KeyScope, cipher: Cipher, count: u64) -> Result<ReservedKey, Error> {
         self.check_active(scope)?;
         let purpose = Purpose::Encryption(cipher);
         let limit = match cipher {
             Cipher::Aes256Gcm => self.aes_limit,
             Cipher::XChaCha20Poly1305 => u64::MAX,
         };
+        if count == 0 || count > limit {
+            return Err(Error::bad_handle("key reservation count must be within the cipher's limit"));
+        }
         let identity = (scope.clone(), purpose);
         let current_id = self.current.get(&identity).cloned();
         if let Some(key_id) = current_id {
             if let Some(generation) = self.generations.get_mut(&key_id) {
-                if generation.reservations < limit {
-                    generation.reservations += 1;
+                if limit - generation.reservations >= count {
+                    generation.reservations += count;
                     return copy_key(&key_id, generation);
                 }
             }
@@ -135,7 +144,7 @@ impl MemoryKeyProvider {
             .generations
             .get_mut(&key_id)
             .ok_or_else(|| Error::new(ErrorCode::KeyMissing, "reserved generation is missing"))?;
-        generation.reservations = 1;
+        generation.reservations = count;
         copy_key(&key_id, generation)
     }
 

@@ -283,12 +283,12 @@ pub fn memory_keys() -> MemoryKeys {
 }
 
 impl MemoryKeys {
-    /// Reserve one write before encrypting; failed writes still consume the reservation.
-    pub fn reserve(&self, scope: KeyScope, cipher: &str) -> Result<KeyReservation, String> {
+    /// Reserve `count` writes under one generation before encrypting; failed writes still consume them.
+    pub fn reserve(&self, scope: KeyScope, cipher: &str, count: u64) -> Result<KeyReservation, String> {
         let scope = edax_seal::KeyScope::try_from(scope).map_err(to_wire)?;
         let cipher = edax_seal::Cipher::from_name(cipher).map_err(to_wire)?;
         edax_core::lock(&self.inner)
-            .reserve(&scope, cipher)
+            .reserve_many(&scope, cipher, count)
             .map(KeyReservation::from)
             .map_err(to_wire)
     }
@@ -363,7 +363,7 @@ mod tests {
             subject: Some("customer-42".into()),
         };
         assert_eq!(keys.status(scope.clone()).unwrap(), "unknown");
-        let reserved = keys.reserve(scope.clone(), "aes-256-gcm").unwrap();
+        let reserved = keys.reserve(scope.clone(), "aes-256-gcm", 1).unwrap();
         assert_eq!(keys.status(scope.clone()).unwrap(), "active");
         let secret = keys.resolve(scope.clone(), "aes-256-gcm", &reserved.key_id).unwrap();
         assert_eq!(secret.len(), edax_seal::KEY_LEN);
@@ -377,7 +377,7 @@ mod tests {
         assert_ne!(fingerprint_secret, secret);
         assert_eq!(keys.revoke(scope.clone()).unwrap(), "revoking");
         assert!(keys
-            .reserve(scope.clone(), "aes-256-gcm")
+            .reserve(scope.clone(), "aes-256-gcm", 1)
             .is_err_and(|error| error.starts_with("key_revoking:")));
         assert_eq!(keys.destroy(scope.clone()).unwrap(), "destroyed");
         assert!(keys

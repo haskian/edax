@@ -399,6 +399,7 @@ dependencies = [
  "base64",
  "bigdecimal",
  "edax-core",
+ "edax-event",
  "edax-golden",
  "edax-seal",
  "jiff",

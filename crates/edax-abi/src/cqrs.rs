@@ -415,6 +415,14 @@ pub fn ingest_validate_inputs(manifest: &str, inputs: &str) -> Result<(), String
     edax_cqrs::ingest::validate_inputs(&contract, &inputs).map_err(crate::to_wire)
 }
 
+/// Validate the inputs, then refuse what a sealed target would store as plaintext. A sink calls it
+/// after sealing and before its transaction.
+pub fn ingest_check_sealed(manifest: &str, inputs: &str) -> Result<(), String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    edax_cqrs::ingest::check_sealed(&contract, &inputs).map_err(crate::to_wire)
+}
+
 /// Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
 pub fn ingest_row_key(manifest: &str, identity: &str) -> Result<String, String> {
     #[derive(serde::Deserialize)]

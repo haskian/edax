@@ -502,18 +502,20 @@ The total order, the tiebreak and the cursor are documented from the host's side
 
 ## `ingest` — append and complete-state upsert
 
-`Contract` fixes a target generation's mode, source incarnation and mapper identity. Key helpers
+`Contract` fixes a target generation's mode, source incarnation, mapper identity and `at_rest`. Key helpers
 scope row identities by generation, tenant and erasure subject, and source coordinates by source
 incarnation, topic, partition and offset. `scope_range` names the key range that holds every row of
 one subject, which an erasure cleanup deletes. `validate_inputs` refuses records outside that
-contract.
+contract. `check_sealed` runs after the sink seals and before it writes. On a sealed target, every
+written input of a subject must carry a keyed fingerprint. Its `private` part must be absent or a
+protected-state envelope of the row key's tenant and subject.
 
 `plan` receives original inputs, locked stored rows and persisted rejections. It resolves durable
 rejections before selecting owners. In append mode, identical event replay succeeds and changed
 content under the same identity is rejected. In upsert mode, one aggregate stream owns each row.
 A higher sequence replaces state, a lower sequence is stale, and conflicting content at the current
-sequence is rejected. A row holds a `private` part and a `public` part. Both are plaintext today; sealing `private`
-at rest is planned. Both parts absent retain a deletion marker. An `erased` input,
+sequence is rejected. A row holds a `private` part, sealed unless the target is `plaintext`, and a
+plaintext `public` part. Both parts absent retain a deletion marker. An `erased` input,
 whose key was destroyed, is accepted without a write. A sealed input carries `keyed_fingerprint`, an
 HMAC under the subject's fingerprint key. Once the key is gone, no stored hash can test a guessed
 value. A sealed and an unsealed copy of one sequence conflict. The planner validates every original

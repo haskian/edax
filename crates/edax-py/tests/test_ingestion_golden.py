@@ -33,6 +33,9 @@ def replay(case: dict[str, Any]) -> Any:
     if op == "validate":
         _edax.ingest_validate_inputs(json.dumps(case["contract"]), json.dumps(case["inputs"]))
         return True
+    if op == "check_sealed":
+        _edax.ingest_check_sealed(json.dumps(case["contract"]), json.dumps(case["inputs"]))
+        return True
     if op == "row_key":
         return _edax.ingest_row_key(
             json.dumps(
@@ -41,6 +44,7 @@ def replay(case: dict[str, Any]) -> Any:
                     "mode": case["mode"],
                     "mapper_id": "test-mapper",
                     "source_incarnation": "test-source",
+                    "at_rest": "sealed",
                 }
             ),
             json.dumps({"row_id": case["row_id"], "tenant": case["tenant"], "subject": case["subject"]}),
@@ -52,6 +56,7 @@ def replay(case: dict[str, Any]) -> Any:
                 "mode": case["mode"],
                 "mapper_id": "test-mapper",
                 "source_incarnation": "test-source",
+                "at_rest": "sealed",
             }
         )
         return json.loads(_edax.ingest_scope_range(manifest, case["subject"], case["tenant"]))
