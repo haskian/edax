@@ -72,6 +72,12 @@ def replay(case: dict[str, Any]) -> Any:
         return _edax.ingest_source_key(
             case["target"], case["incarnation"], case["topic"], case["partition"], case["offset"]
         )
+    if op == "record_source":
+        return _edax.ingest_record_source_key(
+            case["target"], json.dumps({"incarnation": case["incarnation"], "source_id": case["source_id"]})
+        )
+    if op == "write_scopes":
+        return json.loads(_edax.ingest_write_scopes(json.dumps(case["contract"]), json.dumps(case["inputs"])))
     if op == "statements":
         return json.loads(_edax.postgres_ingest_statements(case["config"]))
     if op == "write_plan":

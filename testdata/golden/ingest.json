@@ -4578,6 +4578,442 @@
   },
   {
     "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_source",
+    "op": "record_source",
+    "source_id": "device-7/session-2/reading-9",
+    "target": "orders-v1",
+    "want": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]"
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_source_validated",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"device-7/session-2/reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_source_scopes",
+    "op": "write_scopes",
+    "want": [
+      [
+        "acme",
+        null
+      ]
+    ]
+  },
+  {
+    "error": null,
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_unicode_source",
+    "op": "record_source",
+    "source_id": "meritev-ž/9",
+    "target": "orders-v1",
+    "want": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]"
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_unicode_source_validated",
+    "op": "validate",
+    "want": true
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"meritev-ž/9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_unicode_source_scopes",
+    "op": "write_scopes",
+    "want": [
+      [
+        "acme",
+        null
+      ]
+    ]
+  },
+  {
+    "error": "bad_handle: invalid ingestion source identity",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_empty_source",
+    "op": "record_source",
+    "source_id": "",
+    "target": "orders-v1",
+    "want": null
+  },
+  {
+    "error": "bad_handle: invalid ingestion source identity",
+    "incarnation": "cluster-a/orders-v1",
+    "name": "opaque_nul_source",
+    "op": "record_source",
+    "source_id": "bad\u0000id",
+    "target": "orders-v1",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"bad\\u0000id\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_forged_nul",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"other\",\"reading-9\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_wrong_incarnation",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: invalid ingestion source or row identity",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",null,\"order-42\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source-id\",\"cluster-a/orders-v1\",\"reading-9\",0]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "opaque_wrong_arity",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "at_rest": "sealed",
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": null,
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",\"patient-42\",\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",null,null,\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",null,\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      },
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "erased": false,
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"clinic-a\",\"patient-42\",\"reading-1\"]",
+        "private": {
+          "order_id": "order-42",
+          "status": "created"
+        },
+        "public": null,
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42"
+      }
+    ],
+    "name": "write_scopes_preserve_input_order_and_duplicates",
+    "op": "write_scopes",
+    "want": [
+      [
+        "clinic-a",
+        "patient-42"
+      ],
+      [
+        null,
+        null
+      ],
+      [
+        "clinic-a",
+        null
+      ],
+      [
+        "clinic-a",
+        "patient-42"
+      ]
+    ]
+  },
+  {
+    "error": null,
     "mode": "upsert",
     "name": "row_key_upsert",
     "op": "row_key",

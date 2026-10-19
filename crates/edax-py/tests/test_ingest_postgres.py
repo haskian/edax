@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -18,6 +19,7 @@ from edax.batch import BatchSettings, recover
 from edax.errors import BadHandle, CodecError, ConcurrencyError
 from edax.ingestion import (
     BatchInput,
+    BatchResult,
     BatchSink,
     IngestionTarget,
     MemoryIngestionSink,
@@ -25,6 +27,7 @@ from edax.ingestion import (
     RejectionOutbox,
 )
 from edax.outbox import Relay
+from edax.testing import TransactionalBatchSinkContract
 from edax.unit_of_work import transaction
 
 URL = os.environ.get("EDAX_POSTGRES_URL")
@@ -737,3 +740,258 @@ async def test_ingestion_row_lock_wait_is_uncounted_contention(
         assert isinstance(failed.value.cause, InProgress)
         assert failed.value.rolled_back and not failed.value.commit_started
     assert (await sink.commit([record(sink, 1, sequence=2)])).outcomes == ("accepted",)
+
+
+@pytest.mark.parametrize("rollback", [False, True], ids=["commit", "rollback"])
+async def test_stage_joins_unit_and_keeps_result_provisional(
+    database: tuple[Any, PostgresTransactor, str], rollback: bool
+) -> None:
+    from edax.ingestion import BatchResult, StagedBatchResult
+
+    _, transactor, _ = database
+    sink = sink_for(database)
+    accepted = record(sink, 0)
+    rejected = record(sink, 1, sequence=2, failure="codec: invalid reading")
+    with pytest.raises(RuntimeError) if rollback else contextlib.nullcontext():
+        async with transaction(transactor) as tx:
+            result = await sink.stage([accepted, rejected])
+            assert isinstance(result, StagedBatchResult) and not isinstance(result, BatchResult)
+            assert result.outcomes == ("accepted", "rejected")
+            staged_row = await sink.get("shop-a", "order-summary-42", tx=tx)
+            assert staged_row is not None and staged_row["sequence"] == 1
+            # An independent connection sees neither the staged payload nor its rejection.
+            pool, _, schema = database
+            assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_state') == 0
+            assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_rejections') == 0
+            if rollback:
+                raise RuntimeError("handler failed after staging")
+    assert (await sink.get("shop-a", "order-summary-42") is None) == rollback
+    assert bool(await sink.pending()) != rollback
+    # Rollback must not cache a manifest that never committed.
+    assert (await sink.commit([accepted])).outcomes == ("accepted",)
+
+
+async def test_stage_requires_live_transaction_in_its_own_task(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    _, transactor, _ = database
+    sink = sink_for(database)
+    original = record(sink, 0)
+    with pytest.raises(BadHandle):
+        await sink.stage([original])
+    async with transaction(transactor) as tx:
+        with pytest.raises(BadHandle):
+            await asyncio.create_task(sink.stage([original]))
+        with pytest.raises(BadHandle):
+            await sink.stage([original], tx=object())
+    with pytest.raises(BadHandle):
+        await sink.stage([original], tx=tx)
+    assert await sink.get("shop-a", "order-summary-42") is None
+
+
+@pytest.mark.parametrize("rollback", [False, True], ids=["commit", "rollback"])
+async def test_stage_retains_erasure_guard_until_outer_end(
+    database: tuple[Any, PostgresTransactor, str], rollback: bool
+) -> None:
+    from edax.sealing import MemoryKeys, Sealing
+
+    pool, transactor, schema = database
+    keys = MemoryKeys()
+    sealing = Sealing(keys, "clinic-keys")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-reading-v1")
+    sink = PostgresIngestionSink(transactor, target, schema=schema, sealing=sealing)
+    from test_brokerless_ingestion import reading
+
+    original = reading(target)
+    scope = sealing.scope("clinic-a", "patient-42")
+    started = asyncio.Event()
+    may_revoke = asyncio.Event()
+
+    async def revoke() -> str:
+        await may_revoke.wait()
+        started.set()
+        return await keys.revoke(scope)
+
+    revoking = asyncio.create_task(revoke())
+    with pytest.raises(RuntimeError) if rollback else contextlib.nullcontext():
+        async with transaction(transactor):
+            # Forging redundant host metadata must not move the kernel-key scope fence.
+            staged = await sink.stage([replace(original, subject="different-patient", tenant=None)])
+            assert staged.outcomes == ("accepted",)
+            may_revoke.set()
+            await started.wait()
+            await asyncio.sleep(0)
+            assert not revoking.done(), "revocation must wait after stage() returns"
+            if rollback:
+                raise RuntimeError("outer rollback")
+    await asyncio.wait_for(revoking, 1)
+    # Inspect ciphertext only: revocation now prevents opening the row.
+    row_count = await pool.fetchval(
+        f'SELECT count(*) FROM "{schema}".edax_ingest_events WHERE key=$1', original.key
+    )
+    assert row_count == (0 if rollback else 1)
+
+
+async def test_caught_stage_failure_aborts_prior_staged_writes(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    from edax.errors import StoreError
+
+    _, transactor, _ = database
+    sink = sink_for(database)
+    original = record(sink, 0)
+    with pytest.raises(StoreError, match="rolled back"):
+        async with transaction(transactor):
+            await sink.stage([original])
+            with pytest.raises(BadHandle):
+                await sink.stage([replace(original, key="wrong-target")])
+    assert await sink.get("shop-a", "order-summary-42") is None
+
+
+class TestPostgresIngestionContract(TransactionalBatchSinkContract):
+    @pytest.fixture(params=["append", "upsert"])
+    def ingestion_sink(
+        self, database: tuple[Any, PostgresTransactor, str], request: pytest.FixtureRequest
+    ) -> PostgresIngestionSink:
+        return sink_for(database, request.param)
+
+    @pytest.fixture
+    def transactor(self, database: tuple[Any, PostgresTransactor, str]) -> PostgresTransactor:
+        return database[1]
+
+
+async def test_explicit_read_checks_manifest(database: tuple[Any, PostgresTransactor, str]) -> None:
+    _, transactor, schema = database
+    sink = sink_for(database)
+    await sink.commit([record(sink, 0)])
+    incompatible = PostgresIngestionSink(
+        transactor, replace(sink.target, mapper_id="different"), schema=schema
+    )
+    with pytest.raises(BadHandle):
+        async with transaction(transactor) as tx:
+            await incompatible.get("shop-a", "order-summary-42", tx=tx)
+
+
+async def test_cancelled_stage_rolls_back_all_writes(
+    database: tuple[Any, PostgresTransactor, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, transactor, _ = database
+    sink = sink_for(database)
+    applied = asyncio.Event()
+    apply = sink._apply
+
+    async def suspend_after_apply(conn: PgConnection, originals: Sequence[BatchInput]) -> BatchResult:
+        result = await apply(conn, originals)
+        applied.set()
+        await asyncio.Event().wait()
+        return result
+
+    monkeypatch.setattr(sink, "_apply", suspend_after_apply)
+
+    async def write() -> None:
+        async with transaction(transactor):
+            await sink.stage([record(sink, 0), record(sink, 1, failure="codec: invalid reading")])
+
+    writer = asyncio.create_task(write())
+    await asyncio.wait_for(applied.wait(), 1)
+    writer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await writer
+    assert await sink.get("shop-a", "order-summary-42") is None
+    assert await sink.pending() == {}
+
+
+@pytest.mark.parametrize("mode", ["append", "upsert"])
+async def test_staged_and_owned_writers_share_one_conflict_contract(
+    database: tuple[Any, PostgresTransactor, str], mode: Literal["append", "upsert"]
+) -> None:
+    _, transactor, _ = database
+    sink = sink_for(database, mode)
+    await sink.commit([])
+
+    async def write(index: int) -> tuple[int, str]:
+        item = record(sink, index, state=f"reading-{index}", event_id="shared-reading")
+        for attempt in range(4):
+            try:
+                if index % 2:
+                    return index, (await sink.commit([item])).outcomes[0]
+                async with transaction(transactor):
+                    result = await sink.stage([item])
+                return index, result.outcomes[0]
+            except PostgresTransactionFailure as failure:
+                assert failure.rolled_back and not failure.commit_started
+                assert isinstance(failure.cause, ConcurrencyError)
+                if attempt == 3:
+                    raise
+            except ConcurrencyError:
+                if attempt == 3:
+                    raise
+        raise AssertionError("bounded transaction retry exhausted")
+
+    outcomes = await asyncio.gather(*(write(index) for index in range(16)))
+    winners = [index for index, outcome in outcomes if outcome == "accepted"]
+    assert len(winners) == 1
+    assert sum(outcome == "rejected" for _, outcome in outcomes) == 15
+    key = "shared-reading" if mode == "append" else "order-summary-42"
+    saved = await sink.get("shop-a", key)
+    assert saved is not None and saved["private"]["state"] == f"reading-{winners[0]}"
+    assert len(await sink.pending()) == 15
+
+
+async def test_rolled_back_stage_does_not_cache_manifest_binding(
+    database: tuple[Any, PostgresTransactor, str],
+) -> None:
+    _, transactor, schema = database
+    first = sink_for(database)
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with transaction(transactor):
+            await first.stage([record(first, 0)])
+            raise RuntimeError("rollback")
+    replacement = PostgresIngestionSink(
+        transactor, replace(first.target, mapper_id="new-mapper"), schema=schema
+    )
+    assert (await replacement.commit([record(replacement, 0)])).outcomes == ("accepted",)
+    with pytest.raises(BadHandle):
+        await first.commit([record(first, 0)])
+
+
+@pytest.mark.parametrize("managed", [True, False], ids=["ambient-unit", "explicit-handle"])
+async def test_stage_database_fence_drains_before_revocation(
+    database: tuple[Any, PostgresTransactor, str], managed: bool
+) -> None:
+    from edax.backend.erasure_postgres import PostgresErasureStore
+    from edax.backend.erasure_postgres import reference_ddl as reference_erasure_ddl
+    from edax.errors import Rejected
+    from edax.sealing import Sealing
+    from test_brokerless_ingestion import reading
+    from test_erasure_postgres import PostgresFence, wait_for_blocked_lock
+
+    pool, transactor, schema = database
+    await pool.execute(reference_erasure_ddl(schema))
+    erasure = PostgresErasureStore(pool, schema=schema)
+    sealing = Sealing(PostgresFence(transactor, erasure), "clinic-keys", write_fence="transaction")
+    target = IngestionTarget("append", "pulse-v1", "bridge-v1", "pulse-v1")
+    sink = PostgresIngestionSink(transactor, target, schema=schema, sealing=sealing)
+    item = reading(target)
+    scope = sealing.scope("clinic-a", "patient-42")
+    async with pool.acquire() as cleaner:
+
+        async def revoke() -> None:
+            async with cleaner.transaction():
+                await erasure.revoke_in_transaction(cleaner, scope)
+
+        cleaner_task = None
+        try:
+            async with transaction(transactor) if managed else transactor.begin() as tx:
+                assert (await sink.stage([item], tx=None if managed else tx)).outcomes == ("accepted",)
+                cleaner_task = asyncio.create_task(revoke())
+                await wait_for_blocked_lock(pool, cleaner.get_server_pid())
+                assert not cleaner_task.done()
+            await asyncio.wait_for(cleaner_task, 3)
+        finally:
+            if cleaner_task is not None and not cleaner_task.done():
+                cleaner_task.cancel()
+                await asyncio.gather(cleaner_task, return_exceptions=True)
+    with pytest.raises(Rejected):
+        async with transaction(transactor):
+            await sink.stage([item])

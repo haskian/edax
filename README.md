@@ -133,7 +133,8 @@ different command and the guard raises `PayloadMismatch`. The guard claims the k
 mismatch, so a Rust service that shares the store reaches the same verdict. A retry re-runs a whole
 unit of work, never a handler inside one, so `retry` goes outside a guard given `unit_of_work`.
 
-Python and Go each have twenty-one examples in the same learning order. The
+Python and Go share twenty-one examples in the same learning order. Python example 22 adds
+brokerless ingestion inside a keyed command transaction. The
 [Python examples](examples/py/README.md) and [Go examples](crates/edax-go/examples/README.md)
 cover commands, projections, ingestion and projection processing. Examples 20 and 21 use public Python stores;
 their Go counterparts exercise internal kernels because Go runners and database adapters for those

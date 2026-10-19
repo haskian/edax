@@ -74,7 +74,11 @@ fn target_namespaces_and_key_parts_are_unambiguous() {
 
 #[test]
 fn row_keys_match_validated_input_identities() {
-    for (mode, tenant) in [("upsert", Some("tenant-7")), ("append", None), ("append", Some("tenant-ž"))] {
+    for (mode, tenant) in [
+        ("upsert", Some("tenant-7")),
+        ("append", None),
+        ("append", Some("tenant-ž")),
+    ] {
         let contract = Contract {
             mode: mode.into(),
             generation: "projection-v1".into(),
@@ -452,5 +456,33 @@ fn ingestion_tenants_are_representable_by_erasure_scopes() {
                 .code,
             ErrorCode::Codec
         );
+    }
+}
+
+#[test]
+fn opaque_source_ids_are_scoped_and_distinct_from_kafka_coordinates() {
+    let id =
+        edax_cqrs::ingest::record_source_key("projection-v1", "wearable-v1", "device-7/session-2/reading-9").unwrap();
+    assert_eq!(
+        id,
+        "13:projection-v1:[\"source-id\",\"wearable-v1\",\"device-7/session-2/reading-9\"]"
+    );
+    let contract = Contract {
+        mode: "upsert".into(),
+        generation: "projection-v1".into(),
+        source_incarnation: "wearable-v1".into(),
+        mapper_id: "pulse-v1".into(),
+        at_rest: "plaintext".into(),
+    };
+    let mut input = event(0, 1, "paid");
+    input.source = id;
+    validate_inputs(&contract, &[input.clone()]).unwrap();
+    input.source = edax_cqrs::ingest::record_source_key("projection-v1", "other", "reading-9").unwrap();
+    assert_eq!(
+        validate_inputs(&contract, &[input]).unwrap_err().code,
+        ErrorCode::BadHandle
+    );
+    for invalid in ["", "bad\0id"] {
+        assert!(edax_cqrs::ingest::record_source_key("projection-v1", "wearable-v1", invalid).is_err());
     }
 }

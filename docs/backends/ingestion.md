@@ -1,4 +1,4 @@
-# Kafka microbatch ingestion
+# Append/upsert ingestion
 
 `KafkaIngestion` collects Kafka events into database batches. Append mode stores one row per event.
 Upsert mode maintains the latest complete state for each mapped key. The mapper returns a
@@ -16,6 +16,111 @@ This runner supports append and complete-state upsert. [Projection processing](.
 runner and database-authoritative checkpoints. Multi-stream row merges and raw Kafka tombstones
 remain outside both contracts. See the [projection guide](../sdk/projections.md) to choose between
 an application handler, append/upsert ingestion and projection processing.
+
+## Direct ingestion without a broker
+
+Use `IngestionTarget.input_from_source()` for a normalized application record. It needs no Kafka
+coordinates and no edax event envelope. The gateway authenticates the tenant/subject, validates
+its device payload and maps it to one complete `MappedRow`. Producers can retain their existing
+wire format; normalization and sealing can happen in the service boundary.
+
+```python
+from edax.ingestion import IngestionTarget, MappedRow
+
+
+target = IngestionTarget("append", "pulse-v1", "wearable-bridge-v1", "pulse-reading-v1")
+original = target.input_from_source(
+    "device-42/session-9/reading-1",
+    event_id="reading-1",
+    stream="device-42",
+    row=MappedRow("reading-1", private={"pulse_bpm": 72}),
+    content={"reading_id": "reading-1", "pulse_bpm": 72},
+    raw='{"reading_id":"reading-1","pulse_bpm":72}',
+    tenant="clinic-a",
+    subject="patient-42",
+)
+```
+
+| Identity | Meaning |
+|---|---|
+| `source_incarnation` + `source_id` | Stable original/rejection identity; preserve both across retries |
+| `event_id` | Append row identity within generation, tenant and subject; `MappedRow.key` must match |
+| `stream` + `sequence` | Permanent upsert owner and monotonic version; a timestamp is not an inferred sequence |
+| command `idempotency_key` | Request/outcome replay, including other application writes in that transaction |
+
+Opaque source keys have their own kernel tag. Existing Kafka source keys retain their exact format.
+A source ID does not supply persistence or replay to a websocket. A producer/gateway must durably
+buffer unacknowledged readings if losing a connection must not lose data. A retry preserves the
+original ID and raw representation. The sink retains rejected-source decisions; it does **not**
+keep a separate permanent receipt for every accepted source ID. Accepted replay follows append
+identity or upsert owner/sequence. A keyed command can additionally bind a request ID to its result.
+
+`await sink.commit([original])` is a durable boundary. With `sealing=`, direct sinks derive keyed
+fingerprints before encryption and hold the provider's scope fences through the write. A destroyed
+scope refuses a new direct write; the Kafka runner separately handles already-erased deliveries.
+Without `sealing=`, plaintext targets have no provider fence: the application must coordinate
+writers with cleanup. Raw rejection records retain their supplied representation independently of
+row encryption. Encrypt/redact them at the gateway according to the application's replay and
+retention requirements; never assume sealing `private` protects `raw` or `public`.
+
+### Join a keyed command transaction
+
+`PostgresIngestionSink.stage(inputs, tx=None)` requires an already-open transaction of its
+`PostgresTransactor`. Omitting `tx` joins that transactor's ambient unit of work. A missing, foreign,
+closed, aborted or other-task handle is refused. `StagedBatchResult` is provisional: acknowledge the
+source or return success only after the outer transaction commits. Never publish its rejections
+before that commit. `pending()` remains a committed-only outbox read.
+
+Use the same transactor for `PostgresIdempotencyStore`, the ingestion sink and other application
+writes. A keyed command handler calls `stage()` inside the idempotency middleware's transaction;
+`CommandBus.dispatch()` returns only after it commits. A later handler failure rolls back accepted
+rows, rejections and other writes together. A staging failure after handle admission aborts that transaction
+even if the handler catches the exception. Retry the whole command with the same key and payload.
+
+For read-own-writes, call `sink.get(..., tx=tx)` explicitly. With no `tx`, `get()` keeps its existing
+committed-read boundary and refuses an ambient transaction. Guard-based key providers require
+`transaction(transactor)` so their guards survive until outer commit/rollback. An explicit handle
+from `transactor.begin()` is also usable when a provider fences inside that same transaction.
+
+[Example 22](../../examples/py/22_brokerless_ingestion.py) runs a keyed `RecordPulse`: sealed direct
+replay, changed-payload refusal, rollback after staging, and retry with a shared application counter.
+Set `EDAX_POSTGRES_URL` to run the transaction portion. Memory ingestion supports `commit()` only.
+
+### Implement an application-owned sink
+
+`edax.ingestion` exposes `prepare_ingestion`, `plan_ingestion`, `IngestionPlan`, `IngestionRow` and
+`IngestionRejection`. Custom sinks reuse the kernel's decisions while owning their schema and I/O:
+
+1. Validate transaction ownership before calling providers. Hold `prepare_ingestion(target, sealing,
+   inputs)` through the write's commit/rollback. Staged implementations supply `transactor` and `tx`
+   to retain scope fences through the outer transaction; abort the transaction on a staging failure.
+2. Serialize the first manifest bind. Call `target.check_binding(previous)` and persist
+   `target.manifest` atomically on first use. Keep it after payload retention and erasure cleanup.
+3. Lock/read metadata for every input row in a deterministic key order. Then read durable rejection
+   records for every source in a fresh statement. Protect absent keys with uniqueness or equivalent
+   serialization. A race must roll back and retry the whole transaction.
+4. Call `plan_ingestion(target, prepared, stored, rejected)`. Replace every `plan.writes` row in full,
+   retaining stream, sequence and fingerprint even for deletion markers. Insert only **absent**
+   rejection keys; replay must preserve the first raw record and its publication flag. Apply both
+   sets atomically. `plan.json` preserves exact numeric tokens for database encoders; decoded maps
+   use host JSON number semantics.
+5. Return `BatchResult` only after confirmed commit. Expose committed pending rejections and mark
+   publication atomically against each source/fingerprint. Provide scope cleanup for plaintext
+   payloads and coordinate it with writer revocation. `open_private` opens stored private parts.
+
+Subclass `edax.testing.BatchSinkContract` with a fresh `ingestion_sink` fixture for both modes.
+Transactional sinks use `TransactionalBatchSinkContract` and also provide `transactor`. These suites
+check replay, conflicts, concurrent writers, full-state ordering, rejection publication and staged
+rollback/isolation. Add storage/provider-specific tests for commit uncertainty, cancellation and
+erasure races. Passing the kit is evidence for its clauses, not proof of every database failure mode.
+
+The reference Postgres sink still uses key/value tables and key lookup. An application can add
+allowed generated columns over `public` and query them itself. A time-partitioned custom payload
+table needs a separate global identity/ownership mechanism: deleting a payload must not silently
+delete its replay protection. Retention is an application policy. Choose a replay horizon and keep
+receipts/tombstones for it; retaining only payload partitions cannot preserve permanent deduplication.
+SQL cannot filter or aggregate sealed `private` values. Range queries, indexes, retention jobs and
+one-reading-to-many-measurement expansion remain application responsibilities.
 
 ## Wire the pipeline
 
@@ -114,8 +219,9 @@ async def ingest_orders(pool: asyncpg.Pool, stop: asyncio.Event) -> None:
     # The caller closes the pool after every sink operation has actually finished.
 ```
 
-Use one `PostgresTransactor` per pool, shared with any other Postgres stores. Ingestion refuses an
-ambient unit of work: its successful return must mean its own transaction has committed. The mapper
+Use one `PostgresTransactor` per pool, shared with any other Postgres stores. `commit()` refuses an
+ambient unit of work: its successful return means its own transaction has committed. Direct handlers
+can explicitly use `stage()` to join an open transaction, as described below. The mapper
 is synchronous, must return `MappedRow`, and must be deterministic for the target's `mapper_id`.
 The default decoder accepts edax JSON event envelopes. Serializer and record middleware options
 follow the [Kafka backend](kafka.md).

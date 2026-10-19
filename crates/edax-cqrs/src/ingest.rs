@@ -45,6 +45,43 @@ pub fn source_key(target: &str, incarnation: &str, topic: &str, partition: i32, 
     key(target, &parts.to_string())
 }
 
+/// A transport-independent original identity. The caller preserves this ID across retries;
+/// it is not an ordering sequence or a promise that the source can replay lost deliveries.
+pub fn record_source_key(target: &str, incarnation: &str, source_id: &str) -> Result<String, Error> {
+    if incarnation.is_empty() || source_id.is_empty() || incarnation.contains('\0') || source_id.contains('\0') {
+        return Err(Error::bad_handle("invalid ingestion source identity"));
+    }
+    key(
+        target,
+        &serde_json::json!(["source-id", incarnation, source_id]).to_string(),
+    )
+}
+
+fn valid_source(contract: &Contract, source: &[Value]) -> bool {
+    if source.get(1).and_then(Value::as_str) != Some(&contract.source_incarnation)
+        || source.get(2).and_then(Value::as_str).is_none_or(str::is_empty)
+    {
+        return false;
+    }
+    match source.first().and_then(Value::as_str) {
+        Some("source-id") => {
+            source.len() == 3 && source.get(2).and_then(Value::as_str).is_some_and(|v| !v.contains('\0'))
+        }
+        Some("source") => {
+            source.len() == 5
+                && source
+                    .get(3)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|v| v <= i32::MAX as u64)
+                && source
+                    .get(4)
+                    .and_then(Value::as_str)
+                    .is_some_and(|v| v.parse::<i64>().is_ok_and(|n| n >= 0 && n.to_string() == v))
+        }
+        _ => false,
+    }
+}
+
 /// Scope an append event identity or upsert row identity to its generation, tenant and erasure
 /// subject. The subject sits before the row identity, so one key range holds every row of a subject.
 pub fn row_key(
@@ -139,18 +176,7 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
         if input.stream.is_empty() || input.event_id.is_empty() {
             return Err(Error::codec("invalid ingestion event or aggregate identity"));
         }
-        if source.len() != 5
-            || source.first().and_then(Value::as_str) != Some("source")
-            || source.get(1).and_then(Value::as_str) != Some(&contract.source_incarnation)
-            || source.get(2).and_then(Value::as_str).is_none_or(str::is_empty)
-            || source
-                .get(3)
-                .and_then(Value::as_u64)
-                .is_none_or(|v| v > i32::MAX as u64)
-            || source
-                .get(4)
-                .and_then(Value::as_str)
-                .is_none_or(|v| !v.parse::<i64>().is_ok_and(|n| n >= 0 && n.to_string() == v))
+        if !valid_source(contract, &source)
             || row.len() != 4
             || row.first().and_then(Value::as_str) != Some(&contract.mode)
             || row.get(1).is_none_or(|v| !v.is_null() && !v.is_string())
@@ -191,6 +217,24 @@ fn sealed_scope(contract: &Contract, input: &Input) -> Result<Option<(Option<Str
         return Ok(None);
     }
     row_scope(contract, &input.key)
+}
+
+/// A tenant and optional erasure subject, including the subjectless tenant scope.
+pub type WriteScope = (Option<String>, Option<String>);
+
+/// The scope of each original, in input order, from validated keys rather than host metadata.
+pub fn write_scopes(contract: &Contract, inputs: &[Input]) -> Result<Vec<WriteScope>, Error> {
+    validate_inputs(contract, inputs)?;
+    inputs
+        .iter()
+        .map(|input| {
+            let row = identity(contract, &input.key)?;
+            Ok((
+                row.get(1).and_then(Value::as_str).map(str::to_owned),
+                row.get(2).and_then(Value::as_str).map(str::to_owned),
+            ))
+        })
+        .collect()
 }
 
 /// The tenant and subject a row key names, or none when it names no subject.

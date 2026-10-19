@@ -1,10 +1,10 @@
 # Python examples
 
-Twenty-one small programs, one idea each, in learning order. Each one prints what happens, step by
+Twenty-two small programs, one idea each, in learning order. Each one prints what happens, step by
 step. Each one ends in asserts and a final `ok:` line, so a clean exit means it worked.
 
-Every example runs on the in-memory backends. Two of them can switch to a real Redis or Kafka (see
-[Real backends](#real-backends)).
+Every example has an in-memory path. Examples 16 and 17 can use real Redis or Kafka (see
+[Real backends](#real-backends)). Example 22 uses `EDAX_POSTGRES_URL` to verify transactional ingestion.
 
 ## Run them
 
@@ -54,6 +54,7 @@ and 21 use internal kernel bindings; Go runners and database adapters for those 
 | [`19_fault_injection.py`](19_fault_injection.py) | prove a handler survives a lost commit reply | `edax.testing.faults.BrokenCommit` | [delivery guarantees](../../docs/guides/delivery-guarantees.md) |
 | [`20_ingestion.py`](20_ingestion.py) | append events, replace complete state and publish rejections | `MemoryIngestionSink`, `IngestionTarget`, `RejectionOutbox`, `Relay` | [ingestion](../../docs/backends/ingestion.md) |
 | [`21_projection_processing.py`](21_projection_processing.py) | apply ordered deltas, skip replay and deliver effect intents | `MemoryProjectionStateStore`, `ProjectionResult`, `Relay` | [projection processing](../../docs/sdk/projection-processing.md) |
+| [`22_brokerless_ingestion.py`](22_brokerless_ingestion.py) | direct readings and a keyed command sharing ingestion rollback | `input_from_source`, `stage`, `PostgresIngestionSink` | [ingestion](../../docs/backends/ingestion.md#direct-ingestion-without-a-broker) |
 
 Steps 1 to 7 are the write side. Steps 8 to 11 are the read side. Steps 12 to 14 connect and watch
 the two. Steps 15 to 19 cover backends and tests. Steps 20 and 21 build projections from complete-state

@@ -502,6 +502,13 @@ The total order, the tiebreak and the cursor are documented from the host's side
 
 ## `ingest` — append and complete-state upsert
 
+`record_source_key` scopes an opaque retry-stable original ID independently of Kafka coordinates.
+`write_scopes` derives each original's tenant/subject from validated row keys, in input order.
+SDK direct-write preparation uses those scopes for fences and keyed fingerprints before sealing.
+The Python `plan_ingestion` interface calls this same kernel for custom-schema sinks; staging changes
+transaction ownership, not append/upsert decisions. See [direct ingestion](../backends/ingestion.md#direct-ingestion-without-a-broker).
+
+
 `Contract` fixes a target generation's mode, source incarnation, mapper identity and `at_rest`. Key helpers
 scope row identities by generation, tenant and erasure subject, and source coordinates by source
 incarnation, topic, partition and offset. `scope_range` names the key range that holds every row of

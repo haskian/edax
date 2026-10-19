@@ -5423,6 +5423,25 @@ char *edax_ingest_raw_fingerprint(const char *raw);
 uintptr_t edax_ingest_raw_fingerprint_len(const char *_raw);
 
 /**
+ * Scope an opaque source. `identity` is JSON {"incarnation", "source_id"}; JSON preserves
+ * invalid NUL input across C string boundaries so the kernel gives every SDK the same verdict.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_record_source_key(const char *target,
+                                    const char *identity);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_record_source_key` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_record_source_key`.
+ */
+uintptr_t edax_ingest_record_source_key_len(const char *_target,
+                                            const char *_identity);
+
+/**
  * Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5511,6 +5530,24 @@ uintptr_t edax_ingest_source_key_len(const char *_target,
  */
 int32_t edax_ingest_validate_inputs(const char *manifest,
                                     const char *inputs);
+
+/**
+ * Validated tenant and subject scopes that a direct ingestion write must fence.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_write_scopes(const char *manifest,
+                               const char *inputs);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_write_scopes` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_write_scopes`.
+ */
+uintptr_t edax_ingest_write_scopes_len(const char *_manifest,
+                                       const char *_inputs);
 
 /**
  * Whether an event with sequence `incoming` is older than the watermark `stored`, so an ordered

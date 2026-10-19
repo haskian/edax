@@ -2679,6 +2679,58 @@ fn ingest_cases() -> Vec<Value> {
         let result = ingest::source_key(target, incarnation, topic, partition, offset);
         rows.push(json!({"name":name,"op":"source","target":target,"incarnation":incarnation,"topic":topic,"partition":partition,"offset":offset,"want":result.as_ref().ok(),"error":refusal(&result)}));
     }
+    for (name, source_id) in [
+        ("opaque_source", "device-7/session-2/reading-9"),
+        ("opaque_unicode_source", "meritev-ž/9"),
+        ("opaque_empty_source", ""),
+        ("opaque_nul_source", "bad\0id"),
+    ] {
+        let incarnation = "cluster-a/orders-v1";
+        let result = ingest::record_source_key(target, incarnation, source_id);
+        rows.push(json!({"name":name,"op":"record_source","target":target,"incarnation":incarnation,"source_id":source_id,"want":result.as_ref().ok(),"error":refusal(&result)}));
+        if let Ok(source) = result {
+            let inputs = vec![Input {
+                source,
+                ..created.clone()
+            }];
+            let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+            rows.push(json!({"name":format!("{name}_validated"),"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+            let result = ingest::write_scopes(&contract, &inputs);
+            rows.push(json!({"name":format!("{name}_scopes"),"op":"write_scopes","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+        }
+    }
+    for (name, parts) in [
+        (
+            "opaque_forged_nul",
+            json!(["source-id", contract.source_incarnation, "bad\0id"]),
+        ),
+        ("opaque_wrong_incarnation", json!(["source-id", "other", "reading-9"])),
+        (
+            "opaque_wrong_arity",
+            json!(["source-id", contract.source_incarnation, "reading-9", 0]),
+        ),
+    ] {
+        let inputs = vec![Input {
+            source: edax_cqrs::namespace::key(target, &parts.to_string()).unwrap(),
+            ..created.clone()
+        }];
+        let result = ingest::validate_inputs(&contract, &inputs).map(|()| true);
+        rows.push(json!({"name":name,"op":"validate","contract":contract,"inputs":inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
+    }
+    let scopes_inputs = [
+        (Some("clinic-a"), Some("patient-42")),
+        (None, None),
+        (Some("clinic-a"), None),
+        (Some("clinic-a"), Some("patient-42")),
+    ]
+    .into_iter()
+    .map(|(tenant, subject)| Input {
+        key: ingest::row_key(target, "upsert", tenant, subject, "reading-1").unwrap(),
+        ..created.clone()
+    })
+    .collect::<Vec<_>>();
+    let result = ingest::write_scopes(&contract, &scopes_inputs);
+    rows.push(json!({"name":"write_scopes_preserve_input_order_and_duplicates","op":"write_scopes","contract":contract,"inputs":scopes_inputs,"want":result.as_ref().ok(),"error":refusal(&result)}));
     for (name, target, mode, tenant, subject, row_id) in [
         ("row_key_upsert", "orders-v1", "upsert", Some("acme"), None, "order-42"),
         ("row_key_append", "orders-v1", "append", Some("acme"), None, "event-42"),

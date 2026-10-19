@@ -138,6 +138,7 @@ func TestIngestionGolden(t *testing.T) {
 		State       json.RawMessage
 		Target      string
 		Incarnation string
+		SourceID    string `json:"source_id"`
 		Topic       string
 		Partition   int32
 		Offset      int64
@@ -164,6 +165,16 @@ func TestIngestionGolden(t *testing.T) {
 			case "validate":
 				err := IngestValidateInputs(string(row.Contract), string(row.Inputs))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, true, err)
+			case "record_source":
+				identity, err := json.Marshal(map[string]string{"incarnation": row.Incarnation, "source_id": row.SourceID})
+				if err != nil {
+					t.Fatal(err)
+				}
+				got, err := IngestRecordSourceKey(row.Target, string(identity))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, got, err)
+			case "write_scopes":
+				got, err := IngestWriteScopes(string(row.Contract), string(row.Inputs))
+				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(got), err)
 			case "seal_plan":
 				value, err := IngestSealPlan(string(row.Contract), string(row.Inputs))
 				ingestionGoldenCheck(t, row.ingestionGoldenResult, json.RawMessage(value), err)

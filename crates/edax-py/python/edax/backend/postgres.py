@@ -357,6 +357,15 @@ class PostgresTransactor:
             )
         return handle
 
+    def require_transaction(self, tx: Tx | None = None) -> PostgresTx:
+        """Validate an explicit/ambient handle without opening a transaction. Store-internal."""
+        handle = self._handle(tx)
+        if handle is None:
+            raise BadHandle("this operation requires an open Postgres transaction")
+        if handle.aborted:
+            raise BadHandle("this Postgres transaction has aborted and must roll back")
+        return handle
+
     async def run(
         self, op: _Op, tx: Tx | None, call: Callable[[PgConnection], Awaitable[T]], *, fenced: bool = True
     ) -> T:

@@ -1,7 +1,7 @@
 """Atomic append/upsert ingestion over a caller-owned Postgres transactor.
 
 The kernel owns keys, decisions, statements and error recovery. This adapter owns each
-transaction; a result is returned only after the database confirms its commit.
+``commit`` transaction; ``stage`` joins a caller transaction and returns provisional outcomes.
 """
 
 from __future__ import annotations
@@ -12,9 +12,17 @@ from typing import Any, TypeVar, cast
 from .. import _json, _native
 from ..erasure import ScopeCleanup
 from ..errors import BadHandle
-from ..ingestion import BatchInput, BatchResult, IngestionTarget, open_private, seal_private
+from ..ingestion import (
+    BatchInput,
+    BatchResult,
+    IngestionTarget,
+    StagedBatchResult,
+    open_private,
+    prepare_ingestion,
+)
 from ..outbox import check_page
 from ..sealing import KeyScope, Sealing
+from ..unit_of_work import Tx
 from .erasure_postgres import PgErasureConnection, PostgresErasureStore
 from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
 
@@ -41,8 +49,9 @@ class PostgresIngestionSink:
     """Durable append/upsert sink, with an independent rejection outbox.
 
     One target generation binds an immutable mode, source incarnation and mapper identity.
-    Callers own migrations and the pool. Calls inside an ambient unit of work are refused.
-    ``sealing`` seals each subject's ``private`` part of a sealed target before the transaction, and
+    Callers own migrations and the pool. ``commit`` refuses an ambient unit of work; ``stage``
+    requires one (or an explicit live transaction).
+    ``sealing`` fences writes and seals each subject's ``private`` part of a sealed target, and
     opens it in :meth:`get`.
     """
 
@@ -82,28 +91,30 @@ class PostgresIngestionSink:
     async def _own(self, call: Callable[[PgConnection], Awaitable[T]]) -> T:
         """Run ``call`` in its own transaction. A failure raises :class:`PostgresTransactionFailure`: the
         kernel's typed verdict as its cause, with the rollback evidence batch recovery reads."""
-        needs_bind = not self._bound
 
         async def checked(conn: PgConnection) -> T:
-            await self._check(conn)
-            if needs_bind:
-                # Every entry point must bind both stores before reusing a durable decision.
-                for role in (self._role, "rejections"):
-                    manifests = await self._read(conn, role, [self._manifest_key])
-                    previous = manifests.get(self._manifest_key)
-                    _native.ingest_bind_contract(_json.encode(previous), self.target.manifest)
-                    if previous is None:
-                        # Insert unless another first bind did; then compare whatever committed.
-                        manifest = {self._manifest_key: _json.decode(self.target.manifest)}
-                        await self._call(conn.execute(self._sql[f"bind_{role}"], _json.encode(manifest)))
-                        bound = (await self._read(conn, role, [self._manifest_key])).get(self._manifest_key)
-                        _native.ingest_bind_contract(_json.encode(bound), self.target.manifest)
+            await self._bind(conn)
             return await call(conn)
 
         result = await self._transactor.run_owned(checked, op="ingest")
         # Only a confirmed commit proves the durable manifest exists.
         self._bound = True
         return result
+
+    async def _bind(self, conn: PgConnection) -> None:
+        await self._check(conn)
+        if self._bound:
+            return
+        # Staging never caches this: an outer rollback can discard either manifest.
+        for role in (self._role, "rejections"):
+            manifests = await self._read(conn, role, [self._manifest_key])
+            previous = manifests.get(self._manifest_key)
+            _native.ingest_bind_contract(_json.encode(previous), self.target.manifest)
+            if previous is None:
+                manifest = {self._manifest_key: _json.decode(self.target.manifest)}
+                await self._call(conn.execute(self._sql[f"bind_{role}"], _json.encode(manifest)))
+                bound = (await self._read(conn, role, [self._manifest_key])).get(self._manifest_key)
+                _native.ingest_bind_contract(_json.encode(bound), self.target.manifest)
 
     async def _typed(self, call: Callable[[PgConnection], Awaitable[T]]) -> T:
         """:meth:`_own` for callers that need no commit evidence: they get the kernel's typed verdict."""
@@ -117,36 +128,57 @@ class PostgresIngestionSink:
         return {row["key"]: _json.decode(row["value"]) for row in rows}
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
-        """Commit accepted state and durable rejections together; retain each original outcome."""
-        originals = await seal_private(self.target, self.sealing, inputs)
+        """Commit accepted state and rejections in an owned transaction; refuse an ambient unit."""
+        async with prepare_ingestion(self.target, self.sealing, inputs) as originals:
+            return await self._own(lambda conn: self._apply(conn, originals))
+
+    async def stage(self, inputs: Sequence[BatchInput], *, tx: Tx | None = None) -> StagedBatchResult:
+        """Join an existing transaction. Outcomes stay provisional until the outer commit.
+
+        After handle admission, a failure aborts the transaction even if the caller catches it. Erasure
+        fences remain held until commit/rollback; use ``transaction(transactor)`` with guard-based
+        key providers. This operation never acknowledges sources or publishes rejections.
+        """
+        handle = self._transactor.require_transaction(tx)
+        try:
+            async with prepare_ingestion(
+                self.target, self.sealing, inputs, transactor=self._transactor, tx=handle
+            ) as originals:
+
+                async def apply(conn: PgConnection) -> BatchResult:
+                    await self._bind(conn)
+                    return await self._apply(conn, originals)
+
+                result = await self._transactor.run("ingest", handle, apply)
+                return StagedBatchResult(result.outcomes, result.rejections)
+        except BaseException:
+            handle.aborted = True
+            raise
+
+    async def _apply(self, conn: PgConnection, originals: Sequence[BatchInput]) -> BatchResult:
         encoded = _json.encode(originals)
-        _native.ingest_check_sealed(self.target.manifest, encoded)
         sources = _json.encode([item.source for item in originals])
         keys = [item.key for item in originals]
-
-        async def apply(conn: PgConnection) -> BatchResult:
-            # Lock target rows first. A fresh rejection read must follow any wait for a target
-            # writer, whose commit may have rejected this source and advanced the row together.
-            # Missing targets still use plain INSERT: a concurrent first write aborts this plan.
-            stored = await self._read(conn, f"{self._role}_metadata", keys)
-            rows = await self._call(conn.fetch(self._sql["read_rejections_for_plan"], sources))
-            rejected = {row["key"]: _json.decode(row["value"]) for row in rows}
-            stored_text, rejected_text = _json.encode(stored), _json.encode(rejected)
-            plan_text = _native.ingest_plan(self.target.mode, encoded, stored_text, rejected_text)
-            writes: dict[str, str] = _json.decode(
-                _native.postgres_ingest_write_plan(plan_text, stored_text, rejected_text)
-            )
-            # Preserve the kernel's exact-number parameter text across the I/O boundary.
-            for parameter, statement in (
-                ("updates", f"update_{self._role}"),
-                ("inserts", f"insert_{self._role}"),
-                ("rejections", "insert_rejections"),
-            ):
-                if writes[parameter] != "{}":
-                    await self._call(conn.execute(self._sql[statement], writes[parameter]))
-            return BatchResult.from_json(plan_text)
-
-        return await self._own(apply)
+        # Lock target rows first. A fresh rejection read must follow any wait for a target
+        # writer, whose commit may have rejected this source and advanced the row together.
+        # Missing targets still use plain INSERT: a concurrent first write aborts this plan.
+        stored = await self._read(conn, f"{self._role}_metadata", keys)
+        rows = await self._call(conn.fetch(self._sql["read_rejections_for_plan"], sources))
+        rejected = {row["key"]: _json.decode(row["value"]) for row in rows}
+        stored_text, rejected_text = _json.encode(stored), _json.encode(rejected)
+        plan_text = _native.ingest_plan(self.target.mode, encoded, stored_text, rejected_text)
+        writes: dict[str, str] = _json.decode(
+            _native.postgres_ingest_write_plan(plan_text, stored_text, rejected_text)
+        )
+        # Preserve the kernel's exact-number parameter text across the I/O boundary.
+        for parameter, statement in (
+            ("updates", f"update_{self._role}"),
+            ("inserts", f"insert_{self._role}"),
+            ("rejections", "insert_rejections"),
+        ):
+            if writes[parameter] != "{}":
+                await self._call(conn.execute(self._sql[statement], writes[parameter]))
+        return BatchResult.from_json(plan_text)
 
     def cleanup(
         self,
@@ -214,12 +246,27 @@ class PostgresIngestionSink:
         await self._typed(mark)
 
     async def get(
-        self, tenant: str | None, row_key: str, subject: str | None = None
+        self, tenant: str | None, row_key: str, subject: str | None = None, *, tx: Tx | None = None
     ) -> dict[str, Any] | None:
-        """Read one committed event/state envelope, including a retained deletion marker."""
+        """Read one committed envelope, or this explicit ``tx``'s writes. With no ``tx`` this
+        keeps the owned-transaction contract and refuses an ambient unit of work."""
         key = self.target.row_key(tenant, row_key, subject)
 
         async def read(conn: PgConnection) -> dict[str, Any] | None:
             return (await self._read(conn, self._role, [key])).get(key)
 
-        return await open_private(self.target, self.sealing, key, await self._typed(read))
+        if tx is None:
+            row = await self._typed(read)
+        else:
+            handle = self._transactor.require_transaction(tx)
+
+            async def checked(conn: PgConnection) -> dict[str, Any] | None:
+                await self._bind(conn)
+                return await read(conn)
+
+            try:
+                row = await self._transactor.run("ingest", handle, checked)
+            except BaseException:
+                handle.aborted = True
+                raise
+        return await open_private(self.target, self.sealing, key, row)

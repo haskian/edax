@@ -1282,6 +1282,19 @@ func IngestRawFingerprint(raw string) (string, error) {
 	return nativeValue, nil
 }
 
+// IngestRecordSourceKey calls the shared kernel.
+func IngestRecordSourceKey(target string, identity string) (string, error) {
+	var zero string
+	if err := checkNativeString("target", target); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("identity", identity); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestRecordSourceKey(target, identity)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // IngestRowKey calls the shared kernel.
 func IngestRowKey(manifest string, identity string) (string, error) {
 	var zero string
@@ -1353,6 +1366,19 @@ func IngestValidateInputs(manifest string, inputs string) error {
 		return err
 	}
 	return mapNativeError(native.IngestValidateInputs(manifest, inputs))
+}
+
+// IngestWriteScopes calls the shared kernel.
+func IngestWriteScopes(manifest string, inputs string) (string, error) {
+	var zero string
+	if err := checkNativeString("manifest", manifest); err != nil {
+		return zero, err
+	}
+	if err := checkNativeString("inputs", inputs); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.IngestWriteScopes(manifest, inputs)
+	return nativeValue, mapNativeError(nativeError)
 }
 
 // IsStale calls the shared kernel.

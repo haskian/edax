@@ -406,6 +406,26 @@ pub fn ingest_source_key(
     edax_cqrs::ingest::source_key(target, incarnation, topic, partition, offset).map_err(crate::to_wire)
 }
 
+/// Scope an opaque source. `identity` is JSON {"incarnation", "source_id"}; JSON preserves
+/// invalid NUL input across C string boundaries so the kernel gives every SDK the same verdict.
+pub fn ingest_record_source_key(target: &str, identity: &str) -> Result<String, String> {
+    #[derive(serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Identity {
+        incarnation: String,
+        source_id: String,
+    }
+    let identity: Identity = crate::read_json(identity)?;
+    edax_cqrs::ingest::record_source_key(target, &identity.incarnation, &identity.source_id).map_err(to_wire)
+}
+
+/// Validated tenant and subject scopes that a direct ingestion write must fence.
+pub fn ingest_write_scopes(manifest: &str, inputs: &str) -> Result<String, String> {
+    let contract = crate::read_json(manifest)?;
+    let inputs = edax_cqrs::ingest::inputs_json(inputs).map_err(to_wire)?;
+    crate::write_json(&edax_cqrs::ingest::write_scopes(&contract, &inputs).map_err(to_wire)?)
+}
+
 /// Refuse a changed interpretation of an existing ingestion target.
 pub fn ingest_bind_contract(previous: &str, expected: &str) -> Result<(), String> {
     let previous: Option<edax_cqrs::ingest::Contract> = crate::read_json(previous)?;
