@@ -5246,6 +5246,22 @@ uintptr_t edax_ingest_plan_len(const char *_mode,
                                const char *_rejected);
 
 /**
+ * The raw fingerprint of a source record whose `raw` text is the whole record.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_raw_fingerprint(const char *raw);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_raw_fingerprint` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_raw_fingerprint`.
+ */
+uintptr_t edax_ingest_raw_fingerprint_len(const char *_raw);
+
+/**
  * Build a scoped row key. JSON preserves NUL-bearing identity fields across C strings.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.

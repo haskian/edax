@@ -27,7 +27,7 @@ fn ingestion_locks_rows_not_keys_and_checks_the_table_contract() {
     let sql = statements("{}").unwrap();
     // Row locks and plain inserts bound the lock table: no statement takes an advisory lock.
     assert!(sql.values().all(|statement| !statement.contains("advisory")));
-    assert!(sql["read_rejections_for_plan"].ends_with("FOR UPDATE OF saved"));
+    assert!(sql["read_rejections_for_plan"].ends_with("ORDER BY key FOR UPDATE"));
     for role in ["events", "state"] {
         assert!(sql[&format!("read_{role}_metadata")].ends_with("ORDER BY key FOR UPDATE"));
         assert!(sql[&format!("update_{role}")].contains("WHERE target.key = changed.key"));

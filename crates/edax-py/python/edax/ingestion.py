@@ -49,8 +49,8 @@ class BatchInput:
     content: Any
     value: Any
     raw: str
+    raw_fingerprint: str
     failure: str | None = None
-    raw_fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,8 @@ class IngestionTarget:
 
         In append mode ``row_key`` must equal ``event_id``. ``raw`` is the lossless JSON source
         representation used by rejection publication. Content includes the full event envelope.
+        ``raw_fingerprint`` identifies the original source record; a source whose ``raw`` is the
+        whole record omits it, and the kernel fingerprints ``raw``.
         """
         original = BatchInput(
             source=self.source_key(topic, partition, offset),
@@ -117,8 +119,8 @@ class IngestionTarget:
             content=content,
             value=value,
             raw=raw,
+            raw_fingerprint=raw_fingerprint or _native.ingest_raw_fingerprint(raw),
             failure=failure,
-            raw_fingerprint=raw_fingerprint,
         )
         self.validate((original,))
         return original

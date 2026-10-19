@@ -87,7 +87,7 @@ mod tests {
             sequence: Some(1),
             content: json!({"status":"open"}),
             value: Some(json!({"id":"order-42","status":"open"})),
-            raw_fingerprint: None,
+            raw_fingerprint: ingest::raw_fingerprint(b"order-opened-1"),
             raw: "order-opened-1".into(),
             failure: None,
         };

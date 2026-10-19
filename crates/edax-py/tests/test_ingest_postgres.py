@@ -534,7 +534,7 @@ async def test_replay_uses_current_raw_without_replacing_durable_original(
     original = replace(
         record(postgres, 0, failure="codec: invalid order"),
         raw=_json.encode({"topic": "orders", "partition": 0, "offset": 0, "value": "x" * (1024 * 1024)}),
-        raw_fingerprint="stable-original-source-digest",
+        raw_fingerprint=_native.ingest_raw_fingerprint("stable original source record"),
     )
     await sink.commit([original])
     durable = await sink.pending()
@@ -554,18 +554,9 @@ async def test_replay_uses_current_raw_without_replacing_durable_original(
     if backend == "postgres":
         assert len(read_sizes) == 1 and read_sizes[0] < 1024
     with pytest.raises(BadHandle, match="different raw"):
-        await sink.commit([replace(replay, raw_fingerprint="changed-original-source-digest")])
+        changed = _native.ingest_raw_fingerprint("another source record")
+        await sink.commit([replace(replay, raw_fingerprint=changed)])
     await sink.published({replay.source: result.rejections[replay.source]["fingerprint"]})
     published = await sink.commit([replay])
     assert published.rejections[replay.source]["published"] is True
     assert await sink.pending() == {}
-
-
-async def test_legacy_replay_still_checks_original_raw(database: tuple[Any, PostgresTransactor, str]) -> None:
-    sink = sink_for(database)
-    original = record(sink, 0, failure="codec: invalid order")
-    result = await sink.commit([original])
-    assert (await sink.commit([original])).rejections == result.rejections
-    with pytest.raises(BadHandle, match="different raw"):
-        await sink.commit([replace(original, raw="changed original bytes")])
-    assert await sink.pending() == result.rejections

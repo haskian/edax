@@ -118,9 +118,7 @@ class PostgresIngestionSink:
         originals = tuple(inputs)
         self.target.validate(originals)
         encoded = _json.encode(originals)
-        sources = _json.encode(
-            [{"source": item.source, "fingerprinted": item.raw_fingerprint is not None} for item in originals]
-        )
+        sources = _json.encode([item.source for item in originals])
         keys = [item.key for item in originals]
 
         async def apply(conn: PgConnection) -> BatchResult:

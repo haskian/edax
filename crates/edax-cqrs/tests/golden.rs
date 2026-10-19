@@ -1826,17 +1826,20 @@ fn ingest_cases() -> Vec<Value> {
     use std::collections::BTreeMap;
 
     let target = "orders-v1";
-    let input = |offset: i64, sequence: Option<u64>, status: &str| Input {
-        source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
-        key: namespace::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
-        stream: "order-42".into(),
-        event_id: format!("order-42-event-{offset}"),
-        sequence,
-        content: json!({"aggregate_id":"order-42", "sequence":sequence, "name":"OrderState", "version":1, "status":status}),
-        value: Some(json!({"order_id":"order-42", "status":status})),
-        raw_fingerprint: None,
-        raw: json!({"offset":offset,"sequence":sequence,"status":status}).to_string(),
-        failure: None,
+    let input = |offset: i64, sequence: Option<u64>, status: &str| {
+        let raw = json!({"offset":offset,"sequence":sequence,"status":status}).to_string();
+        Input {
+            source: ingest::source_key(target, "cluster-a/orders-v1", "orders", 0, offset).unwrap(),
+            key: namespace::key(target, &json!(["upsert", "acme", "order-42"]).to_string()).unwrap(),
+            stream: "order-42".into(),
+            event_id: format!("order-42-event-{offset}"),
+            sequence,
+            content: json!({"aggregate_id":"order-42", "sequence":sequence, "name":"OrderState", "version":1, "status":status}),
+            value: Some(json!({"order_id":"order-42", "status":status})),
+            raw_fingerprint: ingest::raw_fingerprint(raw.as_bytes()),
+            raw,
+            failure: None,
+        }
     };
     let empty = BTreeMap::new();
     let no_rejections = BTreeMap::new();
@@ -2082,7 +2085,7 @@ fn ingest_cases() -> Vec<Value> {
         &first_result.rejections,
     );
     let reused_source = Input {
-        raw_fingerprint: None,
+        raw_fingerprint: ingest::raw_fingerprint(b"changed-source-record"),
         raw: "changed-source-record".into(),
         ..created.clone()
     };
@@ -2102,7 +2105,7 @@ fn ingest_cases() -> Vec<Value> {
     );
     let original_digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     let full_record = Input {
-        raw_fingerprint: Some(original_digest.into()),
+        raw_fingerprint: original_digest.into(),
         failure: Some("codec: order status is malformed".into()),
         ..created.clone()
     };
@@ -2134,7 +2137,7 @@ fn ingest_cases() -> Vec<Value> {
         &no_rejections,
     );
     let changed_digest = Input {
-        raw_fingerprint: Some("fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into()),
+        raw_fingerprint: "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210".into(),
         ..stub_record
     };
     add(
@@ -2288,6 +2291,20 @@ fn ingest_cases() -> Vec<Value> {
             "empty_event_id_refused",
             vec![Input {
                 event_id: String::new(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "uppercase_raw_fingerprint_refused",
+            vec![Input {
+                raw_fingerprint: created.raw_fingerprint.to_uppercase(),
+                ..created.clone()
+            }],
+        ),
+        (
+            "short_raw_fingerprint_refused",
+            vec![Input {
+                raw_fingerprint: "0123456789abcdef".into(),
                 ..created.clone()
             }],
         ),

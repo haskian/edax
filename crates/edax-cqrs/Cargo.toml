@@ -12,6 +12,7 @@ edax-core.workspace = true
 serde.workspace = true
 serde_json = { version = "1", features = ["raw_value"] }
 base64 = "0.22"
+sha2 = "0.10"
 serde_json_canonicalizer = "0.3.2"
 bigdecimal.workspace = true
 jiff.workspace = true

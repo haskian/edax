@@ -2,13 +2,23 @@ use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use edax_core::ErrorCode;
-use edax_cqrs::ingest::{plan, row_key, source_key, validate_inputs, Contract, Input, Rejection, Stored};
+use edax_cqrs::ingest::{
+    plan, raw_fingerprint, row_key, source_key, validate_inputs, Contract, Input, Rejection, Stored,
+};
 use edax_cqrs::namespace::{key, prefix};
 use serde_json::json;
 
 #[allow(clippy::unwrap_used, reason = "test fixture must be valid")]
 fn event(offset: u64, sequence: u64, status: &str) -> Input {
     let content = json!({"type": "order.state", "status": status});
+    let raw = json!({
+        "topic": "orders", "partition": 0, "offset": offset,
+        "key": STANDARD.encode(b"order-42"),
+        "value": STANDARD.encode(content.to_string()),
+        "headers": [["content-type", STANDARD.encode(b"application/json")]],
+        "timestamp": 1_700_000_000_000_i64, "timestamp_type": 0, "oversized": false,
+    })
+    .to_string();
     Input {
         source: source_key("projection-v1", "orders-v1", "orders", 0, offset.try_into().unwrap()).unwrap(),
         key: row_key("projection-v1", "upsert", Some("tenant-7"), "order-42").unwrap(),
@@ -17,15 +27,8 @@ fn event(offset: u64, sequence: u64, status: &str) -> Input {
         sequence: Some(sequence),
         content: content.clone(),
         value: Some(json!({"order_id": "order-42", "status": status})),
-        raw: json!({
-            "topic": "orders", "partition": 0, "offset": offset,
-            "key": STANDARD.encode(b"order-42"),
-            "value": STANDARD.encode(content.to_string()),
-            "headers": [["content-type", STANDARD.encode(b"application/json")]],
-            "timestamp": 1_700_000_000_000_i64, "timestamp_type": 0, "oversized": false,
-        })
-        .to_string(),
-        raw_fingerprint: None,
+        raw_fingerprint: raw_fingerprint(raw.as_bytes()),
+        raw,
         failure: None,
     }
 }
@@ -251,7 +254,7 @@ fn source_coordinate_reuse_is_fatal_even_before_rejection() {
     let rejected = BTreeMap::from([(
         first.source.clone(),
         Rejection {
-            fingerprint: edax_core::payload_hash(first.raw.as_bytes()).to_string(),
+            fingerprint: first.raw_fingerprint.clone(),
             error: "rejected: invalid state".into(),
             raw: first.raw,
             published: true,
@@ -264,7 +267,7 @@ fn source_coordinate_reuse_is_fatal_even_before_rejection() {
 #[test]
 fn source_digest_survives_full_record_to_stub_changes() {
     let mut original = event(0, 1, "open");
-    original.raw_fingerprint = Some("stable-original-source-digest".into());
+    original.raw_fingerprint = raw_fingerprint(b"stable original source record");
     original.failure = Some("codec: mapper refused this event".into());
     let initial = plan("upsert", &[original.clone()], &BTreeMap::new(), &BTreeMap::new()).unwrap();
     let mut stub = original.clone();
@@ -282,7 +285,7 @@ fn source_digest_survives_full_record_to_stub_changes() {
         assert_eq!(result.rejections, expected, "{name}");
         assert!(result.writes.is_empty(), "{name}");
     }
-    stub.raw_fingerprint = Some("different-original-source-digest".into());
+    stub.raw_fingerprint = raw_fingerprint(b"different original source record");
     for (name, inputs, rejected) in [
         ("persisted changed source", vec![stub.clone()], initial.rejections),
         ("same batch changed source", vec![original, stub], BTreeMap::new()),
@@ -301,7 +304,7 @@ fn preserves_published_rejections_and_handles_empty_and_invalid_modes() {
     let rejected = BTreeMap::from([(
         input.source.clone(),
         Rejection {
-            fingerprint: edax_core::payload_hash(input.raw.as_bytes()).to_string(),
+            fingerprint: input.raw_fingerprint.clone(),
             error: "rejected: invalid state".into(),
             raw: input.raw.clone(),
             published: true,

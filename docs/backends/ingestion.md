@@ -147,11 +147,14 @@ fingerprints are not retained: once a higher version commits, older conflicting 
 and ignored. Therefore permanent historical conflict reporting is not part of this contract.
 
 Accepted rows and new rejection records commit together. A committed rejection wins on replay even
-if target state later changes. Reusing its source coordinate with different original bytes fails
-closed. Checks from a transaction that rolled back are not durable rejection records.
+if target state later changes. Every input carries `raw_fingerprint`, the SHA-256 of its original
+source record, so a full record and its bounded stub replay as one source. Reusing a source
+coordinate with another fingerprint fails closed. Checks from a transaction that rolled back are not
+durable rejection records.
 
 Use `target.input(...)` to build inputs for a custom source or direct sink calls. It builds and
-validates kernel-owned scoped identities. Source offsets are decimal strings inside canonical key
+validates kernel-owned scoped identities. Pass `raw_fingerprint` when `raw` may be a stub; otherwise
+the kernel fingerprints `raw` itself. Source offsets are decimal strings inside canonical key
 JSON, preserving the full nonnegative signed 64-bit range. The Kafka runner retains the native full
 event envelope as JSON **text** in `content`; it does not parse that envelope into an arbitrary JSON
 value for fingerprinting. This preserves integer nanosecond timestamps and 64-bit sequences without

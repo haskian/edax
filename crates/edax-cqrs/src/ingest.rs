@@ -122,6 +122,11 @@ pub fn validate_inputs(contract: &Contract, inputs: &[Input]) -> Result<(), Erro
         {
             return Err(Error::bad_handle("invalid ingestion source or row identity"));
         }
+        if !is_fingerprint(&input.raw_fingerprint) {
+            return Err(Error::bad_handle(
+                "ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+            ));
+        }
     }
     Ok(())
 }
@@ -145,10 +150,10 @@ pub struct Input<T = Value> {
     pub value: Option<T>,
     /// Lossless source representation retained by a rejection.
     pub raw: String,
-    /// Stable digest of the original source bytes, independent of a retained full record or stub.
-    /// Absent for callers whose raw representation is itself immutable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub raw_fingerprint: Option<String>,
+    /// SHA-256 of the original source record, 64 lowercase hex digits, independent of a retained
+    /// full record or stub. Kafka's raw encoding supplies it; [`raw_fingerprint()`] computes it for any
+    /// other source.
+    pub raw_fingerprint: String,
     /// An already classified decode or mapping rejection in kernel error wire form.
     pub failure: Option<String>,
 }
@@ -234,18 +239,27 @@ fn fingerprint(input: &Input) -> Result<String, Error> {
     Ok(payload_hash(&canonical_json(&bytes)?).to_string())
 }
 
-fn raw_fingerprint(input: &Input) -> String {
-    input
-        .raw_fingerprint
-        .clone()
-        .unwrap_or_else(|| payload_hash(input.raw.as_bytes()).to_string())
+/// The raw fingerprint of a source record whose `raw` representation is the whole record.
+pub fn raw_fingerprint(raw: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!(
+        "{:x}",
+        Sha256::new()
+            .chain_update(b"edax.ingestion.raw/v1\0")
+            .chain_update(raw)
+            .finalize()
+    )
+}
+
+fn is_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 fn reject(plan: &mut Plan, input: &Input, error: String) {
     plan.rejections.insert(
         input.source.clone(),
         Rejection {
-            fingerprint: raw_fingerprint(input),
+            fingerprint: input.raw_fingerprint.clone(),
             error,
             raw: input.raw.clone(),
             published: false,
@@ -269,13 +283,13 @@ pub fn plan(
     let mode = Mode::by_name(mode).ok_or_else(|| Error::bad_handle("ingestion mode must be append or upsert"))?;
     let mut sources = BTreeMap::<&str, &Input>::new();
     for input in inputs {
-        let fingerprint = raw_fingerprint(input);
-        if sources.insert(&input.source, input).is_some_and(|prior| {
-            raw_fingerprint(prior) != fingerprint
-                || ((prior.raw_fingerprint.is_none() || input.raw_fingerprint.is_none()) && prior.raw != input.raw)
-        }) || rejected.get(&input.source).is_some_and(|prior| {
-            prior.fingerprint != fingerprint || (input.raw_fingerprint.is_none() && prior.raw != input.raw)
-        }) {
+        if sources
+            .insert(&input.source, input)
+            .is_some_and(|prior| prior.raw_fingerprint != input.raw_fingerprint)
+            || rejected
+                .get(&input.source)
+                .is_some_and(|prior| prior.fingerprint != input.raw_fingerprint)
+        {
             return Err(Error::bad_handle(
                 "ingestion source coordinate reused with different raw content",
             ));
@@ -296,7 +310,8 @@ pub fn plan(
             let prior = Rejection {
                 fingerprint: prior.fingerprint.clone(),
                 error: prior.error.clone(),
-                raw: if rejected.contains_key(&input.source) && input.raw_fingerprint.is_some() {
+                // A store need not read back a durable rejection's raw: the verified replay carries it.
+                raw: if rejected.contains_key(&input.source) {
                     input.raw.clone()
                 } else {
                     prior.raw.clone()

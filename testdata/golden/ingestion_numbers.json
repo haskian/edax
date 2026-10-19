@@ -1,7 +1,7 @@
 [
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_safe_integer",
     "op": "plan",
@@ -24,7 +24,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_safe_integer",
     "op": "plan",
@@ -47,7 +47,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740991},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_safe_integer",
     "op": "plan",
@@ -70,7 +70,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740991},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_safe_integer",
     "op": "plan",
@@ -145,7 +145,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_unsafe_integer",
     "op": "plan",
@@ -156,7 +156,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -166,7 +166,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_unsafe_integer",
     "op": "plan",
@@ -177,7 +177,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 22 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -187,7 +187,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":9007199254740992},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_unsafe_integer",
     "op": "plan",
@@ -198,7 +198,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 10 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -208,7 +208,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":9007199254740992},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_unsafe_integer",
     "op": "plan",
@@ -219,7 +219,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 22 is outside -(2^53-1)..=2^53-1, the I-JSON safe integers RFC 8785 keeps exact",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -257,7 +257,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_beyond_u64",
     "op": "plan",
@@ -268,7 +268,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -278,7 +278,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_beyond_u64",
     "op": "plan",
@@ -289,7 +289,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -299,7 +299,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":18446744073709551617},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_beyond_u64",
     "op": "plan",
@@ -310,7 +310,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -320,7 +320,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":18446744073709551617},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_beyond_u64",
     "op": "plan",
@@ -331,7 +331,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -369,7 +369,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_negative_beyond_i64",
     "op": "plan",
@@ -380,7 +380,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -390,7 +390,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_negative_beyond_i64",
     "op": "plan",
@@ -401,7 +401,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -411,7 +411,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-9223372036854775809},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_negative_beyond_i64",
     "op": "plan",
@@ -422,7 +422,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -432,7 +432,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-9223372036854775809},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_negative_beyond_i64",
     "op": "plan",
@@ -443,7 +443,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -481,7 +481,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_wide_scientific_integer",
     "op": "plan",
@@ -492,7 +492,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -502,7 +502,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_wide_scientific_integer",
     "op": "plan",
@@ -513,7 +513,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -523,7 +523,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_wide_scientific_integer",
     "op": "plan",
@@ -534,7 +534,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -544,7 +544,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_wide_scientific_integer",
     "op": "plan",
@@ -555,7 +555,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -593,7 +593,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_negative_scientific_integer",
     "op": "plan",
@@ -604,7 +604,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -614,7 +614,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_negative_scientific_integer",
     "op": "plan",
@@ -625,7 +625,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -635,7 +635,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":-1000000000000000000001},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_negative_scientific_integer",
     "op": "plan",
@@ -646,7 +646,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -656,7 +656,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":-1000000000000000000001},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_negative_scientific_integer",
     "op": "plan",
@@ -667,7 +667,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"source-v1\",\"orders\",0,\"9223372036854775807\"]": {
           "error": "codec: integer at byte 9 is outside the 64-bit range",
-          "fingerprint": "3548288475906304936",
+          "fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
           "published": false,
           "raw": "orders:0:9223372036854775807"
         }
@@ -705,7 +705,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_content_exponent_float",
     "op": "plan",
@@ -728,7 +728,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"append\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "append",
     "name": "append_value_exponent_float",
     "op": "plan",
@@ -751,7 +751,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":{\"total\":1e+21},\"value\":{\"status\":\"paid\"},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_content_exponent_float",
     "op": "plan",
@@ -774,7 +774,7 @@
   },
   {
     "error": null,
-    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"failure\":null}]",
+    "inputs_json": "[{\"source\":\"9:orders-v1:[\\\"source\\\",\\\"source-v1\\\",\\\"orders\\\",0,\\\"9223372036854775807\\\"]\",\"key\":\"9:orders-v1:[\\\"upsert\\\",\\\"tenant-7\\\",\\\"order-paid\\\"]\",\"stream\":\"order-42\",\"event_id\":\"order-paid\",\"sequence\":9223372036854775807,\"content\":\"OrderPaid\",\"value\":{\"total\":1e+21},\"raw\":\"orders:0:9223372036854775807\",\"raw_fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"failure\":null}]",
     "mode": "upsert",
     "name": "upsert_value_exponent_float",
     "op": "plan",

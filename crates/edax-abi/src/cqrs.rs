@@ -385,6 +385,11 @@ pub fn generation_key(generation: &str, parts: &str) -> Result<String, String> {
     edax_cqrs::namespace::key(generation, parts).map_err(crate::to_wire)
 }
 
+/// The raw fingerprint of a source record whose `raw` text is the whole record.
+pub fn ingest_raw_fingerprint(raw: &str) -> String {
+    edax_cqrs::ingest::raw_fingerprint(raw.as_bytes())
+}
+
 /// Source coordinates preserve the full signed 64-bit offset range.
 pub fn ingest_source_key(
     target: &str,

@@ -14,6 +14,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -35,7 +36,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
           "error": "codec: an ingested record holds a NUL character, which Postgres cannot store",
-          "fingerprint": "7939823787052692338",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
           "published": false,
           "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
         }
@@ -58,6 +59,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order\u000042",
@@ -79,7 +81,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]": {
           "error": "codec: an ingested record holds a NUL character, which Postgres cannot store",
-          "fingerprint": "7939823787052692338",
+          "fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
           "published": false,
           "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}"
         }
@@ -102,6 +104,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -149,6 +152,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -196,6 +200,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -227,7 +232,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
           "error": "rejected: append event identity has different content",
-          "fingerprint": "16272774568284487942",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
           "published": false,
           "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
         }
@@ -250,6 +255,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -270,6 +276,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -318,6 +325,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -338,6 +346,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
         "stream": "order-99",
@@ -360,7 +369,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]": {
           "error": "rejected: upsert key belongs to another aggregate stream",
-          "fingerprint": "18206241560219671062",
+          "fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
           "published": false,
           "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}"
         }
@@ -393,6 +402,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -440,6 +450,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -487,6 +498,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
         "stream": "order-42",
@@ -518,7 +530,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
           "error": "rejected: committed aggregate sequence has different content",
-          "fingerprint": "8110074433379768432",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
           "published": false,
           "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
         }
@@ -541,6 +553,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
         "stream": "order-42",
@@ -598,6 +611,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -618,6 +632,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
         "stream": "order-42",
@@ -640,7 +655,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
           "error": "rejected: aggregate sequence has different content in this batch",
-          "fingerprint": "8110074433379768432",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
           "published": false,
           "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
         }
@@ -673,6 +688,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
         "stream": "order-42",
@@ -693,6 +709,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -713,6 +730,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -762,6 +780,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -782,6 +801,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
         "stream": "order-42",
@@ -830,6 +850,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
+        "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
         "stream": "order-42",
@@ -881,6 +902,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":5,\"sequence\":4,\"status\":\"deleted\"}",
+        "raw_fingerprint": "fc6f2aefd38d93d7dca1660c829b0ce30b3640e2d22703f700259c6f1bafbfb9",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"5\"]",
         "stream": "order-42",
@@ -922,6 +944,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
         "stream": "order-99",
@@ -950,7 +973,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]": {
           "error": "rejected: upsert key belongs to another aggregate stream",
-          "fingerprint": "18206241560219671062",
+          "fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
           "published": false,
           "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}"
         }
@@ -973,6 +996,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1017,6 +1041,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":6,\"sequence\":null,\"status\":\"created\"}",
+        "raw_fingerprint": "5f0e2231da834a5a75b8043191858a1cbcbc654e15667990856d7dce694aa0f5",
         "sequence": null,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"6\"]",
         "stream": "order-42",
@@ -1038,7 +1063,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"6\"]": {
           "error": "codec: upsert requires a sequence in 0..=i64::MAX",
-          "fingerprint": "9899799324638554554",
+          "fingerprint": "5f0e2231da834a5a75b8043191858a1cbcbc654e15667990856d7dce694aa0f5",
           "published": false,
           "raw": "{\"offset\":6,\"sequence\":null,\"status\":\"created\"}"
         }
@@ -1061,6 +1086,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":7,\"sequence\":9223372036854775808,\"status\":\"created\"}",
+        "raw_fingerprint": "d3ed49dc36489070f7b04bf46f09021ddd56adf0d72db6bfae3cd338fcab6a65",
         "sequence": 9223372036854775808,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"7\"]",
         "stream": "order-42",
@@ -1082,7 +1108,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"7\"]": {
           "error": "codec: upsert requires a sequence in 0..=i64::MAX",
-          "fingerprint": "14205633972171552479",
+          "fingerprint": "d3ed49dc36489070f7b04bf46f09021ddd56adf0d72db6bfae3cd338fcab6a65",
           "published": false,
           "raw": "{\"offset\":7,\"sequence\":9223372036854775808,\"status\":\"created\"}"
         }
@@ -1105,6 +1131,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":8,\"sequence\":0,\"status\":\"created\"}",
+        "raw_fingerprint": "9c6c6543b7a220b13ebdf79729c315f2b37b604895742dd2024d929fd24ddd22",
         "sequence": 0,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"8\"]",
         "stream": "order-42",
@@ -1152,6 +1179,7 @@
         "failure": "codec: order status is malformed",
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1172,6 +1200,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
         "stream": "order-99",
@@ -1194,7 +1223,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
           "error": "codec: order status is malformed",
-          "fingerprint": "16272774568284487942",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
           "published": false,
           "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
         }
@@ -1227,6 +1256,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1247,6 +1277,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
         "stream": "order-99",
@@ -1262,7 +1293,7 @@
     "rejected": {
       "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
         "error": "codec: order status is malformed",
-        "fingerprint": "16272774568284487942",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "published": false,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
       }
@@ -1276,7 +1307,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
           "error": "codec: order status is malformed",
-          "fingerprint": "16272774568284487942",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
           "published": false,
           "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
         }
@@ -1309,6 +1340,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1329,6 +1361,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":3,\"sequence\":4,\"status\":\"paid\"}",
+        "raw_fingerprint": "eecd52a48ef07f613dad7f82d439f7028f0a3964a6015fd024802e0901566dbf",
         "sequence": 4,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"3\"]",
         "stream": "order-99",
@@ -1344,7 +1377,7 @@
     "rejected": {
       "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
         "error": "codec: order status is malformed",
-        "fingerprint": "16272774568284487942",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "published": true,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
       }
@@ -1358,7 +1391,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
           "error": "codec: order status is malformed",
-          "fingerprint": "16272774568284487942",
+          "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
           "published": true,
           "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
         }
@@ -1391,6 +1424,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -1411,6 +1445,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
         "stream": "order-42",
@@ -1431,6 +1466,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
         "stream": "order-42",
@@ -1454,7 +1490,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
           "error": "rejected: aggregate sequence has different content in this batch",
-          "fingerprint": "8110074433379768432",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
           "published": false,
           "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
         }
@@ -1487,6 +1523,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":1,\"sequence\":2,\"status\":\"paid\"}",
+        "raw_fingerprint": "19f92d5a4b4febef36fbeb5dd8ce6d141499868a887e37049d0625ae81ba1899",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"1\"]",
         "stream": "order-42",
@@ -1507,6 +1544,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}",
+        "raw_fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "sequence": 2,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]",
         "stream": "order-42",
@@ -1527,6 +1565,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":2,\"sequence\":3,\"status\":\"shipped\"}",
+        "raw_fingerprint": "003a29fd148f4cb835ec1c82769098e0803a4feb000db1fcd8ea422e2d62fd06",
         "sequence": 3,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"2\"]",
         "stream": "order-42",
@@ -1542,7 +1581,7 @@
     "rejected": {
       "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
         "error": "rejected: aggregate sequence has different content in this batch",
-        "fingerprint": "8110074433379768432",
+        "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
         "published": false,
         "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
       }
@@ -1567,7 +1606,7 @@
       "rejections": {
         "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"4\"]": {
           "error": "rejected: aggregate sequence has different content in this batch",
-          "fingerprint": "8110074433379768432",
+          "fingerprint": "3e177b7c7ccc58dd0c1747d4ad4a6ea0fd133c0fdd517c28746b73a60c8c8a17",
           "published": false,
           "raw": "{\"offset\":4,\"sequence\":2,\"status\":\"cancelled\"}"
         }
@@ -1590,6 +1629,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "changed-source-record",
+        "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1605,7 +1645,7 @@
     "rejected": {
       "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]": {
         "error": "codec: order status is malformed",
-        "fingerprint": "16272774568284487942",
+        "fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "published": false,
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}"
       }
@@ -1628,6 +1668,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1648,6 +1689,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "changed-source-record",
+        "raw_fingerprint": "f6b6524e4185506ad0077f6fc279180bd56b553e0e3a5dbd479fb398316a7356",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -1942,6 +1984,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2086,6 +2129,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2120,6 +2164,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9007199254740992\"]",
         "stream": "order-42",
@@ -2154,6 +2199,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775807\"]",
         "stream": "order-42",
@@ -2188,6 +2234,7 @@
         "failure": null,
         "key": "9:orders-v2:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2222,6 +2269,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"other-cluster\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2256,6 +2304,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\", \"acme\", \"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2290,6 +2339,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "",
@@ -2324,6 +2374,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2358,6 +2409,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",2147483648,\"0\"]",
         "stream": "order-42",
@@ -2392,6 +2444,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",42,\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2426,6 +2479,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2460,6 +2514,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2470,6 +2525,76 @@
       }
     ],
     "name": "empty_event_id_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "EEB1FE2DDE07DE4405DDF8B7520559D586ED87C4BE72C72A433760EBCF1F0253",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42",
+        "value": {
+          "order_id": "order-42",
+          "status": "created"
+        }
+      }
+    ],
+    "name": "uppercase_raw_fingerprint_refused",
+    "op": "validate",
+    "want": null
+  },
+  {
+    "contract": {
+      "generation": "orders-v1",
+      "mapper_id": "order-state-v1",
+      "mode": "upsert",
+      "source_incarnation": "cluster-a/orders-v1"
+    },
+    "error": "bad_handle: ingestion raw fingerprint must be a SHA-256 digest in lowercase hex",
+    "inputs": [
+      {
+        "content": {
+          "aggregate_id": "order-42",
+          "name": "OrderState",
+          "sequence": 1,
+          "status": "created",
+          "version": 1
+        },
+        "event_id": "order-42-event-0",
+        "failure": null,
+        "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
+        "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "0123456789abcdef",
+        "sequence": 1,
+        "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
+        "stream": "order-42",
+        "value": {
+          "order_id": "order-42",
+          "status": "created"
+        }
+      }
+    ],
+    "name": "short_raw_fingerprint_refused",
     "op": "validate",
     "want": null
   },
@@ -2494,6 +2619,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"order-42-event-0\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2528,6 +2654,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"append\",\"acme\",\"different-event\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"0\"]",
         "stream": "order-42",
@@ -2562,6 +2689,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,0]",
         "stream": "order-42",
@@ -2596,6 +2724,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"00\"]",
         "stream": "order-42",
@@ -2630,6 +2759,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"+1\"]",
         "stream": "order-42",
@@ -2664,6 +2794,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-1\"]",
         "stream": "order-42",
@@ -2698,6 +2829,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"-0\"]",
         "stream": "order-42",
@@ -2732,6 +2864,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\" 1\"]",
         "stream": "order-42",
@@ -2766,6 +2899,7 @@
         "failure": null,
         "key": "9:orders-v1:[\"upsert\",\"acme\",\"order-42\"]",
         "raw": "{\"offset\":0,\"sequence\":1,\"status\":\"created\"}",
+        "raw_fingerprint": "eeb1fe2dde07de4405ddf8b7520559d586ed87c4be72c72a433760ebcf1f0253",
         "sequence": 1,
         "source": "9:orders-v1:[\"source\",\"cluster-a/orders-v1\",\"orders\",0,\"9223372036854775808\"]",
         "stream": "order-42",

@@ -33,6 +33,8 @@ type input struct {
 	Content  eventEnvelope `json:"content"`
 	Value    *order        `json:"value"`
 	Raw      string        `json:"raw"`
+	// RawFingerprint identifies the original source record across full and stub retention.
+	RawFingerprint string `json:"raw_fingerprint"`
 }
 
 func main() {
@@ -91,6 +93,9 @@ func run() (err error) {
 				return err
 			}
 			originals[i].Raw = string(raw)
+			if originals[i].RawFingerprint, err = kernel.IngestRawFingerprint(originals[i].Raw); err != nil {
+				return err
+			}
 		}
 		encoded, err := json.Marshal(originals)
 		if err != nil {

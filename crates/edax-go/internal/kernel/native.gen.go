@@ -1203,6 +1203,16 @@ func IngestPlan(mode string, inputs string, stored string, rejected string) (str
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// IngestRawFingerprint calls the shared kernel.
+func IngestRawFingerprint(raw string) (string, error) {
+	var zero string
+	if err := checkNativeString("raw", raw); err != nil {
+		return zero, err
+	}
+	nativeValue := native.IngestRawFingerprint(raw)
+	return nativeValue, nil
+}
+
 // IngestRowKey calls the shared kernel.
 func IngestRowKey(manifest string, identity string) (string, error) {
 	var zero string

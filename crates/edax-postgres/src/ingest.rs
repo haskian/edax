@@ -134,11 +134,11 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
     // A target's keys share its prefix, which ends in ':'; the next character, ';', bounds the
     // range, so the key index serves it on every supported server version.
     let in_target = |column: &str, n: u8| format!("{column} >= ${n}::text AND {column} < left(${n}::text, -1) || ';'");
-    // A fingerprinted input needs only the stored fingerprint: the plan takes the current raw
-    // from the input, so the stored raw stays on the server.
+    // The plan takes a durable rejection's raw from the verified replay, so the stored raw stays on
+    // the server.
     sql.insert(
         "read_rejections_for_plan".to_owned(),
-        format!("SELECT saved.key, (CASE WHEN input.fingerprinted THEN jsonb_set(saved.value, '{{raw}}', '\"\"') ELSE saved.value END)::text AS value FROM {rejections} AS saved JOIN (SELECT DISTINCT ON (value->>'source') value->>'source' AS source, (value->>'fingerprinted')::boolean AS fingerprinted FROM jsonb_array_elements($1::jsonb) WITH ORDINALITY AS inputs(value, position) ORDER BY value->>'source', position) AS input ON saved.key = input.source ORDER BY saved.key FOR UPDATE OF saved"),
+        format!("SELECT key, jsonb_set(value, '{{raw}}', '\"\"')::text AS value FROM {rejections} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key FOR UPDATE"),
     );
     sql.insert(
         "pending".to_owned(),
