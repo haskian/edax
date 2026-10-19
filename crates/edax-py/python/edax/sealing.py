@@ -420,6 +420,13 @@ def provider_deadline(timeout_s: float | None) -> Iterator[None]:
         _provider_deadline.reset(token)
 
 
+@dataclass
+class _ProviderCall:
+    task: asyncio.Future[Any]
+    released: asyncio.Event = field(default_factory=asyncio.Event)
+    abandoned: bool = False
+
+
 class _ProviderCalls:
     """Own provider tasks until they actually finish, including cancellation-suppressing calls.
 
@@ -430,29 +437,52 @@ class _ProviderCalls:
     _limit = 1024
 
     def __init__(self) -> None:
-        self._pending: dict[tuple[Any, ...], asyncio.Future[Any]] = {}
+        self._pending: dict[tuple[Any, ...], _ProviderCall] = {}
 
     async def call(
         self, key: tuple[Any, ...], call: Callable[[], Awaitable[T]], timeout_s: float | None
     ) -> T:
-        previous = self._pending.get(key)
-        if previous is not None and not previous.done():
-            raise KeyUnavailable("an earlier key provider call is still unresolved")
-        if previous is not None:
-            self._pending.pop(key, None)
+        loop = asyncio.get_running_loop()
+        deadline = _provider_deadline.get()
+        if timeout_s is not None:
+            own_deadline = loop.time() + timeout_s
+            deadline = own_deadline if deadline is None else min(deadline, own_deadline)
+
+        def remaining() -> float | None:
+            if deadline is None:
+                return None
+            budget = deadline - loop.time()
+            if budget <= 0:
+                raise KeyUnavailable("key provider call exceeded its deadline")
+            return budget
+
+        while (previous := self._pending.get(key)) is not None:
+            if previous.task.done():
+                self._pending.pop(key, None)
+                break
+            if previous.abandoned:
+                raise KeyUnavailable("an earlier key provider call is still unresolved")
+            # Wait for ownership, not its result: status must be fresh and reservations never shared.
+            wait_budget = remaining()
+            waiter = asyncio.create_task(previous.released.wait())
+            try:
+                # wait_for can swallow a concurrent cancellation on Python 3.10.
+                done, _ = await asyncio.wait((waiter,), timeout=wait_budget)
+                if not done:
+                    raise KeyUnavailable("key provider call exceeded its deadline")
+                waiter.result()
+            finally:
+                waiter.cancel()
+                await asyncio.gather(waiter, return_exceptions=True)
         if len(self._pending) >= self._limit:
             raise KeyUnavailable("too many unresolved key provider calls")
-        deadline = _provider_deadline.get()
-        if deadline is not None:
-            remaining = max(0.0, deadline - asyncio.get_running_loop().time())
-            timeout_s = remaining if timeout_s is None else min(timeout_s, remaining)
-        if timeout_s is not None and timeout_s <= 0:
-            raise KeyUnavailable("key provider call exceeded its deadline")
+        timeout_s = remaining()
         task = asyncio.ensure_future(call())
-        self._pending[key] = task
+        pending = _ProviderCall(task)
+        self._pending[key] = pending
 
         def finished(done: asyncio.Future[Any]) -> None:
-            if self._pending.get(key) is done:
+            if self._pending.get(key) is pending:
                 self._pending.pop(key, None)
             if not done.cancelled():
                 done.exception()  # retrieve a late error; late key material is never reused
@@ -461,12 +491,16 @@ class _ProviderCalls:
         try:
             done, _ = await asyncio.wait((task,), timeout=timeout_s)
             if not done:
+                pending.abandoned = True
                 task.cancel()
                 raise KeyUnavailable("key provider call exceeded its deadline")
             return task.result()
         except asyncio.CancelledError:
+            pending.abandoned = True
             task.cancel()
             raise
+        finally:
+            pending.released.set()
 
 
 class _BatchKeys:
