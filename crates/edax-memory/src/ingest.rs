@@ -8,6 +8,7 @@ use edax_cqrs::ingest::{self, Contract, Input, Plan, Rejection, Stored};
 
 #[derive(Default)]
 struct State {
+    horizon: i64,
     contracts: BTreeMap<String, Contract>,
     rows: BTreeMap<String, Stored>,
     rejected: BTreeMap<String, Rejection>,
@@ -23,15 +24,31 @@ impl MemoryIngest {
     /// Decide and apply a whole batch under one lock.
     pub fn commit(&self, contract: &Contract, inputs: &[Input]) -> Result<Plan, Error> {
         let mut state = lock(&self.state);
+        let prepared = ingest::partition::prepare(contract, inputs)?;
+        let inputs = prepared.as_ref();
         ingest::check_sealed(contract, inputs)?;
         ingest::bind_contract(state.contracts.get(&contract.generation), contract)?;
-        let result = ingest::plan(&contract.mode, inputs, &state.rows, &state.rejected)?;
+        let result = ingest::partition::plan(contract, inputs, &state.rows, &state.rejected, state.horizon)?;
         state.contracts.insert(contract.generation.clone(), contract.clone());
         state.rows.extend(result.writes.clone());
         for (key, rejection) in &result.rejections {
             state.rejected.entry(key.clone()).or_insert_with(|| rejection.clone());
         }
         Ok(result)
+    }
+
+    /// Advance the shared physical store's floor. A new generation inherits it.
+    pub fn advance_horizon(&self, contract: &Contract, to: i64) -> Result<i64, Error> {
+        ingest::bind_contract(None, contract)?;
+        if contract.partition.is_none() {
+            return Err(Error::bad_handle("ingestion target is not partitioned"));
+        }
+        let to = ingest::partition::horizon(to)?;
+        let mut state = lock(&self.state);
+        ingest::bind_contract(state.contracts.get(&contract.generation), contract)?;
+        state.contracts.insert(contract.generation.clone(), contract.clone());
+        state.horizon = state.horizon.max(to);
+        Ok(state.horizon)
     }
 
     /// A committed row, including its deletion marker and permanent stream owner.
@@ -96,6 +113,7 @@ mod tests {
             source_incarnation: "cluster-a".into(),
             mapper_id: "orders-v1".into(),
             at_rest: "sealed".into(),
+            partition: None,
         };
         let original = Input {
             source: ingest::source_key("orders-v1", "cluster-a", "orders", 0, 1).unwrap(),
@@ -150,6 +168,7 @@ mod tests {
             source_incarnation: "cluster-a".into(),
             mapper_id: "people-v1".into(),
             at_rest: "plaintext".into(),
+            partition: None,
         };
         let input = |offset: i64, subject: &str, row: &str, failure: Option<&str>| Input {
             source: ingest::source_key("people-v1", "cluster-a", "people", 0, offset).unwrap(),

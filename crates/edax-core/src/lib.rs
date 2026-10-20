@@ -35,7 +35,7 @@ mod version;
 pub use backoff::{backoff_millis, Backoff};
 pub use clock::current_timestamp;
 pub use error::{is_terminal, Error, ErrorCode};
-pub use guid::{guid, guid_simple};
+pub use guid::{guid, guid_simple, uuid7_micros};
 pub use hash::{fnv1a32, fnv1a64, payload_hash};
 pub use key::{
     check_subject, check_tenancy, check_tenant, guard_key, scoped, tenant_key, GuardKind, Tenancy, SUBJECT_MAX,

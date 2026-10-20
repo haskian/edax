@@ -2259,6 +2259,15 @@ int32_t edax_memory_idempotency_store_put_raw(EDAXAlefHandle this_,
 void edax_memory_ingestion_free(EDAXAlefHandle handle);
 
 /**
+ * Advance this database's admission floor after validating its target contract.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int64_t edax_memory_ingestion_advance_horizon(EDAXAlefHandle this_,
+                                              const char *manifest,
+                                              int64_t to);
+
+/**
  * Commit original records and durable rejection decisions together.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -5303,6 +5312,13 @@ int32_t edax_ingest_bind_contract(const char *previous,
                                   const char *expected);
 
 /**
+ * Validate a table-wide admission floor without host clock arithmetic.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int64_t edax_ingest_check_horizon(int64_t horizon);
+
+/**
  * Validate the inputs, then refuse what a sealed target would store as plaintext. A sink calls it
  * after sealing and before its transaction.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
@@ -5383,6 +5399,42 @@ char *edax_ingest_outcome_names(void);
  * with `edax_ingest_outcome_names`.
  */
 uintptr_t edax_ingest_outcome_names_len(void);
+
+/**
+ * Exact UUIDv7 coordinates as decimal strings indexed by canonical row key.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_partition_coordinates(const char *manifest,
+                                        const char *keys);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_partition_coordinates`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_partition_coordinates`.
+ */
+uintptr_t edax_ingest_partition_coordinates_len(const char *_manifest,
+                                                const char *_keys);
+
+/**
+ * Preparation failures in input order, before provider acquisition.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_partition_failures(const char *manifest,
+                                     const char *inputs);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_partition_failures` on
+ * this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_partition_failures`.
+ */
+uintptr_t edax_ingest_partition_failures_len(const char *_manifest,
+                                             const char *_inputs);
 
 /**
  * Compute atomic ingestion decisions from original inputs and locked durable state.
@@ -5522,6 +5574,30 @@ uintptr_t edax_ingest_source_key_len(const char *_target,
                                      const char *_topic,
                                      int32_t _partition,
                                      int64_t _offset);
+
+/**
+ * Validate and decide an ingestion batch with its table-wide admission floor.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_ingest_target_plan(const char *manifest,
+                              const char *inputs,
+                              const char *stored,
+                              const char *rejected,
+                              int64_t horizon);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_ingest_target_plan` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_ingest_target_plan`.
+ */
+uintptr_t edax_ingest_target_plan_len(const char *_manifest,
+                                      const char *_inputs,
+                                      const char *_stored,
+                                      const char *_rejected,
+                                      int64_t _horizon);
 
 /**
  * Validate all source and target identities before a sink acquires locks.
@@ -6732,6 +6808,29 @@ char *edax_postgres_page(const char *spec,
  */
 uintptr_t edax_postgres_page_len(const char *_spec,
                                  const char *_rows);
+
+/**
+ * Diagnose a partitioned payload write without treating ordinary CHECK failures as transient.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_partitioned_ingest_error(const char *sqlstate,
+                                             const char *constraint,
+                                             const char *table,
+                                             const char *message);
+
+/**
+ * Return the byte length of the C string most recently returned by
+ * `edax_postgres_partitioned_ingest_error` on this thread. Returns 0 when the primary call returned
+ * null or failed before producing a string. Enables safe slice construction in Zig and Java FFM Panama
+ * without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_partitioned_ingest_error`.
+ */
+uintptr_t edax_postgres_partitioned_ingest_error_len(const char *_sqlstate,
+                                                     const char *_constraint,
+                                                     const char *_table,
+                                                     const char *_message);
 
 /**
  * The read of a projection row, holding it when `locked`. See `edax_postgres.rows.projection_get`.

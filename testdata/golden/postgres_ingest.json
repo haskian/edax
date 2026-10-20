@@ -162,7 +162,7 @@
   },
   {
     "config": "{\"prefix\":\"my_\"}",
-    "error": "bad_handle: postgres ingestion config: unknown field `prefix`, expected `schema` or `names` at line 1 column 9",
+    "error": "bad_handle: postgres ingestion config: unknown field `prefix`, expected one of `schema`, `names`, `partitioned` at line 1 column 9",
     "name": "unknown_field",
     "op": "statements",
     "want": null

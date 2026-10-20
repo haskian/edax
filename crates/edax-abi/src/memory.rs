@@ -1244,6 +1244,13 @@ pub fn memory_ingestion() -> MemoryIngestion {
 }
 
 impl MemoryIngestion {
+    /// Advance this database's admission floor after validating its target contract.
+    pub fn advance_horizon(&self, manifest: &str, to: i64) -> Result<i64, String> {
+        self.inner
+            .advance_horizon(&crate::read_json(manifest)?, to)
+            .map_err(crate::to_wire)
+    }
+
     /// Commit original records and durable rejection decisions together.
     pub fn commit(&self, manifest: &str, inputs: &str) -> Result<String, String> {
         let contract = crate::read_json::<edax_cqrs::ingest::Contract>(manifest)?;

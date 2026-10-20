@@ -358,11 +358,11 @@ class KafkaIngestion:
 
     def _fetched(self, task: asyncio.Task[Any]) -> None:
         # A cancelled fetch retains its reservation until the client actually releases the data.
+        # No wakeup: the loop awaits its own fetch, and waking it would only make it spin.
         self._fetch_reserved = 0
         if not self._running and self._fetch is task:
             self._fetch = None
             self._fetch_partition = None
-        self._changed.set()
 
     async def _keepalive(self) -> None:
         if self._fetch is not None and not self._fetch.done():
@@ -460,6 +460,12 @@ class KafkaIngestion:
                 decoded.id,
                 decoded.sequence,
             )
+            if target.partition is not None:
+                failures = _json.decode(
+                    _native.ingest_partition_failures(target.manifest, _json.encode([built()]))
+                )
+                if failures[0] is not None:
+                    raise errors.from_wire(failures[0])
             canonical = self._canonical.encode(decoded)
             if len(canonical) > self.settings.max_mapped_bytes:
                 raise CodecError("decoded event exceeds max_mapped_bytes")
@@ -656,7 +662,7 @@ class KafkaIngestion:
                                     self.publish_rejection(Rejection.saved(item.source, record))
                                 )
                                 confirmed[item.source] = record["fingerprint"]
-                        elif outcome != "accepted":
+                        elif outcome not in ("accepted", "expired"):
                             raise BadHandle("sink returned an unknown ingestion outcome")
                     # One statement marks every rejection this batch published.
                     await self._operation(self.sink.published(confirmed))
@@ -800,6 +806,9 @@ class KafkaIngestion:
         try:
             await self._assign(self.client.assignment())
             while not stop.is_set():
+                # Clear before the pass, so a wakeup that arrives during it (a finished worker,
+                # a rebalance, a stop) ends the wait below at once instead of being lost.
+                self._changed.clear()
                 await self._idle()
                 progressed = False
                 last_admitted: TopicPartition | None = None
@@ -833,7 +842,6 @@ class KafkaIngestion:
                     self._rotation.rotate(-self._rotation.index(last_admitted) - 1)
                 if not progressed and not stop.is_set():
                     await self._keepalive()
-                    self._changed.clear()
                     await _kafka.wait_event(self._changed, self.settings.flush_ms / 1000)
             for tp, part in tuple(self._parts.items()):
                 self._launch(tp, part)

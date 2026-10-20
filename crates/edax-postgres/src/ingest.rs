@@ -11,6 +11,8 @@ use serde_json::Value;
 
 use crate::schema::identifier;
 
+mod partition;
+
 const ROLES: [&str; 3] = ["ingest_events", "ingest_state", "ingest_rejections"];
 
 /// Opaque JSON parameters for the three ingestion write statements. The host must pass these
@@ -60,6 +62,7 @@ pub fn write_plan(
 struct Tables {
     schema: String,
     names: BTreeMap<&'static str, String>,
+    partitioned: bool,
 }
 
 impl Tables {
@@ -84,6 +87,8 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
         schema: String,
         #[serde(default)]
         names: BTreeMap<String, String>,
+        #[serde(default)]
+        partitioned: bool,
     }
     let config: Config = serde_json::from_str(config_json)
         .map_err(|error| Error::bad_handle(format_args!("postgres ingestion config: {error}")))?;
@@ -102,6 +107,11 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
             .cloned()
             .unwrap_or_else(|| format!("edax_{role}"));
         let name = identifier("table name", &name)?;
+        if config.partitioned && name == partition::CONTROL_TABLE {
+            return Err(Error::bad_handle(
+                "postgres ingestion table name is reserved for partition control",
+            ));
+        }
         if names.values().any(|taken| *taken == name) {
             return Err(Error::bad_handle(format_args!(
                 "postgres ingestion roles need distinct tables, {name:?} is named twice"
@@ -112,12 +122,13 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
     Ok(Tables {
         schema: identifier("schema", &config.schema)?,
         names,
+        partitioned: config.partitioned,
     })
 }
 
 /// Parameterized statements for the standalone ingestion tables.
 ///
-/// No statement takes an advisory lock. A plan read locks the rows it finds (`FOR UPDATE`, in key
+/// Ordinary ingestion takes no advisory lock. A plan read locks the rows it finds (`FOR UPDATE`, in key
 /// order), so a concurrent writer of the same key waits. Keys it does not find are inserted without
 /// `ON CONFLICT`, so a concurrent first insert fails with 23505 and the batch retries against the
 /// committed row. Reads take JSON key arrays; writes take JSON objects mapping keys to records.
@@ -130,6 +141,8 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
 /// target prefix and a textual limit. `mark_published` takes `{source: fingerprint}` and the exact
 /// target prefix, and returns how many rows it marked. `check` returns one boolean column,
 /// `compatible`. No statement creates tables implicitly.
+/// Opt-in `partitioned` statements add a transaction advisory gate per physical events table,
+/// a durable floor, and exact partition coordinates; ordinary statements remain unchanged.
 pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> {
     let tables = tables(config_json)?;
     let mut sql = BTreeMap::new();
@@ -137,9 +150,13 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
     let mut checks = Vec::new();
     for role in ROLES {
         let table = tables.qualified(role);
-        ddl.push_str(&format!(
-            "CREATE TABLE {table} (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\n"
-        ));
+        if tables.partitioned && role == "ingest_events" {
+            ddl.push_str(&partition::events_ddl(&table));
+        } else {
+            ddl.push_str(&format!(
+                "CREATE TABLE {table} (key text COLLATE \"C\" PRIMARY KEY, value jsonb NOT NULL);\n"
+            ));
+        }
         let short = role.strip_prefix("ingest_").unwrap_or(role);
         sql.insert(
             format!("read_{short}"),
@@ -168,16 +185,22 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
                 format!("UPDATE {table} AS target SET value = changed.value FROM jsonb_each($1::jsonb) AS changed(key, value) WHERE target.key = changed.key"),
             );
         }
-        checks.push(key_value_check_named(
-            &tables.schema,
-            tables.names.get(role).map_or("", String::as_str),
-        ));
+        let check = if tables.partitioned && role == "ingest_events" {
+            partition::events_check
+        } else {
+            key_value_check_named
+        };
+        checks.push(check(&tables.schema, tables.names.get(role).map_or("", String::as_str)));
     }
     let rejections = tables.qualified("ingest_rejections");
     // Published decisions stay forever; paging must not scan their accumulated history.
     ddl.push_str(&format!(
         "CREATE INDEX ON {rejections} (key) WHERE NOT (value->>'published')::boolean;\n"
     ));
+    if tables.partitioned {
+        partition::configure(&tables, &mut sql, &mut ddl);
+        checks.push(key_value_check_named(&tables.schema, partition::CONTROL_TABLE));
+    }
     sql.insert("ddl".to_owned(), ddl);
     sql.insert(
         "check".to_owned(),

@@ -120,8 +120,9 @@ rollback/isolation. Add storage/provider-specific tests for commit uncertainty, 
 erasure races. Passing the kit is evidence for its clauses, not proof of every database failure mode.
 
 The reference Postgres sink still uses key/value tables and key lookup. An application can add
-allowed generated columns over `public` and query them itself. A time-partitioned custom payload
-table needs a separate global identity/ownership mechanism: deleting a payload must not silently
+allowed generated columns over `public` and query them itself.
+[Partitioned append ingestion](partitioned-ingestion.md) adds opt-in UUIDv7 placement and an
+explicit admission floor. Other custom partition layouts need a global identity/ownership mechanism: deleting a payload must not silently
 delete its replay protection. Retention is an application policy. Choose a replay horizon and keep
 receipts/tombstones for it; retaining only payload partitions cannot preserve permanent deduplication.
 SQL cannot filter or aggregate sealed `private` values. Range queries, indexes, retention jobs and

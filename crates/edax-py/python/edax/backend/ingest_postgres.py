@@ -11,7 +11,7 @@ from typing import Any, TypeVar, cast
 
 from .. import _json, _native
 from ..erasure import ScopeCleanup
-from ..errors import BadHandle
+from ..errors import BadHandle, from_wire
 from ..ingestion import (
     BatchInput,
     BatchResult,
@@ -31,18 +31,22 @@ __all__ = ["PostgresIngestionSink", "reference_ingestion_ddl"]
 T = TypeVar("T")
 
 
-def _statements(schema: str, tables: Mapping[str, str] | None) -> dict[str, str]:
+def _statements(schema: str, tables: Mapping[str, str] | None, partitioned: bool = False) -> dict[str, str]:
     return cast(
         dict[str, str],
         _json.decode(
-            _native.postgres_ingest_statements(_json.encode({"schema": schema, "names": dict(tables or {})}))
+            _native.postgres_ingest_statements(
+                _json.encode({"schema": schema, "names": dict(tables or {}), "partitioned": partitioned})
+            )
         ),
     )
 
 
-def reference_ingestion_ddl(schema: str = "public", tables: Mapping[str, str] | None = None) -> str:
+def reference_ingestion_ddl(
+    schema: str = "public", tables: Mapping[str, str] | None = None, *, partitioned: bool = False
+) -> str:
     """DDL for the host's migration tool. The sink never creates tables."""
-    return _statements(schema, tables)["ddl"]
+    return _statements(schema, tables, partitioned)["ddl"]
 
 
 class PostgresIngestionSink:
@@ -68,7 +72,7 @@ class PostgresIngestionSink:
         self._target = target
         self.sealing = sealing
         self._role = "events" if target.mode == "append" else "state"
-        self._sql = _statements(schema, tables)
+        self._sql = _statements(schema, tables, target.partition is not None)
         self._manifest_key = target.key(["manifest"])
         self._checked = False
         self._bound = False
@@ -103,10 +107,13 @@ class PostgresIngestionSink:
 
     async def _bind(self, conn: PgConnection) -> None:
         await self._check(conn)
+        if self.target.partition:
+            # Gate before any manifest insert, so writers and advancement lock in one order.
+            await self._gate(conn)
         if self._bound:
             return
         # Staging never caches this: an outer rollback can discard either manifest.
-        for role in (self._role, "rejections"):
+        for role in ("manifest", "rejections") if self.target.partition else (self._role, "rejections"):
             manifests = await self._read(conn, role, [self._manifest_key])
             previous = manifests.get(self._manifest_key)
             _native.ingest_bind_contract(_json.encode(previous), self.target.manifest)
@@ -124,7 +131,10 @@ class PostgresIngestionSink:
             raise failure.cause from failure
 
     async def _read(self, conn: PgConnection, role: str, keys: Sequence[str]) -> dict[str, Any]:
-        rows = await self._call(conn.fetch(self._sql[f"read_{role}"], _json.encode(keys)))
+        parameter = _json.encode(keys)
+        if self.target.partition and role in ("events", "events_metadata"):
+            parameter = _native.ingest_partition_coordinates(self.target.manifest, parameter)
+        rows = await self._call(conn.fetch(self._sql[f"read_{role}"], parameter))
         return {row["key"]: _json.decode(row["value"]) for row in rows}
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
@@ -155,7 +165,36 @@ class PostgresIngestionSink:
             handle.aborted = True
             raise
 
+    async def _gate(self, conn: PgConnection, *, exclusive: bool = False) -> None:
+        await self._call(conn.execute(self._sql["gate_exclusive" if exclusive else "gate_shared"]))
+
+    async def _floor(self, conn: PgConnection, *, exclusive: bool = False) -> int:
+        """Read the floor under the gate this transaction already holds."""
+        floor = await self._call(conn.fetchval(self._sql["floor_write" if exclusive else "floor_read"]))
+        if floor is None:
+            raise BadHandle("partition control row is missing or bound to another rejection table")
+        return _native.ingest_check_horizon(int(floor))
+
+    async def advance_horizon(self, to: int) -> int:
+        """Raise the table-wide floor. Drop only complete older partitions after confirmed commit."""
+        if self.target.partition is None:
+            raise BadHandle("ingestion target is not partitioned")
+        to = _native.ingest_check_horizon(to)
+
+        async def advance(conn: PgConnection) -> int:
+            await self._check(conn)
+            await self._gate(conn, exclusive=True)
+            await self._floor(conn, exclusive=True)
+            await self._bind(conn)
+            result = await self._call(conn.fetchval(self._sql["floor_advance"], str(to)))
+            if result is None:
+                raise BadHandle("partition control row is missing")
+            return int(result)
+
+        return await self._transactor.run_owned(advance, op="ingest")
+
     async def _apply(self, conn: PgConnection, originals: Sequence[BatchInput]) -> BatchResult:
+        floor = await self._floor(conn) if self.target.partition else 0
         encoded = _json.encode(originals)
         sources = _json.encode([item.source for item in originals])
         keys = [item.key for item in originals]
@@ -166,9 +205,19 @@ class PostgresIngestionSink:
         rows = await self._call(conn.fetch(self._sql["read_rejections_for_plan"], sources))
         rejected = {row["key"]: _json.decode(row["value"]) for row in rows}
         stored_text, rejected_text = _json.encode(stored), _json.encode(rejected)
-        plan_text = _native.ingest_plan(self.target.mode, encoded, stored_text, rejected_text)
+        if self.target.partition:
+            plan_text = _native.ingest_target_plan(
+                self.target.manifest, encoded, stored_text, rejected_text, floor
+            )
+        else:
+            plan_text = _native.ingest_plan(self.target.mode, encoded, stored_text, rejected_text)
         writes: dict[str, str] = _json.decode(
             _native.postgres_ingest_write_plan(plan_text, stored_text, rejected_text)
+        )
+        coordinates = (
+            _native.ingest_partition_coordinates(self.target.manifest, _json.encode(keys))
+            if self.target.partition
+            else None
         )
         # Preserve the kernel's exact-number parameter text across the I/O boundary.
         for parameter, statement in (
@@ -177,7 +226,23 @@ class PostgresIngestionSink:
             ("rejections", "insert_rejections"),
         ):
             if writes[parameter] != "{}":
-                await self._call(conn.execute(self._sql[statement], writes[parameter]))
+                if coordinates is not None and parameter != "rejections":
+                    try:
+                        await self._call(conn.execute(self._sql[statement], writes[parameter], coordinates))
+                    except Exception as error:
+                        sqlstate = getattr(error, "sqlstate", None)
+                        if sqlstate is None:
+                            raise
+                        raise from_wire(
+                            _native.postgres_partitioned_ingest_error(
+                                sqlstate,
+                                getattr(error, "constraint_name", None) or "",
+                                getattr(error, "table_name", None) or "",
+                                str(error),
+                            )
+                        ) from error
+                else:
+                    await self._call(conn.execute(self._sql[statement], writes[parameter]))
         return BatchResult.from_json(plan_text)
 
     def cleanup(

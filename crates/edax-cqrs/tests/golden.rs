@@ -2273,6 +2273,7 @@ fn ingest_cases() -> Vec<Value> {
         source_incarnation: "cluster-a/orders-v1".into(),
         mapper_id: "order-state-v1".into(),
         at_rest: "sealed".into(),
+        partition: None,
     };
     for (name, previous, expected) in [
         ("bind_new_target", None, contract.clone()),

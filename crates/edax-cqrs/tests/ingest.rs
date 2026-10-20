@@ -85,6 +85,7 @@ fn row_keys_match_validated_input_identities() {
             source_incarnation: "orders-v1".into(),
             mapper_id: "orders-mapper-v1".into(),
             at_rest: "sealed".into(),
+            partition: None,
         };
         let mut input = event(0, 1, "open");
         let row_id = if mode == "append" { &input.event_id } else { "order-42" };
@@ -471,6 +472,7 @@ fn handmade_identity_cannot_bypass_cleanup_scope_validation() {
         source_incarnation: "orders-v1".into(),
         mapper_id: "orders-v1".into(),
         at_rest: "plaintext".into(),
+        partition: None,
     };
     for (tenant, subject) in [
         ("tenant-7".to_owned(), "s".repeat(300)),
@@ -506,6 +508,7 @@ fn empty_producer_identity_is_record_data_not_wiring() {
         source_incarnation: "orders-v1".into(),
         mapper_id: "orders".into(),
         at_rest: "plaintext".into(),
+        partition: None,
     };
     for field in ["stream", "event_id"] {
         let mut input = event(0, 1, "ready");
@@ -554,6 +557,7 @@ fn opaque_source_ids_are_scoped_and_distinct_from_kafka_coordinates() {
         source_incarnation: "wearable-v1".into(),
         mapper_id: "pulse-v1".into(),
         at_rest: "plaintext".into(),
+        partition: None,
     };
     let mut input = event(0, 1, "paid");
     input.source = id;

@@ -923,6 +923,87 @@ async def test_stop_flushes_residual_partial_batch() -> None:
     assert runner.retained_records == runner.retained_bytes == 0
 
 
+async def test_stop_during_keepalive_poll_is_not_lost() -> None:
+    messages = events(2)
+    stop = asyncio.Event()
+
+    class StoppingClient(BatchClient):
+        async def getmany(self, *partitions: TopicPartition, **options: Any) -> dict[TopicPartition, Any]:
+            if not partitions and runner.retained_records == 2:
+                stop.set()  # the keepalive poll, the only fetch without a partition
+            return await super().getmany(*partitions, **options)
+
+    client = StoppingClient(records(messages))
+    sink = RecordingSink()
+    runner = KafkaIngestion(
+        client, sink, mapper, no_dead, settings=settings(flush_ms=10_000), serializer=EventIds(messages)
+    )
+    task = asyncio.create_task(runner.run(stop))
+    try:
+        await asyncio.wait_for(asyncio.shield(task), 1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.wait_for(runner.wait_closed(), 1)
+    assert sink.batches == [("p0-0", "p0-1")]
+    assert client.commits == [{TP: 2}]
+
+
+async def test_worker_finishing_during_keepalive_poll_wakes_the_runner() -> None:
+    messages = events(6)
+    release = asyncio.Event()
+
+    class HeldSink(RecordingSink):
+        async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
+            await release.wait()
+            return await super().commit(inputs)
+
+    class ReleasingClient(BatchClient):
+        async def getmany(self, *partitions: TopicPartition, **options: Any) -> dict[TopicPartition, Any]:
+            if not partitions and not release.is_set():
+                release.set()  # the keepalive poll: let the held worker finish inside it
+                for _ in range(10):
+                    await asyncio.sleep(0)
+            return await super().getmany(*partitions, **options)
+
+    client, sink = ReleasingClient(records(messages)), HeldSink()
+    runner = KafkaIngestion(
+        client, sink, mapper, no_dead, settings=settings(flush_ms=10_000), serializer=EventIds(messages)
+    )
+    async with running(runner):
+        await until(lambda: sink.batches == [("p0-0", "p0-1", "p0-2", "p0-3")])
+        # The finished worker resumed the partition; the runner must fetch its tail before flush_ms.
+        await until(lambda: runner.retained_records == 2)
+
+
+async def test_idle_runner_waits_for_flush_instead_of_spinning() -> None:
+    calls = 0
+
+    class CountingClient(BatchClient):
+        async def getmany(self, *partitions: TopicPartition, **options: Any) -> dict[TopicPartition, Any]:
+            nonlocal calls
+            calls += 1
+            return await super().getmany(*partitions, **options)
+
+    client = CountingClient(records([]))
+    runner = KafkaIngestion(client, RecordingSink(), mapper, no_dead, settings=settings(flush_ms=10_000))
+    stop = asyncio.Event()
+    task = asyncio.create_task(runner.run(stop))
+    try:
+        await until(lambda: calls > 0)
+        await asyncio.sleep(0.05)
+        first = calls
+        await asyncio.sleep(0.05)
+        # The pass's own fetches must not wake its wait: no further polls before flush_ms.
+        assert calls == first
+        stop.set()
+        await asyncio.wait_for(asyncio.shield(task), 1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.wait_for(runner.wait_closed(), 1)
+
+
 async def test_stop_enforces_drain_deadline_and_retains_held_sink_credits() -> None:
     entered, release = asyncio.Event(), asyncio.Event()
 
