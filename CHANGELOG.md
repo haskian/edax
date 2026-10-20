@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.14.0](https://github.com/haskian/edax/compare/f822e138129ae539183c21dbc75d2c76b785b60d..v0.14.0) - 2026-10-20
+#### Features
+- add opt-in time-partitioned append ingestion (#28) - ([f822e13](https://github.com/haskian/edax/commit/f822e138129ae539183c21dbc75d2c76b785b60d)) - Črtomir Majer
+
+- - -
+
 ## [v0.13.0](https://github.com/haskian/edax/compare/1b43560f5f5ead2724b96a42fbf1fd50c83b044c..v0.13.0) - 2026-10-19
 #### Features
 - add atomic ingestion and ordered projection processing (#24) - ([1b43560](https://github.com/haskian/edax/commit/1b43560f5f5ead2724b96a42fbf1fd50c83b044c)) - Črtomir Majer
