@@ -113,7 +113,6 @@ same bytes identically, never where collision resistance matters.
 `uuid7_micros` validates a UUIDv7 and extracts its Unix microseconds with integer arithmetic.
 Partitioned ingestion uses it for identity placement, never ordering.
 
-
 The two functions in this crate that are not deterministic. The crate docstring names them as the
 exceptions.
 

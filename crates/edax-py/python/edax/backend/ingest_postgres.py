@@ -108,7 +108,8 @@ class PostgresIngestionSink:
     async def _bind(self, conn: PgConnection) -> None:
         await self._check(conn)
         if self.target.partition:
-            await self._floor(conn)
+            # Gate before any manifest insert, so writers and advancement lock in one order.
+            await self._gate(conn)
         if self._bound:
             return
         # Staging never caches this: an outer rollback can discard either manifest.
@@ -164,8 +165,11 @@ class PostgresIngestionSink:
             handle.aborted = True
             raise
 
-    async def _floor(self, conn: PgConnection, *, exclusive: bool = False) -> int:
+    async def _gate(self, conn: PgConnection, *, exclusive: bool = False) -> None:
         await self._call(conn.execute(self._sql["gate_exclusive" if exclusive else "gate_shared"]))
+
+    async def _floor(self, conn: PgConnection, *, exclusive: bool = False) -> int:
+        """Read the floor under the gate this transaction already holds."""
         floor = await self._call(conn.fetchval(self._sql["floor_write" if exclusive else "floor_read"]))
         if floor is None:
             raise BadHandle("partition control row is missing or bound to another rejection table")
@@ -179,6 +183,7 @@ class PostgresIngestionSink:
 
         async def advance(conn: PgConnection) -> int:
             await self._check(conn)
+            await self._gate(conn, exclusive=True)
             await self._floor(conn, exclusive=True)
             await self._bind(conn)
             result = await self._call(conn.fetchval(self._sql["floor_advance"], str(to)))
@@ -209,6 +214,11 @@ class PostgresIngestionSink:
         writes: dict[str, str] = _json.decode(
             _native.postgres_ingest_write_plan(plan_text, stored_text, rejected_text)
         )
+        coordinates = (
+            _native.ingest_partition_coordinates(self.target.manifest, _json.encode(keys))
+            if self.target.partition
+            else None
+        )
         # Preserve the kernel's exact-number parameter text across the I/O boundary.
         for parameter, statement in (
             ("updates", f"update_{self._role}"),
@@ -216,10 +226,7 @@ class PostgresIngestionSink:
             ("rejections", "insert_rejections"),
         ):
             if writes[parameter] != "{}":
-                if self.target.partition and parameter != "rejections":
-                    coordinates = _native.ingest_partition_coordinates(
-                        self.target.manifest, _json.encode(keys)
-                    )
+                if coordinates is not None and parameter != "rejections":
                     try:
                         await self._call(conn.execute(self._sql[statement], writes[parameter], coordinates))
                     except Exception as error:

@@ -11,7 +11,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from . import _native
@@ -106,15 +106,10 @@ class IngestionTarget:
     @property
     def manifest(self) -> str:
         """The immutable target contract encoded for the kernel and durable sink manifest."""
-        manifest = dict(
-            mode=self.mode,
-            generation=self.generation,
-            source_incarnation=self.source_incarnation,
-            mapper_id=self.mapper_id,
-            at_rest=self.at_rest,
-        )
-        if self.partition is not None:
-            manifest["partition"] = self.partition
+        manifest = asdict(self)
+        # Unpartitioned manifests keep their original bytes, as the kernel serializes them.
+        if self.partition is None:
+            del manifest["partition"]
         return encode(manifest)
 
     @property

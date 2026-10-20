@@ -36,8 +36,8 @@ After target/key validation, malformed UUIDs become durable per-record rejection
 before sealing-provider work. Input construction retains its existing identity checks.
 
 Each physical events table has one monotonic admission floor, in Unix microseconds.
-All generations inherit it. A valid input below the floor returns `expired` and writes
-nothing. Source acknowledgement follows the transaction commit. An existing durable
+All generations inherit it. A valid, non-erased input below the floor returns `expired`
+and writes nothing. Source acknowledgement follows the transaction commit. An existing durable
 rejection still wins and requires publication. Expiry is an explicit discard policy;
 it is not proof that the source delivered all older events. It does not reveal whether
 a previous attempt committed before its response was lost. Sources must retain IDs
