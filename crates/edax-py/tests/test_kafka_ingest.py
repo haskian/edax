@@ -923,6 +923,32 @@ async def test_stop_flushes_residual_partial_batch() -> None:
     assert runner.retained_records == runner.retained_bytes == 0
 
 
+async def test_stop_during_keepalive_poll_is_not_lost() -> None:
+    messages = events(2)
+    stop = asyncio.Event()
+
+    class StoppingClient(BatchClient):
+        async def getmany(self, *partitions: TopicPartition, **options: Any) -> dict[TopicPartition, Any]:
+            if not partitions and runner.retained_records == 2:
+                stop.set()  # the keepalive poll, the only fetch without a partition
+            return await super().getmany(*partitions, **options)
+
+    client = StoppingClient(records(messages))
+    sink = RecordingSink()
+    runner = KafkaIngestion(
+        client, sink, mapper, no_dead, settings=settings(flush_ms=10_000), serializer=EventIds(messages)
+    )
+    task = asyncio.create_task(runner.run(stop))
+    try:
+        await asyncio.wait_for(asyncio.shield(task), 1)
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.wait_for(runner.wait_closed(), 1)
+    assert sink.batches == [("p0-0", "p0-1")]
+    assert client.commits == [{TP: 2}]
+
+
 async def test_stop_enforces_drain_deadline_and_retains_held_sink_credits() -> None:
     entered, release = asyncio.Event(), asyncio.Event()
 

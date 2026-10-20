@@ -839,8 +839,10 @@ class KafkaIngestion:
                     self._rotation.rotate(-self._rotation.index(last_admitted) - 1)
                 if not progressed and not stop.is_set():
                     await self._keepalive()
+                    # The keepalive's own fetch sets the wakeup; a stop during it must still count.
                     self._changed.clear()
-                    await _kafka.wait_event(self._changed, self.settings.flush_ms / 1000)
+                    if not stop.is_set():
+                        await _kafka.wait_event(self._changed, self.settings.flush_ms / 1000)
             for tp, part in tuple(self._parts.items()):
                 self._launch(tp, part)
             if self._workers:
