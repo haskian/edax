@@ -261,21 +261,24 @@ async def test_unresolved_commit_retains_credits_without_stalling_healthy_partit
     entered, release = asyncio.Event(), asyncio.Event()
 
     class HeldStore(MemoryProjectionStateStore):
-        async def commit(self, *args: Any, **options: Any) -> Any:
-            if args[0].partition == BLOCKED.partition:
+        # Hold inside the commit's write guards and transaction, where a real driver's I/O runs.
+        async def _seal(self, novel: Any, sealing: Any = None) -> None:
+            if any(event["aggregate"] == f"account-{BLOCKED.partition}" for event, _ in novel):
                 entered.set()
                 while not release.is_set():
                     try:
                         await release.wait()
                     except asyncio.CancelledError:
                         continue  # a driver can retain I/O after the cancellation request
-            return await super().commit(*args, **options)
+            await super()._seal(novel, sealing)
 
     store = HeldStore(target())
     await store.initialize()
     sealing = Sealing(MemoryKeys(), "accounts", allow_plaintext=True) if sealing_enabled else None
+    client = PartitionClient()
+    del client.cursors[HEALTHY]
     run = KafkaProjection(
-        PartitionClient(),
+        client,
         store,
         Source(),
         decode,
@@ -284,10 +287,15 @@ async def test_unresolved_commit_retains_credits_without_stalling_healthy_partit
         operation_timeout_s=0.02,
         lease_ms=1000,
     )
-    await run.rebalance_listener().on_partitions_assigned([BLOCKED, HEALTHY])
+    await run.rebalance_listener().on_partitions_assigned([BLOCKED])
     task = asyncio.create_task(run.run())
     try:
         await asyncio.wait_for(entered.wait(), 1)
+        await until(lambda: run._parts[BLOCKED].unresolved is not None)
+        # Admit the healthy partition only after the held commit owns its guard and has
+        # timed out. Poll rotation and flush timing must not decide which writer goes first.
+        client.cursors[HEALTHY] = 0
+        await run.rebalance_listener().on_partitions_assigned([HEALTHY])
         await until(lambda: run._parts[HEALTHY].lease is not None)
         assert run._parts[BLOCKED].unresolved is not None
         assert run.retained_records >= 1 and run.retained_bytes > 0
