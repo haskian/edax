@@ -74,7 +74,11 @@ Add the normal tenancy and middleware configuration for your deployment.
 In Go, construct `NewMemoryKeys()` and `NewSealing(keys, namespace, cipher)`; an empty cipher selects
 XChaCha20-Poly1305. Configure `RepositoryOptions.Sealing`, `NewSealedCommandBus`,
 `NewSealedEventRouter`, and `SagaOptions.Sealing`. Set an aggregate's subject with `SetSubject`
-before its first committed save. Incoming protected records restore their owner.
+before its first committed save. Incoming protected records restore their owner. A load, save or saga
+step that meets a record owned by another tenant or subject raises terminal `OwnerMismatch`
+(`owner_mismatch`). In Python it subclasses `CodecError`; in Go and Rust it is its own code, so
+`ErrCodec` and `ErrorCode::Codec` do not match it. A host can branch on the code to answer a load as
+not found. The message quotes no tenant or subject, so it is safe to log.
 
 A key scope is the exact tuple `(key_namespace, tenant, subject)`. It retains the tenant even in
 silo and bridge tenancy modes, where storage keys may be bare. An absent subject selects a tenant

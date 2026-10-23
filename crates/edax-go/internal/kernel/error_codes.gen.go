@@ -49,6 +49,9 @@ const CodeKeyMissing ErrorCode = "key_missing"
 // CodeKeyUnauthorized is the kernel's key_unauthorized error category.
 const CodeKeyUnauthorized ErrorCode = "key_unauthorized"
 
+// CodeOwnerMismatch is the kernel's owner_mismatch error category.
+const CodeOwnerMismatch ErrorCode = "owner_mismatch"
+
 // Tenancy selects the kernel's tenant isolation mode.
 type Tenancy string
 

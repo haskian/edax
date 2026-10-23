@@ -62,5 +62,9 @@
   {
     "code": "key_unauthorized",
     "failure": "fatal"
+  },
+  {
+    "code": "owner_mismatch",
+    "failure": "terminal"
   }
 ]

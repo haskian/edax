@@ -17,7 +17,7 @@ from ._units import open_transaction, transaction_guard
 from ._values import replace
 from ._wiring import wiring_u64
 from .aggregate import A, AggregateCodec, EventCodec, stand_at
-from .errors import BadHandle
+from .errors import BadHandle, CodecError
 from .message import CommandMessage, EventDraft, EventMessage, Lineage, Payload
 from .observe import Observer
 from .outbox import CommandOutbox
@@ -150,8 +150,12 @@ class Repository(Generic[A, TxT]):
             if self._sealing is not None and snap is not None:
                 if snap.encryption is not None or snap.tenant is not None:
                     _native.check_sealed_owner(True, tenant, snap.tenant)
+                # Before the key provider and the plaintext policy, so another subject's snapshot is an
+                # owner mismatch, not a key or policy refusal that tells the caller the stream exists.
+                if subject is not None:
+                    _native.check_sealed_owner(True, subject, snap.subject)
                 if snap.encryption is None:
-                    await self._sealing.check_legacy(tenant, subject if subject is not None else snap.subject)
+                    await self._sealing.check_legacy(tenant, snap.subject)
                 else:
                     plaintext = await self._sealing.open_state(
                         "snapshot",
@@ -160,7 +164,7 @@ class Repository(Generic[A, TxT]):
                         snap.version,
                         SealedValue(encryption=snap.encryption, data=snap.data),
                         tenant=tenant,
-                        subject=subject if subject is not None else snap.subject,
+                        subject=snap.subject,
                     )
                     snap = replace_snapshot(snap, data=plaintext)
             cached = self._from_snapshot(aggregate_id, snap)
@@ -175,7 +179,10 @@ class Repository(Generic[A, TxT]):
             for msg in stored:
                 if self._sealing is not None:
                     _native.check_sealed_owner(True, tenant, msg.tenant)
-                    _native.check_sealed_owner(True, aggregate_id, msg.aggregate_id)
+                    if msg.aggregate_id != aggregate_id:
+                        # A store that returns another aggregate's event under this key is corrupt, not
+                        # another owner's stream, so it is no owner mismatch.
+                        raise CodecError("stored event belongs to another aggregate")
                     _native.check_sealed_owner(committed, owner, msg.subject)
                     if subject is not None:
                         _native.check_sealed_owner(True, subject, msg.subject)

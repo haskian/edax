@@ -171,6 +171,13 @@ class KeyUnauthorized(EdaxError, code="key_unauthorized"):
     """Provider credentials or scope configuration do not authorize access."""
 
 
+class OwnerMismatch(CodecError, code="owner_mismatch"):
+    """A sealed stream, snapshot or saga state belongs to another tenant or subject than the call names.
+    Deterministic. A :class:`CodecError` subclass, so a host that catches that keeps working. Catch this
+    around a load to answer another owner's stream as not found; from a save it means the caller changed
+    a committed owner."""
+
+
 def _check_every_kernel_code_has_a_class() -> None:
     """Fail the import if the kernel knows a code this module does not, so :func:`from_wire` finds a class
     for every code the kernel names."""

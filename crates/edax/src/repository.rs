@@ -1399,7 +1399,7 @@ mod tests {
                 assert_eq!(loaded.root().subject(), Some("person-42"));
                 assert_eq!(
                     loaded.root_mut().set_subject(Some("person-43")).unwrap_err().code,
-                    ErrorCode::Codec
+                    ErrorCode::OwnerMismatch
                 );
                 assert_eq!(
                     repo(store.clone()).load(None, "private-account").err().unwrap().code,

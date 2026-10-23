@@ -22,7 +22,7 @@ from edax.backend.memory import (
     MemorySagaStore,
 )
 from edax.erasure import ErasureCoordinator, MemoryErasureStore
-from edax.errors import KeyMissing, KeyRevoking, KeyUnauthorized, Shredded
+from edax.errors import KeyMissing, KeyRevoking, Shredded
 from edax.idempotency import Done, Record, encode_record
 from edax.saga import ProtectedSagaState
 from edax.sealing import Cipher, KeyScope, MemoryKeys, Sealing
@@ -124,21 +124,38 @@ async def test_repository_encrypts_events_snapshots_outboxes_and_both_wire_forma
         await sealing.open_command(sent[0])
 
 
-async def test_committed_repository_owner_cannot_change_or_be_cleared() -> None:
+@pytest.mark.parametrize("snapshot_every", [0, 1])
+async def test_committed_repository_owner_cannot_change_or_be_cleared(snapshot_every: int) -> None:
     store = MemoryEventStore()
-    repo = repository(store, Sealing(MemoryKeys(), "profiles"))
+    repo = repository(store, Sealing(MemoryKeys(), "profiles"), snapshot_every=snapshot_every)
     profile = await repo.load("profile-1", subject=SUBJECT)
     profile.apply(CreateUser(EMAIL))
     original = await repo.save(profile)
-    with pytest.raises(KeyUnauthorized):
+    with pytest.raises(edax.OwnerMismatch):
         await repo.load(profile.id, subject="different-customer")
     for owner in (None, "different-customer"):
         loaded = await repo.load(profile.id)
         loaded.subject = owner
         loaded.apply(CreateUser("other@example.test"))
-        with pytest.raises(edax.CodecError):
+        with pytest.raises(edax.OwnerMismatch):
             await repo.save(loaded)
     assert await store.load(None, profile.id) == original
+
+
+class OtherAggregateStore(MemoryEventStore):
+    async def load(self, tx: Tx, aggregate_id: str, after: int = 0) -> list[edax.EventMessage]:
+        return [replace(msg, aggregate_id="profile-2") for msg in await super().load(tx, aggregate_id, after)]
+
+
+async def test_an_event_of_another_aggregate_is_corruption_not_another_owner() -> None:
+    store = OtherAggregateStore()
+    repo = repository(store, Sealing(MemoryKeys(), "profiles"), snapshot_every=0)
+    profile = await repo.load("profile-1", subject=SUBJECT)
+    profile.apply(CreateUser(EMAIL))
+    await repo.save(profile)
+    with pytest.raises(edax.CodecError, match="another aggregate") as refused:
+        await repo.load(profile.id, subject=SUBJECT)
+    assert not isinstance(refused.value, edax.OwnerMismatch)
 
 
 @pytest.mark.parametrize("snapshot_every", [0, 1])
@@ -153,6 +170,19 @@ async def test_plaintext_repository_requires_explicit_migration_opt_in(snapshot_
         await repository(store, Sealing(keys, "profiles")).load(profile.id)
     migrated = await repository(store, Sealing(keys, "profiles", allow_plaintext=True)).load(profile.id)
     assert migrated.email == EMAIL
+
+
+async def test_a_legacy_snapshot_of_another_subject_is_an_owner_mismatch_before_the_policy() -> None:
+    store = MemoryEventStore()
+    legacy = repository(store, None, snapshot_every=1)
+    profile = await legacy.load("profile-1", subject=SUBJECT)
+    profile.apply(CreateUser(EMAIL))
+    await legacy.save(profile)
+    keys = MemoryKeys()
+    with pytest.raises(edax.OwnerMismatch):
+        await repository(store, Sealing(keys, "profiles")).load(profile.id, subject="different-customer")
+    migrating = repository(store, Sealing(keys, "profiles", allow_plaintext=True))
+    assert (await migrating.load(profile.id, subject=SUBJECT)).email == EMAIL
 
 
 class RecordedWrites(MemoryEventStore):
@@ -432,7 +462,7 @@ async def test_router_saga_bus_roundtrip_keeps_state_and_outbox_encrypted_and_ow
     await maybe_await(runner.publish_to(bus)(outbox[0]))
     assert received == [CreateUser(EMAIL)]
     other = await event(sealing, subject="different-customer", id="other-profile")
-    with pytest.raises(edax.CodecError):
+    with pytest.raises(edax.OwnerMismatch):
         await router.dispatch(other)
     assert saga.folds == 1
     assert await store.load(saga.name, "workflow-7") == saved
@@ -618,7 +648,7 @@ async def test_completed_saga_keeps_authenticated_owner_and_no_application_state
     await runner.on_event(completed_by)
     await runner.on_event(await event(sealing, id="late-source"))
     assert saga.folds == 2
-    with pytest.raises(edax.CodecError):
+    with pytest.raises(edax.OwnerMismatch):
         await runner.on_event(await event(sealing, subject="different-owner", id="different-source"))
     assert saga.folds == 2
     assert await store.load(saga.name, "workflow-7") == completed
@@ -695,7 +725,7 @@ async def test_legacy_repository_rejects_a_different_persisted_tenant(snapshot_e
     sealing = Sealing(keys, "profiles", allow_plaintext=True)
     await keys.revoke(sealing.scope("revoked-tenant", None))
     await keys.destroy(sealing.scope("revoked-tenant", None))
-    with pytest.raises(edax.CodecError):
+    with pytest.raises(edax.OwnerMismatch):
         await repository(store, sealing).load("profile", tenant="different-tenant")
 
 

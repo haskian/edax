@@ -10,7 +10,7 @@ import (
 )
 
 func TestPublicKernelNamesMatchTaxonomy(t *testing.T) {
-	codes := []edax.ErrorCode{edax.CodeConcurrency, edax.CodeCodec, edax.CodeStore, edax.CodePayloadMismatch, edax.CodeInProgress, edax.CodeCachedFailure, edax.CodeHandlerNotFound, edax.CodeAlreadyRegistered, edax.CodeBadHandle, edax.CodeRejected, edax.CodeShredded, edax.CodeKeyMissing, edax.CodeKeyUnauthorized, edax.CodeKeyUnavailable, edax.CodeKeyRevoking}
+	codes := []edax.ErrorCode{edax.CodeConcurrency, edax.CodeCodec, edax.CodeStore, edax.CodePayloadMismatch, edax.CodeInProgress, edax.CodeCachedFailure, edax.CodeHandlerNotFound, edax.CodeAlreadyRegistered, edax.CodeBadHandle, edax.CodeRejected, edax.CodeShredded, edax.CodeKeyMissing, edax.CodeKeyUnauthorized, edax.CodeKeyUnavailable, edax.CodeKeyRevoking, edax.CodeOwnerMismatch}
 	codeNames := make([]string, len(codes))
 	for i, code := range codes {
 		codeNames[i] = string(code)

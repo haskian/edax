@@ -8,6 +8,7 @@
     reason = "test assertions identify contract failures"
 )]
 
+use edax_core::ErrorCode;
 use edax_event::sealing::{
     check_owner, command_context, event_context, message_scope, open_command, open_event, seal_command, seal_event,
     state_context,
@@ -290,15 +291,17 @@ fn historical_envelopes_default_to_unprotected_and_cannot_be_opened() {
 
 #[test]
 fn ownership_scope_and_double_sealing_are_checked() {
-    for (committed, owner, proposed, accepted) in [
-        (false, None, Some("customer-42"), true),
-        (true, Some("customer-42"), Some("customer-42"), true),
-        (true, Some("customer-42"), Some("customer-43"), false),
-        (true, Some("customer-42"), None, false),
-        (true, None, Some("customer-42"), false),
-        (true, None, None, true),
+    let mismatch = Some(ErrorCode::OwnerMismatch);
+    for (committed, owner, proposed, refused) in [
+        (false, None, Some("customer-42"), None),
+        (true, Some("customer-42"), Some("customer-42"), None),
+        (true, Some("customer-42"), Some("customer-43"), mismatch),
+        (true, Some("customer-42"), None, mismatch),
+        (true, None, Some("customer-42"), mismatch),
+        (true, None, None, None),
+        (false, None, Some(""), Some(ErrorCode::Codec)),
     ] {
-        assert_eq!(check_owner(committed, owner, proposed).is_ok(), accepted);
+        assert_eq!(check_owner(committed, owner, proposed).err().map(|e| e.code), refused);
     }
     let encryption = info(Cipher::default());
     let scope = message_scope("production-eu", Some("tenant-7"), Some("customer-42"), &encryption).unwrap();

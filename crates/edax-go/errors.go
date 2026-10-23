@@ -7,6 +7,7 @@ type Error = kernel.Error
 
 // Error sentinels are immutable categories matched through errors.Is.
 // Inspect a concrete *Error for a failure message and cause.
+// ErrOwnerMismatch is its own category: errors.Is(err, ErrCodec) does not match it.
 const (
 	ErrConcurrency       = kernel.ErrConcurrency
 	ErrStore             = kernel.ErrStore
@@ -23,6 +24,7 @@ const (
 	ErrKeyRevoking       = kernel.ErrKeyRevoking
 	ErrKeyUnauthorized   = kernel.ErrKeyUnauthorized
 	ErrKeyUnavailable    = kernel.ErrKeyUnavailable
+	ErrOwnerMismatch     = kernel.ErrOwnerMismatch
 )
 
 // Reason is why a host's rejection refused (not_found), kept beside the rejected code in the cached

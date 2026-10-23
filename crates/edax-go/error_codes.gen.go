@@ -54,6 +54,9 @@ const CodeKeyMissing = kernel.CodeKeyMissing
 // CodeKeyUnauthorized is the kernel's key_unauthorized error category.
 const CodeKeyUnauthorized = kernel.CodeKeyUnauthorized
 
+// CodeOwnerMismatch is the kernel's owner_mismatch error category.
+const CodeOwnerMismatch = kernel.CodeOwnerMismatch
+
 // TenancySilo selects silo isolation.
 const TenancySilo = kernel.TenancySilo
 

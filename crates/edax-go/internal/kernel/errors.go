@@ -118,6 +118,7 @@ const (
 	ErrKeyRevoking       = sentinel(CodeKeyRevoking)
 	ErrKeyUnauthorized   = sentinel(CodeKeyUnauthorized)
 	ErrKeyUnavailable    = sentinel(CodeKeyUnavailable)
+	ErrOwnerMismatch     = sentinel(CodeOwnerMismatch)
 )
 
 // ClosedHandle reports a released SDK resource.
