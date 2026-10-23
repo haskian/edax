@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.15.0](https://github.com/haskian/edax/compare/20c34a83f07a7d915cf979f78d456d2200c4518c..v0.15.0) - 2026-10-23
+#### Features
+- add owner_mismatch error code for sealed owner refusals (#29) - ([20c34a8](https://github.com/haskian/edax/commit/20c34a83f07a7d915cf979f78d456d2200c4518c)) - Črtomir Majer
+
+- - -
+
 ## [v0.14.0](https://github.com/haskian/edax/compare/f822e138129ae539183c21dbc75d2c76b785b60d..v0.14.0) - 2026-10-20
 #### Features
 - add opt-in time-partitioned append ingestion (#28) - ([f822e13](https://github.com/haskian/edax/commit/f822e138129ae539183c21dbc75d2c76b785b60d)) - Črtomir Majer
