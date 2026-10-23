@@ -431,6 +431,38 @@ async def test_erasure_schema_check_refuses_incompatible_tables_without_repair(
     )
 
 
+ERASURE_TABLES = {
+    "erasure_operations": "erasure_ops",
+    "erasure_notifications": "erasure_outbox",
+    "erasure_revocations": "erasure_tombstones",
+}
+
+
+async def test_erasure_tables_take_the_hosts_names(database: tuple[Any, str]) -> None:
+    pool, schema = database
+    named = f"{schema}_named"
+    await pool.execute(f'CREATE SCHEMA "{named}"')
+    try:
+        await pool.execute(erasure_ddl(named, ERASURE_TABLES))
+        store = PostgresErasureStore(pool, schema=named, tables=ERASURE_TABLES)
+        await store.check()
+        stored = await store.create(candidate())
+        assert await pool.fetchval(f'SELECT operation_id FROM "{named}".erasure_ops') == "operation"
+        assert [item.operation.operation_id for item in await store.pending()] == ["operation"]
+        assert stored.version == 1
+        tables = await pool.fetch(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema=$1", named
+        )
+        assert {row["table_name"] for row in tables} == set(ERASURE_TABLES.values())
+        # The default names are other tables: the store reads only the ones it was given.
+        with pytest.raises(BadHandle, match="does not exist"):
+            await PostgresErasureStore(pool, schema=named).check()
+        with pytest.raises(BadHandle, match="unknown postgres erasure role: operations"):
+            PostgresErasureStore(pool, schema=named, tables={"operations": "ops"})
+    finally:
+        await pool.execute(f'DROP SCHEMA IF EXISTS "{named}" CASCADE')
+
+
 async def test_completed_protected_saga_has_retention_timestamp_and_retains_owner(
     database: tuple[Any, str],
 ) -> None:

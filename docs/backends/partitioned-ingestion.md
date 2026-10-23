@@ -45,8 +45,15 @@ across retries. Sealing and erasure prerequisites still apply to valid expired i
 
 ## Retention protocol
 
-A fixed control registry in the events schema owns the floor and the events/rejections
-pairing. Migrations provision the control row at zero. A missing row fails closed.
+A control table in the events schema owns the floor and the events/rejections pairing.
+It defaults to `edax_ingest_partition_control`; the `ingest_partition_control` role renames it.
+Every writer of one events table must name the same control table. Migrations provision the
+control row at zero. A missing row fails closed. Renaming the control table is a plain
+`ALTER TABLE ... RENAME`. The control row's key is the schema-qualified events table
+(`"pulse"."readings"`), and each manifest's key starts with it (`"pulse"."readings":manifest:`).
+The row's `rejections` value holds the qualified rejections table. Renaming the events table
+or the schema rewrites those keys, and renaming the rejections table rewrites that value, in
+the same migration.
 Changing the rejections table cannot establish another authority for the same parent.
 Manifests remain immutable per generation. Unpartitioned manifests do not move.
 

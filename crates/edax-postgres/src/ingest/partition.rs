@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use super::Tables;
+use crate::schema::RoleTables;
 
-pub(super) const CONTROL_TABLE: &str = "edax_ingest_partition_control";
+pub(super) const CONTROL_ROLE: &str = "ingest_partition_control";
 
 pub(super) fn events_ddl(table: &str) -> String {
     format!(
@@ -36,10 +36,10 @@ fn read_events(table: &str, metadata: bool) -> String {
     )
 }
 
-pub(super) fn configure(tables: &Tables, sql: &mut BTreeMap<String, String>, ddl: &mut String) {
+pub(super) fn configure(tables: &RoleTables, sql: &mut BTreeMap<String, String>, ddl: &mut String) {
     let events = tables.qualified("ingest_events");
     let rejections = tables.qualified("ingest_rejections");
-    let control = format!("\"{}\".\"{CONTROL_TABLE}\"", tables.schema);
+    let control = tables.qualified(CONTROL_ROLE);
     let paired = format!("key = '{events}' AND value->>'rejections' = '{rejections}'");
     let manifest_prefix = format!("{events}:manifest:");
     ddl.push_str(&format!(
@@ -140,14 +140,36 @@ mod tests {
     }
 
     #[test]
-    fn partitioning_is_opt_in_and_reserves_its_control_table() {
+    fn partitioning_is_opt_in_and_its_control_table_is_a_named_role() {
         assert_eq!(
             statements("{}").unwrap(),
             statements(r#"{"partitioned":false}"#).unwrap()
         );
-        for role in ["ingest_events", "ingest_state", "ingest_rejections"] {
-            let config = format!(r#"{{"partitioned":true,"names":{{"{role}":"edax_ingest_partition_control"}}}}"#);
-            assert!(statements(&config).is_err(), "{role}");
+        let renamed =
+            statements(r#"{"partitioned":true,"names":{"ingest_partition_control":"pulse_partitions"}}"#).unwrap();
+        for name in [
+            "ddl",
+            "floor_read",
+            "floor_write",
+            "floor_advance",
+            "read_manifest",
+            "bind_manifest",
+            "check",
+        ] {
+            assert!(renamed[name].contains("pulse_partitions"), "{name}");
+            assert!(!renamed[name].contains("edax_ingest_partition_control"), "{name}");
+        }
+        // An unpartitioned sink accepts the control name and never uses it.
+        let unused = statements(r#"{"names":{"ingest_partition_control":"pulse_partitions"}}"#).unwrap();
+        assert_eq!(unused, statements("{}").unwrap());
+        // A data table may never take the control table's name, partitioned or not yet.
+        for partitioned in [true, false] {
+            for role in ["ingest_events", "ingest_state", "ingest_rejections"] {
+                let config =
+                    format!(r#"{{"partitioned":{partitioned},"names":{{"{role}":"edax_ingest_partition_control"}}}}"#);
+                let error = statements(&config).unwrap_err();
+                assert!(error.message.contains("named twice"), "{role}: {error}");
+            }
         }
     }
 
@@ -220,19 +242,28 @@ mod tests {
         let Ok(url) = std::env::var("EDAX_POSTGRES_URL") else {
             return;
         };
-        let schema = format!("partition_control_{}", edax_core::guid_simple());
-        let sql = statements(&format!(r#"{{"schema":"{schema}","partitioned":true}}"#)).unwrap();
-        let alternate = statements(&format!(
-            r#"{{"schema":"{schema}","partitioned":true,"names":{{"ingest_rejections":"other_rejections"}}}}"#
-        ))
-        .unwrap();
-        let query = format!(
-            "BEGIN; CREATE SCHEMA \"{schema}\"; {} {}; {}; PREPARE advance(text) AS {}; EXECUTE advance('100'); EXECUTE advance('50'); {}; {}; PREPARE bind(jsonb) AS {}; EXECUTE bind('{{\"generation\":{{\"mapper\":\"first\"}}}}'); EXECUTE bind('{{\"generation\":{{\"mapper\":\"second\"}}}}'); PREPARE read_manifest(jsonb) AS {}; EXECUTE read_manifest('[\"generation\"]'); ROLLBACK;",
-            sql["ddl"], sql["floor_read"], sql["floor_write"], sql["floor_advance"], sql["floor_read"], alternate["floor_read"], sql["bind_manifest"], sql["read_manifest"],
-        );
-        assert_eq!(
-            psql(&url, &query),
-            "0\n0\n100\n100\n100\ngeneration|{\"mapper\": \"first\"}\n"
-        );
+        for control in [None, Some("pulse_partitions")] {
+            let schema = format!("partition_control_{}", edax_core::guid_simple());
+            let mut names = serde_json::Map::new();
+            if let Some(name) = control {
+                names.insert("ingest_partition_control".into(), name.into());
+            }
+            let sql_for = |names: &serde_json::Map<String, serde_json::Value>| {
+                statements(&serde_json::json!({"schema": schema, "partitioned": true, "names": names}).to_string())
+                    .unwrap()
+            };
+            let sql = sql_for(&names);
+            names.insert("ingest_rejections".into(), "other_rejections".into());
+            let alternate = sql_for(&names);
+            let query = format!(
+                "BEGIN; CREATE SCHEMA \"{schema}\"; {} {}; {}; PREPARE advance(text) AS {}; EXECUTE advance('100'); EXECUTE advance('50'); {}; {}; PREPARE bind(jsonb) AS {}; EXECUTE bind('{{\"generation\":{{\"mapper\":\"first\"}}}}'); EXECUTE bind('{{\"generation\":{{\"mapper\":\"second\"}}}}'); PREPARE read_manifest(jsonb) AS {}; EXECUTE read_manifest('[\"generation\"]'); {}; ROLLBACK;",
+                sql["ddl"], sql["floor_read"], sql["floor_write"], sql["floor_advance"], sql["floor_read"], alternate["floor_read"], sql["bind_manifest"], sql["read_manifest"], sql["check"],
+            );
+            assert_eq!(
+                psql(&url, &query),
+                "0\n0\n100\n100\n100\ngeneration|{\"mapper\": \"first\"}\nt\n",
+                "{control:?}"
+            );
+        }
     }
 }

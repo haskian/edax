@@ -8,6 +8,7 @@ fn partition_sql_golden() {
     for config in [
         json!({"partitioned":true}),
         json!({"schema":"pulse","partitioned":true,"names":{"ingest_events":"readings"}}),
+        json!({"schema":"pulse","partitioned":true,"names":{"ingest_events":"readings","ingest_partition_control":"pulse_partitions"}}),
     ] {
         let sql = ingest::statements(&config.to_string()).unwrap();
         cases.push(json!({"config":config,"want":sql}));

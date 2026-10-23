@@ -549,17 +549,18 @@ fn erasure_op(record: &str) -> Result<edax_event::erasure::ErasureOperation, Str
 fn erasure_json(value: &impl serde::Serialize) -> Result<String, String> {
     crate::write_json(value)
 }
-/// Reference migration only; edax never provisions tables.
-pub fn postgres_erasure_reference_ddl(schema: &str) -> Result<String, String> {
-    edax_postgres::erasure::reference_ddl(schema).map_err(to_wire)
+/// Reference migration only; edax never provisions tables. `config_json` is
+/// `{"schema": ..., "names": {"erasure_operations": ..., ...}}`; an unnamed role takes `edax_<role>`.
+pub fn postgres_erasure_reference_ddl(config_json: &str) -> Result<String, String> {
+    edax_postgres::erasure::reference_ddl(config_json).map_err(to_wire)
 }
-/// SQL for operation CAS, notifications, and transaction fences.
-pub fn postgres_erasure_statements(schema: &str) -> Result<String, String> {
-    erasure_json(&edax_postgres::erasure::statements(schema).map_err(to_wire)?)
+/// SQL for operation CAS, notifications, and transaction fences, for the tables `config_json` names.
+pub fn postgres_erasure_statements(config_json: &str) -> Result<String, String> {
+    erasure_json(&edax_postgres::erasure::statements(config_json).map_err(to_wire)?)
 }
-/// Validate the erasure catalog query result without provisioning tables.
-pub fn postgres_erasure_check_catalog(schema: &str, catalog_json: &str) -> Result<(), String> {
-    edax_postgres::erasure::check_catalog(schema, catalog_json).map_err(to_wire)
+/// Validate the erasure catalog query result for the tables `config_json` names, without provisioning them.
+pub fn postgres_erasure_check_catalog(config_json: &str, catalog_json: &str) -> Result<(), String> {
+    edax_postgres::erasure::check_catalog(config_json, catalog_json).map_err(to_wire)
 }
 /// Canonical identifier including namespace, tenant and subject.
 pub fn postgres_erasure_scope_id(scope: crate::KeyScope) -> Result<String, String> {

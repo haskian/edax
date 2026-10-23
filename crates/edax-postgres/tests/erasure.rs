@@ -109,7 +109,7 @@ fn writer_locks_for_several_scopes_take_every_tenant_then_every_subject_once_in_
 
 #[test]
 fn sql_keeps_lock_and_revocation_reads_separate_and_notification_atomic() {
-    let sql = erasure::statements("privacy").unwrap();
+    let sql = erasure::statements(r#"{"schema":"privacy"}"#).unwrap();
     assert!(sql.lock_shared.contains("pg_advisory_xact_lock_shared"));
     assert!(sql.lock_exclusive.contains("pg_advisory_xact_lock("));
     assert!(!sql.check_revoked.contains("advisory"));
@@ -120,10 +120,13 @@ fn sql_keeps_lock_and_revocation_reads_separate_and_notification_atomic() {
         .contains("INSERT INTO \"privacy\".\"edax_erasure_notifications\""));
     assert!(sql.update_operation.contains("version = ($2::text)::bigint"));
     assert!(sql.create_operation.contains("ON CONFLICT DO NOTHING"));
-    let ddl = erasure::reference_ddl("privacy").unwrap();
+    let ddl = erasure::reference_ddl(r#"{"schema":"privacy"}"#).unwrap();
     assert!(ddl.contains("UNIQUE (scope, request_id)"));
     assert!(ddl.contains("scope text COLLATE \"C\" PRIMARY KEY"));
-    assert!(erasure::statements("bad-schema; DROP TABLE users").is_err());
+    assert!(erasure::statements(r#"{"schema":"bad-schema; DROP TABLE users"}"#)
+        .unwrap_err()
+        .message
+        .contains("schema \"bad-schema; DROP TABLE users\""));
 }
 
 #[test]
@@ -230,14 +233,14 @@ mod live {
             let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
             let schema = format!("erasure_{}_{}", std::process::id(), nonce);
             let db = Self {
-                sql: erasure::statements(&schema).unwrap(),
+                sql: erasure::statements(&format!(r#"{{"schema":"{schema}"}}"#)).unwrap(),
                 url,
                 schema,
             };
             db.run(&format!(
                 "CREATE SCHEMA \"{}\"; {}",
                 db.schema,
-                erasure::reference_ddl(&db.schema).unwrap()
+                erasure::reference_ddl(&format!(r#"{{"schema":"{}"}}"#, db.schema)).unwrap()
             ));
             Some(db)
         }

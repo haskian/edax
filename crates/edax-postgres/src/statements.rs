@@ -111,7 +111,7 @@ pub struct Statements {
 
 /// What the catalog holds for each table `$1` names: its kind (`None` when it does not exist), its columns
 /// and its unique indexes, as one JSON text column. Reads only the catalog.
-const CATALOG: &str = r"/* edax:catalog */
+pub(crate) const CATALOG: &str = r"/* edax:catalog */
 SELECT coalesce(
   json_agg(
     json_build_object(
