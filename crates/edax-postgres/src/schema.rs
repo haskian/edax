@@ -115,7 +115,7 @@ impl Logical {
 
     /// The name a table of this role takes when the host names none: `edax_` and the role.
     pub fn default_name(self) -> String {
-        format!("edax_{}", self.as_str())
+        default_table_name(self.as_str())
     }
 }
 
@@ -123,7 +123,7 @@ impl Logical {
 /// (the server's limit), so it is quoted without escaping and never case-folded.
 pub(crate) fn identifier(what: &str, name: &str) -> Result<String, Error> {
     let valid = !name.is_empty()
-        && name.len() <= 63
+        && name.len() <= MAX_IDENTIFIER
         && !name.starts_with(|c: char| c.is_ascii_digit())
         && name
             .bytes()
@@ -134,6 +134,116 @@ pub(crate) fn identifier(what: &str, name: &str) -> Result<String, Error> {
         )));
     }
     Ok(name.to_owned())
+}
+
+/// The schema a store's config names when it names none.
+pub(crate) fn default_schema() -> String {
+    "public".to_owned()
+}
+
+/// The longest identifier the server keeps; it truncates a longer one.
+const MAX_IDENTIFIER: usize = 63;
+
+/// An index named for `table` plus `suffix`, cutting the table part so the suffix always survives the
+/// server's limit: cutting the whole name could leave the table's own name.
+pub(crate) fn index_name(table: &str, suffix: &str) -> String {
+    let kept = MAX_IDENTIFIER.saturating_sub(suffix.len());
+    format!("{}{suffix}", table.chars().take(kept).collect::<String>())
+}
+
+/// The name a table of `role` takes when the host names none: `edax_` and the role.
+fn default_table_name(role: &str) -> String {
+    format!("edax_{role}")
+}
+
+/// The table name of each of `roles`: the host's name where `names` gives one, else the default. The
+/// event store, ingestion and erasure resolve their names here. An unknown role (`what` names the store's roles), a name outside the
+/// identifier rule, or two roles under one name is a `bad_handle` error.
+fn resolve_names(
+    what: &str,
+    roles: &[&'static str],
+    names: &BTreeMap<String, String>,
+) -> Result<BTreeMap<&'static str, String>, Error> {
+    if let Some(role) = names.keys().find(|role| !roles.contains(&role.as_str())) {
+        return Err(Error::bad_handle(format_args!("unknown postgres {what} role: {role}")));
+    }
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
+    let mut resolved = BTreeMap::new();
+    for role in roles {
+        let name = match names.get(*role) {
+            Some(name) => identifier("table name", name)?,
+            None => default_table_name(role),
+        };
+        if let Some(other) = owners.insert(name.clone(), role) {
+            return Err(Error::bad_handle(format_args!(
+                "postgres tables {other} and {role} are both named {name:?}"
+            )));
+        }
+        resolved.insert(*role, name);
+    }
+    Ok(resolved)
+}
+
+/// A store config read from its JSON text; text that is not one is a `bad_handle` error naming `what`.
+pub(crate) fn read_config<T: serde::de::DeserializeOwned>(what: &str, json: &str) -> Result<T, Error> {
+    serde_json::from_str(json).map_err(|error| Error::bad_handle(format_args!("postgres {what} config: {error}")))
+}
+
+/// The tables of a store outside the event store (`what`: `ingestion`, `erasure`): the schema, and the
+/// host's name for each role where it gives one, else `edax_<role>`.
+pub(crate) struct RoleTables {
+    schema: String,
+    names: BTreeMap<&'static str, String>,
+}
+
+impl RoleTables {
+    /// A schema or name outside the identifier rule, an unknown role, or two roles under one name is a
+    /// `bad_handle` error.
+    pub(crate) fn new(
+        what: &str,
+        roles: &[&'static str],
+        schema: &str,
+        names: &BTreeMap<String, String>,
+    ) -> Result<RoleTables, Error> {
+        Ok(RoleTables {
+            schema: identifier("schema", schema)?,
+            names: resolve_names(what, roles, names)?,
+        })
+    }
+
+    /// The tables from the wire form `{"schema": "public", "names": {"<role>": "..."}}`; the schema
+    /// defaults to `public`.
+    pub(crate) fn from_json(what: &str, roles: &[&'static str], json: &str) -> Result<RoleTables, Error> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Config {
+            #[serde(default = "default_schema")]
+            schema: String,
+            #[serde(default)]
+            names: BTreeMap<String, String>,
+        }
+        let config: Config = read_config(what, json)?;
+        RoleTables::new(what, roles, &config.schema, &config.names)
+    }
+
+    pub(crate) fn schema(&self) -> &str {
+        &self.schema
+    }
+
+    /// The name of the table of `role`.
+    pub(crate) fn name(&self, role: &str) -> &str {
+        self.names.get(role).map_or("", String::as_str)
+    }
+
+    /// The table of `role`, schema-qualified and quoted.
+    pub(crate) fn qualified(&self, role: &str) -> String {
+        format!("\"{}\".\"{}\"", self.schema, self.name(role))
+    }
+
+    /// Every table name.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &str> {
+        self.names.values().map(String::as_str)
+    }
 }
 
 /// Where a store's tables live: the schema, and a name per role. A role the host does not name takes its
@@ -149,25 +259,17 @@ impl Tables {
     /// or two roles under one name, is a `bad_handle` error.
     pub fn new(schema: &str, names: BTreeMap<Logical, String>) -> Result<Tables, Error> {
         let schema = identifier("schema", schema)?;
-        let mut seen: BTreeMap<String, Logical> = BTreeMap::new();
-        let mut resolved = BTreeMap::new();
-        for role in Logical::ALL {
-            let name = match names.get(role) {
-                Some(name) => identifier("table name", name)?,
-                None => role.default_name(),
-            };
-            if let Some(other) = seen.insert(name.clone(), *role) {
-                return Err(Error::bad_handle(format_args!(
-                    "postgres tables {} and {} are both named {name:?}",
-                    other.as_str(),
-                    role.as_str()
-                )));
-            }
-            resolved.insert(*role, name);
-        }
+        let names: BTreeMap<String, String> = names
+            .into_iter()
+            .map(|(role, name)| (role.as_str().to_owned(), name))
+            .collect();
+        let resolved = resolve_names("table", Logical::NAMES, &names)?;
         Ok(Tables {
             schema,
-            names: resolved,
+            names: Logical::ALL
+                .iter()
+                .filter_map(|role| resolved.get(role.as_str()).map(|name| (*role, name.clone())))
+                .collect(),
         })
     }
 
@@ -223,7 +325,7 @@ impl Default for Tables {
     /// Every table in `public` under its default name.
     fn default() -> Self {
         Tables {
-            schema: "public".to_owned(),
+            schema: default_schema(),
             names: Logical::ALL.iter().map(|role| (*role, role.default_name())).collect(),
         }
     }
@@ -502,10 +604,9 @@ pub fn reference_ddl(tables: &Tables) -> String {
         }
         ddl.push_str(&format!("\nCREATE TABLE {name} (\n{}\n);\n", lines.join(",\n")));
         for columns in &table.suggested_indexes {
-            let index = format!("{}_{}", tables.name(table.role), columns.join("_"));
+            let index = index_name(tables.name(table.role), &format!("_{}", columns.join("_")));
             ddl.push_str(&format!(
-                "CREATE INDEX \"{}\" ON {name} ({});\n",
-                index.chars().take(63).collect::<String>(),
+                "CREATE INDEX \"{index}\" ON {name} ({});\n",
                 columns.join(", ")
             ));
         }

@@ -24,7 +24,7 @@ from ..outbox import check_page
 from ..sealing import KeyScope, Sealing
 from ..unit_of_work import Tx
 from .erasure_postgres import PgErasureConnection, PostgresErasureStore
-from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor
+from .postgres import PgConnection, PostgresTransactionFailure, PostgresTransactor, table_config
 
 __all__ = ["PostgresIngestionSink", "reference_ingestion_ddl"]
 
@@ -36,7 +36,7 @@ def _statements(schema: str, tables: Mapping[str, str] | None, partitioned: bool
         dict[str, str],
         _json.decode(
             _native.postgres_ingest_statements(
-                _json.encode({"schema": schema, "names": dict(tables or {}), "partitioned": partitioned})
+                _json.encode({**table_config(schema, tables), "partitioned": partitioned})
             )
         ),
     )

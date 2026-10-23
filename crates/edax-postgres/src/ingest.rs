@@ -9,7 +9,7 @@ use edax_cqrs::ingest::{Plan, Rejection, Stored};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::schema::identifier;
+use crate::schema::{default_schema, read_config, RoleTables};
 
 mod partition;
 
@@ -58,28 +58,8 @@ pub fn write_plan(
     })
 }
 
-/// The configured schema and the quoted, qualified table of each role.
-struct Tables {
-    schema: String,
-    names: BTreeMap<&'static str, String>,
-    partitioned: bool,
-}
-
-impl Tables {
-    fn qualified(&self, role: &str) -> String {
-        format!(
-            "\"{}\".\"{}\"",
-            self.schema,
-            self.names.get(role).map_or("", String::as_str)
-        )
-    }
-}
-
-fn default_schema() -> String {
-    "public".to_owned()
-}
-
-fn tables(config_json: &str) -> Result<Tables, Error> {
+/// The tables the config names, and whether append ingestion is partitioned.
+fn tables(config_json: &str) -> Result<(RoleTables, bool), Error> {
     #[derive(Deserialize)]
     #[serde(deny_unknown_fields)]
     struct Config {
@@ -90,40 +70,13 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
         #[serde(default)]
         partitioned: bool,
     }
-    let config: Config = serde_json::from_str(config_json)
-        .map_err(|error| Error::bad_handle(format_args!("postgres ingestion config: {error}")))?;
-    for role in config.names.keys() {
-        if !ROLES.contains(&role.as_str()) {
-            return Err(Error::bad_handle(format_args!(
-                "unknown postgres ingestion role: {role}"
-            )));
-        }
-    }
-    let mut names = BTreeMap::new();
-    for role in ROLES {
-        let name = config
-            .names
-            .get(role)
-            .cloned()
-            .unwrap_or_else(|| format!("edax_{role}"));
-        let name = identifier("table name", &name)?;
-        if config.partitioned && name == partition::CONTROL_TABLE {
-            return Err(Error::bad_handle(
-                "postgres ingestion table name is reserved for partition control",
-            ));
-        }
-        if names.values().any(|taken| *taken == name) {
-            return Err(Error::bad_handle(format_args!(
-                "postgres ingestion roles need distinct tables, {name:?} is named twice"
-            )));
-        }
-        names.insert(role, name);
-    }
-    Ok(Tables {
-        schema: identifier("schema", &config.schema)?,
-        names,
-        partitioned: config.partitioned,
-    })
+    let config: Config = read_config("ingestion", config_json)?;
+    // The control table is a role whether or not the sink is partitioned: no data table may take its
+    // name, so a sink can turn partitioning on later.
+    let mut roles = ROLES.to_vec();
+    roles.push(partition::CONTROL_ROLE);
+    let tables = RoleTables::new("ingestion", &roles, &config.schema, &config.names)?;
+    Ok((tables, config.partitioned))
 }
 
 /// Parameterized statements for the standalone ingestion tables.
@@ -144,13 +97,13 @@ fn tables(config_json: &str) -> Result<Tables, Error> {
 /// Opt-in `partitioned` statements add a transaction advisory gate per physical events table,
 /// a durable floor, and exact partition coordinates; ordinary statements remain unchanged.
 pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> {
-    let tables = tables(config_json)?;
+    let (tables, partitioned) = tables(config_json)?;
     let mut sql = BTreeMap::new();
     let mut ddl = String::new();
     let mut checks = Vec::new();
     for role in ROLES {
         let table = tables.qualified(role);
-        if tables.partitioned && role == "ingest_events" {
+        if partitioned && role == "ingest_events" {
             ddl.push_str(&partition::events_ddl(&table));
         } else {
             ddl.push_str(&format!(
@@ -185,21 +138,24 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
                 format!("UPDATE {table} AS target SET value = changed.value FROM jsonb_each($1::jsonb) AS changed(key, value) WHERE target.key = changed.key"),
             );
         }
-        let check = if tables.partitioned && role == "ingest_events" {
+        let check = if partitioned && role == "ingest_events" {
             partition::events_check
         } else {
             key_value_check_named
         };
-        checks.push(check(&tables.schema, tables.names.get(role).map_or("", String::as_str)));
+        checks.push(check(tables.schema(), tables.name(role)));
     }
     let rejections = tables.qualified("ingest_rejections");
     // Published decisions stay forever; paging must not scan their accumulated history.
     ddl.push_str(&format!(
         "CREATE INDEX ON {rejections} (key) WHERE NOT (value->>'published')::boolean;\n"
     ));
-    if tables.partitioned {
+    if partitioned {
         partition::configure(&tables, &mut sql, &mut ddl);
-        checks.push(key_value_check_named(&tables.schema, partition::CONTROL_TABLE));
+        checks.push(key_value_check_named(
+            tables.schema(),
+            tables.name(partition::CONTROL_ROLE),
+        ));
     }
     sql.insert("ddl".to_owned(), ddl);
     sql.insert(

@@ -301,7 +301,7 @@ fn reference_schema_document() {
 #[test]
 fn reference_erasure_schema_document() {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/backends/postgres-erasure-schema.sql");
-    let ddl = edax_postgres::erasure::reference_ddl("public").unwrap();
+    let ddl = edax_postgres::erasure::reference_ddl("{}").unwrap();
     if std::env::var(edax_golden::ENV_REGEN).as_deref() == Ok("1") {
         std::fs::write(&path, &ddl).unwrap();
     } else {

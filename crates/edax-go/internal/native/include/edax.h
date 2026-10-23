@@ -6446,11 +6446,12 @@ char *edax_postgres_enqueue_params(const char *commands);
 uintptr_t edax_postgres_enqueue_params_len(const char *_commands);
 
 /**
- * Validate the erasure catalog query result without provisioning tables.
+ * Validate the erasure catalog query result for the tables `config_json` names, without provisioning
+ * them.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-int32_t edax_postgres_erasure_check_catalog(const char *schema,
+int32_t edax_postgres_erasure_check_catalog(const char *config_json,
                                             const char *catalog_json);
 
 /**
@@ -6530,11 +6531,12 @@ uintptr_t edax_postgres_erasure_load_params_len(EDAXAlefHandle _scope,
                                                 const char *_request_id);
 
 /**
- * Reference migration only; edax never provisions tables.
+ * Reference migration only; edax never provisions tables. `config_json` is
+ * `{"schema": ..., "names": {"erasure_operations": ..., ...}}`; an unnamed role takes `edax_<role>`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_erasure_reference_ddl(const char *schema);
+char *edax_postgres_erasure_reference_ddl(const char *config_json);
 
 /**
  * Return the byte length of the C string most recently returned by
@@ -6544,7 +6546,7 @@ char *edax_postgres_erasure_reference_ddl(const char *schema);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_erasure_reference_ddl`.
  */
-uintptr_t edax_postgres_erasure_reference_ddl_len(const char *_schema);
+uintptr_t edax_postgres_erasure_reference_ddl_len(const char *_config_json);
 
 /**
  * Conflicting transaction locks for cleanup and permanent revocation.
@@ -6580,11 +6582,11 @@ char *edax_postgres_erasure_scope_id(EDAXAlefHandle scope);
 uintptr_t edax_postgres_erasure_scope_id_len(EDAXAlefHandle _scope);
 
 /**
- * SQL for operation CAS, notifications, and transaction fences.
+ * SQL for operation CAS, notifications, and transaction fences, for the tables `config_json` names.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_erasure_statements(const char *schema);
+char *edax_postgres_erasure_statements(const char *config_json);
 
 /**
  * Return the byte length of the C string most recently returned by `edax_postgres_erasure_statements`
@@ -6593,7 +6595,7 @@ char *edax_postgres_erasure_statements(const char *schema);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_erasure_statements`.
  */
-uintptr_t edax_postgres_erasure_statements_len(const char *_schema);
+uintptr_t edax_postgres_erasure_statements_len(const char *_config_json);
 
 /**
  * Parameters for an atomic operation transition and optional control notification.

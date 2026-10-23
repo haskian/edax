@@ -321,6 +321,27 @@ Acquire scope fences before application row locks. Pass every scope a transactio
 so every writer takes their locks in one order. These helpers require READ COMMITTED because
 revocation must be read in a fresh statement snapshot after a lock wait.
 
+The three erasure tables default to `edax_erasure_operations`, `edax_erasure_notifications` and
+`edax_erasure_revocations`. Pass a `tables` mapping with roles `erasure_operations`,
+`erasure_notifications` and `erasure_revocations` to both `erasure_postgres.reference_ddl` and the
+store to rename them. The pending-operations index takes the operations table's name plus
+`_pending`; no table may take that name. Every process of a service must use the same mapping:
+a writer that reads another revocations table misses every tombstone in it.
+
+`reference_ddl` creates new, empty tables. An existing deployment keeps its rows by renaming each
+table, and the `_pending` index, with `ALTER TABLE ... RENAME` in one migration, once every
+process on the old mapping has stopped. Fresh tables beside the old ones lose every tombstone and
+every pending operation.
+
+```python
+from edax.backend.erasure_postgres import PostgresErasureStore, reference_ddl
+
+tables = {"erasure_operations": "billing_erasures", "erasure_revocations": "billing_revocations"}
+migration_sql = reference_ddl("billing", tables)
+store = PostgresErasureStore(pool, schema="billing", tables=tables)
+await store.check()
+```
+
 A provider guard and a Postgres destination guard protect different resources. A production
 participant must wire both where required. The reference memory provider is process-local and
 cannot fence another service. See [provider and participant conformance](../guides/crypto-shredding.md).

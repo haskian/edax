@@ -13,7 +13,7 @@
 //! statement that waited for an advisory lock can predate the revocation it waited behind.
 //! See PostgreSQL 17 `transaction-iso.html` and `functions-admin.html` (transaction advisory locks).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use edax_core::{Error, ErrorCode};
 use edax_event::erasure::{ErasureOperation, ErasureStage};
@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::check_bigint;
 use crate::rows::{text_param, Call, Param};
-use crate::schema::{Tables, KEY_COLLATIONS};
+use crate::schema::{index_name, RoleTables, KEY_COLLATIONS};
 
 struct ErasureColumn {
     name: &'static str,
@@ -30,15 +30,19 @@ struct ErasureColumn {
     key: bool,
 }
 struct ErasureTable {
-    suffix: &'static str,
+    role: &'static str,
     columns: &'static [ErasureColumn],
     primary: &'static [&'static str],
     unique: &'static [&'static [&'static str]],
 }
 
+const OPERATIONS: &str = "erasure_operations";
+const NOTIFICATIONS: &str = "erasure_notifications";
+const REVOCATIONS: &str = "erasure_revocations";
+
 const TABLES: &[ErasureTable] = &[
     ErasureTable {
-        suffix: "operations",
+        role: OPERATIONS,
         columns: &[
             ErasureColumn {
                 name: "operation_id",
@@ -70,7 +74,7 @@ const TABLES: &[ErasureTable] = &[
         unique: &[&["scope", "request_id"]],
     },
     ErasureTable {
-        suffix: "notifications",
+        role: NOTIFICATIONS,
         columns: &[
             ErasureColumn {
                 name: "operation_id",
@@ -87,7 +91,7 @@ const TABLES: &[ErasureTable] = &[
         unique: &[],
     },
     ErasureTable {
-        suffix: "revocations",
+        role: REVOCATIONS,
         columns: &[ErasureColumn {
             name: "scope",
             kind: "text",
@@ -130,13 +134,23 @@ pub struct Statements {
     pub mark_published: String,
 }
 
-fn table(schema: &str, suffix: &str) -> String {
-    format!("\"{schema}\".\"edax_erasure_{suffix}\"")
+/// The tables `config_json` names: `{"schema": "public", "names": {"erasure_operations": "..."}}`. A role
+/// the host does not name takes `edax_<role>`, and the schema defaults to `public`.
+fn tables(config_json: &str) -> Result<RoleTables, Error> {
+    let roles: Vec<&'static str> = TABLES.iter().map(|spec| spec.role).collect();
+    RoleTables::from_json("erasure", &roles, config_json)
 }
 
-/// Reference schema for the adopter's migration. Edax never runs it.
-pub fn reference_ddl(schema: &str) -> Result<String, Error> {
-    let tables = Tables::new(schema, BTreeMap::new())?;
+/// Reference schema for the adopter's migration, for the tables `config_json` names. Edax never runs it.
+/// A table named as the pending-operations index would fail the migration, so it is refused.
+pub fn reference_ddl(config_json: &str) -> Result<String, Error> {
+    let tables = tables(config_json)?;
+    let index = index_name(tables.name(OPERATIONS), "_pending");
+    if tables.names().any(|name| name == index) {
+        return Err(Error::bad_handle(format_args!(
+            "postgres erasure table {index:?} takes the name of the pending-operations index"
+        )));
+    }
     let mut ddl = String::new();
     for spec in TABLES {
         let mut columns: Vec<String> = spec
@@ -165,31 +179,30 @@ pub fn reference_ddl(schema: &str) -> Result<String, Error> {
         }
         ddl.push_str(&format!(
             "CREATE TABLE {} (\n{}\n);\n",
-            table(tables.schema(), spec.suffix),
+            tables.qualified(spec.role),
             columns.join(",\n")
         ));
     }
     ddl.push_str(&format!(
-        "CREATE INDEX edax_erasure_operations_pending ON {} (operation_id) WHERE record::json->>'stage' <> 'complete';\n",
-        table(tables.schema(), "operations")
+        "CREATE INDEX {index} ON {} (operation_id) WHERE record::json->>'stage' <> 'complete';\n",
+        tables.qualified(OPERATIONS)
     ));
     Ok(ddl)
 }
 
 /// Reuse the shared catalog query, adding primary-key identity for the control tables' stricter contract.
-fn catalog_query(tables: &Tables) -> String {
+fn catalog_query(tables: &RoleTables) -> String {
     let wanted: Vec<serde_json::Value> = TABLES
         .iter()
         .map(|spec| {
             serde_json::json!({
-                "logical": spec.suffix, "schema": tables.schema(), "name": format!("edax_erasure_{}", spec.suffix)
+                "logical": spec.role, "schema": tables.schema(), "name": tables.name(spec.role)
             })
         })
         .collect();
-    // The schema was validated by Tables and all remaining strings are kernel constants: no quoted
+    // The schema and names passed the identifier rule and the roles are kernel constants: no quoted
     // SQL literal can contain an apostrophe. Embedding this fixed parameter keeps adapters declarative.
-    crate::statements::statements(tables)
-        .catalog
+    crate::statements::CATALOG
         .replace(
             "'valid', i.indisvalid,",
             "'valid', i.indisvalid, 'primary', i.indisprimary,",
@@ -244,16 +257,16 @@ fn index_matches(index: &CatalogIndex, columns: &[&str], primary: bool) -> bool 
 
 /// Verify columns, strict nullability, byte collations, and immediate valid primary/unique keys.
 /// This is a read-only startup check; it never provisions or repairs a schema.
-pub fn check_catalog(schema: &str, catalog_json: &str) -> Result<(), Error> {
-    let tables = Tables::new(schema, BTreeMap::new())?;
+pub fn check_catalog(config_json: &str, catalog_json: &str) -> Result<(), Error> {
+    let tables = tables(config_json)?;
     let catalog: Vec<CatalogTable> = serde_json::from_str(catalog_json)
         .map_err(|_| Error::bad_handle("postgres erasure catalog reply has an invalid layout"))?;
     let mut problems = Vec::new();
     for spec in TABLES {
-        let name = table(tables.schema(), spec.suffix);
+        let name = tables.qualified(spec.role);
         let Some(found) = catalog
             .iter()
-            .find(|entry| entry.table == spec.suffix && matches!(entry.kind.as_deref(), Some("r" | "p")))
+            .find(|entry| entry.table == spec.role && matches!(entry.kind.as_deref(), Some("r" | "p")))
         else {
             problems.push(format!("table {name} does not exist"));
             continue;
@@ -319,12 +332,12 @@ pub fn check_catalog(schema: &str, catalog_json: &str) -> Result<(), Error> {
     }
 }
 
-/// Render all erasure statements. Table names are fixed within the validated schema.
-pub fn statements(schema: &str) -> Result<Statements, Error> {
-    let tables = Tables::new(schema, BTreeMap::new())?;
-    let operations = table(tables.schema(), "operations");
-    let notifications = table(tables.schema(), "notifications");
-    let revocations = table(tables.schema(), "revocations");
+/// Render all erasure statements for the tables `config_json` names.
+pub fn statements(config_json: &str) -> Result<Statements, Error> {
+    let tables = tables(config_json)?;
+    let operations = tables.qualified(OPERATIONS);
+    let notifications = tables.qualified(NOTIFICATIONS);
+    let revocations = tables.qualified(REVOCATIONS);
     let row = "json_build_object('version', version, 'operation', record::json)::text";
     // The stages whose scope is revoked, as `ErasureOperation::scope_revoked` reads them: kernel names,
     // so the literals hold no apostrophe.
@@ -533,20 +546,140 @@ pub fn update_result(version: Option<i64>) -> Result<u64, Error> {
 #[cfg(test)]
 mod catalog_tests {
     use super::*;
+    use std::collections::BTreeMap;
+
+    fn config(schema: &str, names: &[(&str, &str)]) -> String {
+        let names: BTreeMap<&str, &str> = names.iter().copied().collect();
+        serde_json::json!({"schema": schema, "names": names}).to_string()
+    }
+
+    const RENAMED: &[(&str, &str)] = &[
+        ("erasure_operations", "erasure_ops"),
+        ("erasure_notifications", "erasure_outbox"),
+        ("erasure_revocations", "erasure_tombstones"),
+    ];
 
     #[test]
     fn catalog_statement_is_read_only_and_needs_no_host_contract_parameters() {
-        let sql = statements("erasure_test").unwrap().check_schema;
+        let sql = statements(&config("erasure_test", &[])).unwrap().check_schema;
         assert!(sql.contains("pg_attribute") && sql.contains("pg_index"));
         assert!(sql.contains("'primary', i.indisprimary"));
         assert!(sql.contains("edax_erasure_operations") && sql.contains("edax_erasure_notifications"));
         assert!(sql.contains("edax_erasure_revocations"));
         assert!(!sql.contains("$1") && !sql.contains("CREATE "));
-        assert!(statements("unsafe'schema").is_err());
-        let missing = check_catalog("erasure_test", "[]").unwrap_err();
+        let missing = check_catalog(&config("erasure_test", &[]), "[]").unwrap_err();
         assert_eq!(missing.code, ErrorCode::BadHandle);
         assert!(missing.message.contains("operations") && missing.message.contains("revocations"));
-        assert_eq!(check_catalog("public", "{}").unwrap_err().code, ErrorCode::BadHandle);
+        assert_eq!(check_catalog("{}", "{}").unwrap_err().code, ErrorCode::BadHandle);
+    }
+
+    #[test]
+    fn config_names_each_table_by_role() {
+        assert_eq!(
+            reference_ddl("{}").unwrap(),
+            reference_ddl(&config("public", &[])).unwrap()
+        );
+        let ddl = reference_ddl(&config("privacy", RENAMED)).unwrap();
+        for (_, name) in RENAMED {
+            assert!(ddl.contains(&format!("CREATE TABLE \"privacy\".\"{name}\"")), "{name}");
+        }
+        assert!(ddl.contains("CREATE INDEX erasure_ops_pending ON \"privacy\".\"erasure_ops\""));
+        let sql = statements(&config("privacy", RENAMED)).unwrap();
+        let (operations, outbox, tombstones) = (
+            "\"privacy\".\"erasure_ops\"",
+            "\"privacy\".\"erasure_outbox\"",
+            "\"privacy\".\"erasure_tombstones\"",
+        );
+        for (statement, text, table) in [
+            ("create_operation", &sql.create_operation, operations),
+            ("load_operation", &sql.load_operation, operations),
+            ("get_operation", &sql.get_operation, operations),
+            ("pending_operations", &sql.pending_operations, operations),
+            ("revoked_operations", &sql.revoked_operations, operations),
+            ("update_operation", &sql.update_operation, operations),
+            ("update_operation", &sql.update_operation, outbox),
+            ("pending_notifications", &sql.pending_notifications, outbox),
+            ("mark_published", &sql.mark_published, outbox),
+            ("check_revoked", &sql.check_revoked, tombstones),
+            ("revoke", &sql.revoke, tombstones),
+        ] {
+            assert!(text.contains(table), "{statement} reads {table}");
+            assert!(!text.contains("edax_erasure"), "{statement}");
+        }
+        // The table part is cut so `_pending` survives the 63-byte limit.
+        let kept = "o".repeat(63 - "_pending".len());
+        let long = "o".repeat(63);
+        let ddl = reference_ddl(&config("privacy", &[("erasure_operations", &long)])).unwrap();
+        assert!(ddl.contains(&format!("CREATE INDEX {kept}_pending ON")));
+        // A table named as the index fails only the migration, so only the migration refuses it.
+        for (case, names) in [
+            (
+                "another table",
+                [
+                    ("erasure_operations", "ops".to_owned()),
+                    ("erasure_notifications", "ops_pending".to_owned()),
+                ],
+            ),
+            (
+                "the operations table",
+                [
+                    ("erasure_operations", format!("{kept}_pending")),
+                    ("erasure_notifications", "outbox".to_owned()),
+                ],
+            ),
+        ] {
+            let names: Vec<(&str, &str)> = names.iter().map(|(role, name)| (*role, name.as_str())).collect();
+            let config = config("privacy", &names);
+            let error = reference_ddl(&config).unwrap_err();
+            assert!(
+                error.message.contains("takes the name of the pending-operations index"),
+                "{case}: {error}"
+            );
+            assert!(statements(&config).is_ok(), "{case}");
+        }
+        let refused = [
+            (
+                "unknown role",
+                config("privacy", &[("operations", "ops")]),
+                "unknown postgres erasure role: operations",
+            ),
+            (
+                "shared name",
+                config(
+                    "privacy",
+                    &[("erasure_operations", "same"), ("erasure_revocations", "same")],
+                ),
+                "are both named",
+            ),
+            (
+                "default name taken",
+                config("privacy", &[("erasure_operations", "edax_erasure_revocations")]),
+                "are both named",
+            ),
+            (
+                "bad table name",
+                config("privacy", &[("erasure_operations", "Ops")]),
+                "table name \"Ops\"",
+            ),
+            ("bad schema", config("unsafe'schema", &[]), "schema \"unsafe'schema\""),
+            (
+                "unknown field",
+                r#"{"schema":"privacy","prefix":"x"}"#.to_owned(),
+                "unknown field `prefix`",
+            ),
+            ("not json", "privacy".to_owned(), "postgres erasure config"),
+        ];
+        for (case, config, expected) in refused {
+            for result in [
+                reference_ddl(&config).map(drop),
+                statements(&config).map(drop),
+                check_catalog(&config, "[]"),
+            ] {
+                let error = result.unwrap_err();
+                assert_eq!(error.code, ErrorCode::BadHandle, "{case}");
+                assert!(error.message.contains(expected), "{case}: {error}");
+            }
+        }
     }
 
     fn psql(url: &str, sql: &str) -> String {
@@ -587,41 +720,42 @@ mod catalog_tests {
         let Ok(url) = std::env::var("EDAX_POSTGRES_URL") else {
             return;
         };
-        let schema = Schema {
-            url,
-            name: format!("edax_erasure_catalog_{}", edax_core::guid_simple()),
-        };
-        psql(
-            &schema.url,
-            &format!(
-                "CREATE SCHEMA \"{}\"; {}",
-                schema.name,
-                reference_ddl(&schema.name).unwrap()
-            ),
-        );
-        let query = statements(&schema.name).unwrap().check_schema;
-        check_catalog(&schema.name, &psql(&schema.url, &query)).unwrap();
-        let operations = table(&schema.name, "operations");
-        let notifications = table(&schema.name, "notifications");
-        let revocations = table(&schema.name, "revocations");
-        let cases = [
-            (format!("ALTER TABLE {operations} DROP COLUMN record"), "record is missing"),
-            (format!("ALTER TABLE {operations} ALTER COLUMN version TYPE integer"), "version must have type bigint"),
-            (format!("ALTER TABLE {operations} ALTER COLUMN record DROP NOT NULL"), "record must be NOT NULL"),
-            (format!("ALTER TABLE {revocations} ALTER COLUMN scope TYPE text COLLATE \"default\""), "scope must collate"),
-            (format!("ALTER TABLE {notifications} DROP CONSTRAINT edax_erasure_notifications_pkey; ALTER TABLE {notifications} ADD UNIQUE (operation_id)"), "primary key"),
-            (format!("ALTER TABLE {operations} DROP CONSTRAINT edax_erasure_operations_scope_request_id_key; CREATE UNIQUE INDEX partial_request ON {operations} (scope, request_id) WHERE version > 0"), "unique key"),
-            (format!("ALTER TABLE {operations} DROP CONSTRAINT edax_erasure_operations_pkey; ALTER TABLE {operations} ADD PRIMARY KEY (operation_id) DEFERRABLE"), "primary key"),
-            (format!("ALTER TABLE {notifications} ADD COLUMN extra text NOT NULL"), "prevents inserts"),
-            (format!("DROP TABLE {revocations}"), "does not exist"),
-        ];
-        for (change, expected) in cases {
-            let catalog = psql(&schema.url, &format!("BEGIN; {change}; {query}; ROLLBACK"));
-            let error = check_catalog(&schema.name, &catalog).unwrap_err();
-            assert_eq!(error.code, ErrorCode::BadHandle);
-            assert!(error.message.contains(expected), "{change}: {error}");
+        for names in [&[][..], RENAMED] {
+            let schema = Schema {
+                url: url.clone(),
+                name: format!("edax_erasure_catalog_{}", edax_core::guid_simple()),
+            };
+            let config = config(&schema.name, names);
+            let tables = tables(&config).unwrap();
+            psql(
+                &schema.url,
+                &format!("CREATE SCHEMA \"{}\"; {}", schema.name, reference_ddl(&config).unwrap()),
+            );
+            let query = statements(&config).unwrap().check_schema;
+            check_catalog(&config, &psql(&schema.url, &query)).unwrap();
+            let (operations_name, notifications_name) = (tables.name(OPERATIONS), tables.name(NOTIFICATIONS));
+            let operations = tables.qualified(OPERATIONS);
+            let notifications = tables.qualified(NOTIFICATIONS);
+            let revocations = tables.qualified(REVOCATIONS);
+            let cases = [
+                (format!("ALTER TABLE {operations} DROP COLUMN record"), "record is missing"),
+                (format!("ALTER TABLE {operations} ALTER COLUMN version TYPE integer"), "version must have type bigint"),
+                (format!("ALTER TABLE {operations} ALTER COLUMN record DROP NOT NULL"), "record must be NOT NULL"),
+                (format!("ALTER TABLE {revocations} ALTER COLUMN scope TYPE text COLLATE \"default\""), "scope must collate"),
+                (format!("ALTER TABLE {notifications} DROP CONSTRAINT {notifications_name}_pkey; ALTER TABLE {notifications} ADD UNIQUE (operation_id)"), "primary key"),
+                (format!("ALTER TABLE {operations} DROP CONSTRAINT {operations_name}_scope_request_id_key; CREATE UNIQUE INDEX partial_request ON {operations} (scope, request_id) WHERE version > 0"), "unique key"),
+                (format!("ALTER TABLE {operations} DROP CONSTRAINT {operations_name}_pkey; ALTER TABLE {operations} ADD PRIMARY KEY (operation_id) DEFERRABLE"), "primary key"),
+                (format!("ALTER TABLE {notifications} ADD COLUMN extra text NOT NULL"), "prevents inserts"),
+                (format!("DROP TABLE {revocations}"), "does not exist"),
+            ];
+            for (change, expected) in cases {
+                let catalog = psql(&schema.url, &format!("BEGIN; {change}; {query}; ROLLBACK"));
+                let error = check_catalog(&config, &catalog).unwrap_err();
+                assert_eq!(error.code, ErrorCode::BadHandle);
+                assert!(error.message.contains(expected), "{change}: {error}");
+            }
+            let compatible = psql(&schema.url, &format!("BEGIN; ALTER TABLE {notifications} ADD COLUMN nullable_extra text; ALTER TABLE {notifications} ADD COLUMN defaulted_extra text NOT NULL DEFAULT ''; {query}; ROLLBACK"));
+            check_catalog(&config, &compatible).unwrap();
         }
-        let compatible = psql(&schema.url, &format!("BEGIN; ALTER TABLE {notifications} ADD COLUMN nullable_extra text; ALTER TABLE {notifications} ADD COLUMN defaulted_extra text NOT NULL DEFAULT ''; {query}; ROLLBACK"));
-        check_catalog(&schema.name, &compatible).unwrap();
     }
 }

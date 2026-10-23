@@ -2066,14 +2066,14 @@ func PostgresEnqueueParams(commands []CommandMessage) (string, error) {
 }
 
 // PostgresErasureCheckCatalog calls the shared kernel.
-func PostgresErasureCheckCatalog(schema string, catalogJSON string) error {
-	if err := checkNativeString("schema", schema); err != nil {
+func PostgresErasureCheckCatalog(configJSON string, catalogJSON string) error {
+	if err := checkNativeString("configJSON", configJSON); err != nil {
 		return err
 	}
 	if err := checkNativeString("catalogJSON", catalogJSON); err != nil {
 		return err
 	}
-	return mapNativeError(native.PostgresErasureCheckCatalog(schema, catalogJSON))
+	return mapNativeError(native.PostgresErasureCheckCatalog(configJSON, catalogJSON))
 }
 
 // PostgresErasureCheckGuard calls the shared kernel.
@@ -2128,12 +2128,12 @@ func PostgresErasureLoadParams(scope KeyScope, requestID string) (string, error)
 }
 
 // PostgresErasureReferenceDdl calls the shared kernel.
-func PostgresErasureReferenceDdl(schema string) (string, error) {
+func PostgresErasureReferenceDdl(configJSON string) (string, error) {
 	var zero string
-	if err := checkNativeString("schema", schema); err != nil {
+	if err := checkNativeString("configJSON", configJSON); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresErasureReferenceDdl(schema)
+	nativeValue, nativeError := native.PostgresErasureReferenceDdl(configJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2158,12 +2158,12 @@ func PostgresErasureScopeID(scope KeyScope) (string, error) {
 }
 
 // PostgresErasureStatements calls the shared kernel.
-func PostgresErasureStatements(schema string) (string, error) {
+func PostgresErasureStatements(configJSON string) (string, error) {
 	var zero string
-	if err := checkNativeString("schema", schema); err != nil {
+	if err := checkNativeString("configJSON", configJSON); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresErasureStatements(schema)
+	nativeValue, nativeError := native.PostgresErasureStatements(configJSON)
 	return nativeValue, mapNativeError(nativeError)
 }
 

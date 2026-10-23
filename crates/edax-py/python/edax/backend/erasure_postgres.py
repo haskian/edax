@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import math
-from collections.abc import AsyncIterator, Awaitable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Literal, Protocol, TypeVar, cast
 
@@ -20,7 +20,7 @@ from ..erasure import ErasureAction, ErasureNotification, ErasureOperation, Stor
 from ..errors import BadHandle, EdaxError
 from ..outbox import check_page
 from ..sealing import KeyScope
-from .postgres import postgres_error, postgres_params
+from .postgres import postgres_error, postgres_params, table_config
 
 __all__ = ["PgErasureConnection", "PgErasurePool", "PostgresErasureStore", "reference_ddl"]
 
@@ -44,9 +44,13 @@ class PgErasurePool(Protocol):
     def acquire(self, *, timeout: float) -> AbstractAsyncContextManager[PgErasureConnection]: ...
 
 
-def reference_ddl(schema: str = "public") -> str:
-    """Return the kernel's migration starting point. No database changes occur here."""
-    return _native.postgres_erasure_reference_ddl(schema)
+def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = None) -> str:
+    """Return the kernel's migration starting point. No database changes occur here.
+
+    ``tables`` names a table per role (``erasure_operations``, ``erasure_notifications``,
+    ``erasure_revocations``); an unnamed role takes ``edax_<role>``. Pass the store the same mapping.
+    """
+    return _native.postgres_erasure_reference_ddl(json.dumps(table_config(schema, tables)))
 
 
 class PostgresErasureStore:
@@ -57,19 +61,27 @@ class PostgresErasureStore:
     Every database effect has an operation timeout, including transaction entry, commit and rollback.
     """
 
-    def __init__(self, pool: PgErasurePool, *, schema: str = "public", timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        pool: PgErasurePool,
+        *,
+        schema: str = "public",
+        tables: Mapping[str, str] | None = None,
+        timeout: float = 10.0,
+    ) -> None:
         if not math.isfinite(timeout) or timeout <= 0:
             raise BadHandle("Postgres erasure timeout must be finite and positive")
-        self._schema = schema
+        # The kernel refuses an unknown role, a name outside its rule or two roles under one name.
+        self._config = json.dumps(table_config(schema, tables))
         self._pool = pool
         self._timeout = timeout
-        self._sql = cast(dict[str, str], json.loads(_native.postgres_erasure_statements(schema)))
+        self._sql = cast(dict[str, str], json.loads(_native.postgres_erasure_statements(self._config)))
 
     async def check(self) -> None:
         """Read the catalog and refuse incompatible control tables without provisioning them."""
         async with self._transaction() as connection:
             catalog = await self._await(connection.fetchval(self._sql["check_schema"]))
-            _native.postgres_erasure_check_catalog(self._schema, cast(str, catalog))
+            _native.postgres_erasure_check_catalog(self._config, cast(str, catalog))
 
     async def _await(
         self, call: Awaitable[T], *, op: Literal["transaction", "erasure_fence"] = "transaction"

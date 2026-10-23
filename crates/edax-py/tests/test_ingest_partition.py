@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from dataclasses import replace
 from decimal import Decimal
 from typing import Any
@@ -35,27 +35,38 @@ async def database() -> AsyncIterator[Database]:
     pool = await asyncpg.create_pool(
         URL, min_size=1, max_size=6, server_settings={"application_name": schema}
     )
-    await pool.execute(f'CREATE SCHEMA "{schema}"')
     try:
-        await pool.execute(reference_ingestion_ddl(schema, partitioned=True))
-        for name, lower, upper in (
-            ("early", "1970-01-01 00:00:00+00", "1970-01-01 00:00:00.002+00"),
-            ("later", "1970-01-01 00:00:00.002+00", "1970-01-01 00:00:00.004+00"),
-        ):
-            await pool.execute(
-                f'CREATE TABLE "{schema}"."{name}" PARTITION OF "{schema}".edax_ingest_events '
-                f"FOR VALUES FROM ('{lower}') TO ('{upper}')"
-            )
+        await provision(pool, schema)
         yield pool, PostgresTransactor(pool, schema=schema), schema
     finally:
-        await pool.execute(f'DROP SCHEMA "{schema}" CASCADE')
+        await pool.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
         await pool.close()
 
 
-def sink_for(database: Database, generation: str = "pulse-v1") -> PostgresIngestionSink:
-    _, transactor, schema = database
+async def provision(pool: Any, schema: str, tables: Mapping[str, str] | None = None) -> None:
+    """The schema, the partitioned tables and two child partitions, as a host migration would make them."""
+    await pool.execute(f'CREATE SCHEMA "{schema}"')
+    await pool.execute(reference_ingestion_ddl(schema, tables, partitioned=True))
+    for name, lower, upper in (
+        ("early", "1970-01-01 00:00:00+00", "1970-01-01 00:00:00.002+00"),
+        ("later", "1970-01-01 00:00:00.002+00", "1970-01-01 00:00:00.004+00"),
+    ):
+        await pool.execute(
+            f'CREATE TABLE "{schema}"."{name}" PARTITION OF "{schema}".edax_ingest_events '
+            f"FOR VALUES FROM ('{lower}') TO ('{upper}')"
+        )
+
+
+def sink_for(
+    database: Database,
+    generation: str = "pulse-v1",
+    *,
+    schema: str | None = None,
+    tables: Mapping[str, str] | None = None,
+) -> PostgresIngestionSink:
+    _, transactor, fixture_schema = database
     target = IngestionTarget("append", generation, "device-42-v1", "pulse-v1", partition="event_id_uuid7")
-    return PostgresIngestionSink(transactor, target, schema=schema)
+    return PostgresIngestionSink(transactor, target, schema=schema or fixture_schema, tables=tables)
 
 
 def event_id(milliseconds: int, ordinal: int = 1) -> str:
@@ -170,6 +181,24 @@ async def test_missing_control_row_fails_closed_even_with_cached_binding(databas
     with pytest.raises(BadHandle, match="control row"):
         await sink.commit([record(sink, 1, milliseconds=2)])
     assert await pool.fetchval(f'SELECT count(*) FROM "{schema}".edax_ingest_events') == 1
+
+
+async def test_renamed_control_table_holds_the_floor(database: Database) -> None:
+    pool, _, schema = database
+    named = f"{schema}_named"
+    tables = {"ingest_partition_control": "pulse_partitions"}
+    try:
+        await provision(pool, named, tables)
+        sink = sink_for(database, schema=named, tables=tables)
+        assert (await sink.commit([record(sink, 0)])).outcomes == ("accepted",)
+        assert await sink.advance_horizon(2000) == 2000
+        horizon = f"SELECT value->>'horizon' FROM \"{named}\".pulse_partitions WHERE key=$1"
+        assert await pool.fetchval(horizon, f'"{named}"."edax_ingest_events"') == "2000"
+        assert (
+            await pool.fetchval("SELECT to_regclass($1)", f'"{named}".edax_ingest_partition_control') is None
+        )
+    finally:
+        await pool.execute(f'DROP SCHEMA IF EXISTS "{named}" CASCADE')
 
 
 async def test_missing_partition_retries_without_poison_rejection(database: Database) -> None:

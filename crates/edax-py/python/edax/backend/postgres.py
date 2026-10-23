@@ -110,12 +110,17 @@ TableRole = Literal[
 _names.check(get_args(TableRole), _native.postgres_table_roles(), "postgres table roles")
 
 
+def table_config(schema: str, tables: Mapping[str, str] | None) -> dict[str, object]:
+    """The wire form every Postgres store's kernel config shares: the schema, and a name per role the host
+    names. The kernel validates both."""
+    return {"schema": wiring_str(schema, "schema"), "names": dict(tables or {})}
+
+
 def _tables_json(schema: str, tables: Mapping[str, str] | None) -> str:
     """The tables in ``schema``, named by ``tables`` where it names a role, as the kernel resolves and
     validates them: a name outside the identifier rule or an unknown role raises
     :class:`~edax.errors.BadHandle`."""
-    wire = {"schema": wiring_str(schema, "schema"), "names": dict(tables or {})}
-    return _native.postgres_tables(json.dumps(wire))
+    return _native.postgres_tables(json.dumps(table_config(schema, tables)))
 
 
 def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = None) -> str:

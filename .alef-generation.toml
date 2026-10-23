@@ -11,4 +11,4 @@
 # Do not hand-edit; it is rewritten by `alef generate`/`alef all` on every successful run.
 
 [crates]
-edax-abi = "bbd3424b1bd2683cfeea46c206791a8a759ad90958c54ed15f9d6c67db5cbbbd"
+edax-abi = "b5a66ef6db5ba3eb6506618846450e953b491a0ec1365289dc52165450da6dc9"

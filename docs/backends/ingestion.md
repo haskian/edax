@@ -140,8 +140,10 @@ migration_sql = reference_ingestion_ddl(schema="billing")
 ```
 
 Copy that SQL into the migration after creating `billing`. The three optional tables default to
-`edax_ingest_events`, `edax_ingest_state` and `edax_ingest_rejections`. Pass a `tables` mapping with
-roles `ingest_events`, `ingest_state` and `ingest_rejections` to both `reference_ingestion_ddl` and the sink to rename them. Existing Postgres
+`edax_ingest_events`, `edax_ingest_state` and `edax_ingest_rejections`; partitioned append adds
+`edax_ingest_partition_control`. Pass a `tables` mapping with roles `ingest_events`, `ingest_state`,
+`ingest_rejections` and `ingest_partition_control` to both `reference_ingestion_ddl` and the sink to
+rename them. Existing Postgres
 stores need no ingestion-table migration unless they use this feature. The sink checks the catalog;
 it rejects incompatible key/value columns, missing usable uniqueness, required extra columns and
 row-level security. It never creates tables.
