@@ -1,7 +1,7 @@
 //! Authenticated message context. Producer-assigned fields are immutable after sealing.
 
 use crate::{CommandMessage, EventDraft, EventMessage};
-use edax_core::Error;
+use edax_core::{Error, ErrorCode};
 use edax_seal::{Aad, EncryptionInfo, KeyScope};
 
 /// Validate the protected envelope on both sides of every codec boundary.
@@ -40,7 +40,10 @@ pub fn check_owner(committed: bool, owner: Option<&str>, proposed: Option<&str>)
         edax_core::check_subject(subject)?;
     }
     if committed && owner != proposed {
-        return Err(Error::codec("protected state owner is immutable"));
+        return Err(Error::new(
+            ErrorCode::OwnerMismatch,
+            "protected state owner is immutable",
+        ));
     }
     Ok(())
 }

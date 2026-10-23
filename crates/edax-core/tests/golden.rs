@@ -25,6 +25,7 @@ fn error_taxonomy_cases() -> Vec<Value> {
         ErrorCode::KeyRevoking => "scope revoking",
         ErrorCode::KeyMissing => "generation missing",
         ErrorCode::KeyUnauthorized => "access denied",
+        ErrorCode::OwnerMismatch => "protected state owner is immutable",
         ErrorCode::Concurrency => "expected 3, stored 4",
         ErrorCode::Codec => "invalid type: string, expected u64",
         ErrorCode::Store => "connection to the event store was reset",

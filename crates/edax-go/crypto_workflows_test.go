@@ -431,7 +431,7 @@ func TestCryptoRepositoryPersistsOnlyCiphertextAndRestoresOwner(t *testing.T) {
 			if err != nil || loaded.CustomerID != privateCustomer || loaded.Subject() == nil || *loaded.Subject() != "person-42" {
 				t.Fatalf("reload: %+v %v", loaded, err)
 			}
-			if err := loaded.SetSubject(edax.Ptr("person-43")); !errors.Is(err, edax.ErrCodec) {
+			if err := loaded.SetSubject(edax.Ptr("person-43")); !errors.Is(err, edax.ErrOwnerMismatch) {
 				t.Fatalf("ownership change: %v", err)
 			}
 			if _, err := workflowRepository(t, store, nil, nil).Load(ctx, aggregate.ID(), nil); !errors.Is(err, edax.ErrBadHandle) {
@@ -1020,7 +1020,7 @@ func TestCryptoSagaPersistsEncryptedStateCommandsAndOwnedCompletion(t *testing.T
 	foreign.ID = "event-foreign"
 	foreign.Sequence = edax.Ptr(uint64(2))
 	foreign.Subject = edax.Ptr("customer-43")
-	if err := runner.OnEvent(ctx, sealEvent(foreign)); !errors.Is(err, edax.ErrCodec) || saga.calls != 1 {
+	if err := runner.OnEvent(ctx, sealEvent(foreign)); !errors.Is(err, edax.ErrOwnerMismatch) || saga.calls != 1 {
 		t.Fatalf("foreign owner accepted: calls=%d err=%v", saga.calls, err)
 	}
 	tampered, err := edax.NewSagaRunner(saga, tamperedCryptoSagaStore{SagaStore: store, completed: edax.Ptr(true)}, edax.SagaOptions{Sealing: sealing})
@@ -1049,7 +1049,7 @@ func TestCryptoSagaPersistsEncryptedStateCommandsAndOwnedCompletion(t *testing.T
 	if err := runner.OnEvent(ctx, sealEvent(completed)); err != nil || saga.calls != 2 {
 		t.Fatalf("completion replay: calls=%d err=%v", saga.calls, err)
 	}
-	if err := runner.OnEvent(ctx, sealEvent(foreign)); !errors.Is(err, edax.ErrCodec) {
+	if err := runner.OnEvent(ctx, sealEvent(foreign)); !errors.Is(err, edax.ErrOwnerMismatch) {
 		t.Fatalf("completed owner was not retained: %v", err)
 	}
 }

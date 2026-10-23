@@ -103,5 +103,12 @@
     "message": "access denied",
     "terminal": true,
     "wire": "key_unauthorized: access denied"
+  },
+  {
+    "code": "owner_mismatch",
+    "fatal": false,
+    "message": "protected state owner is immutable",
+    "terminal": true,
+    "wire": "owner_mismatch: protected state owner is immutable"
   }
 ]

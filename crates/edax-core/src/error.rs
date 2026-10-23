@@ -134,6 +134,9 @@ error_codes! {
     KeyMissing = "key_missing" => fatal,
     /// Provider access or configuration does not authorize the requested scope.
     KeyUnauthorized = "key_unauthorized" => fatal,
+    /// A sealed stream, snapshot or saga state belongs to another tenant or subject than the call
+    /// names. Its own code so a host can answer it as not found without matching message text.
+    OwnerMismatch = "owner_mismatch" => terminal,
 }
 
 impl ErrorCode {

@@ -126,6 +126,15 @@
     "want": "release"
   },
   {
+    "code": "owner_mismatch",
+    "message": "unknown field `amount`",
+    "payload_hash": 11234062831410934249,
+    "reason": null,
+    "want": {
+      "cache": "{\"payload_hash\":11234062831410934249,\"result\":null,\"error\":\"\",\"error_code\":\"owner_mismatch\",\"pending\":false}"
+    }
+  },
+  {
     "code": "codec",
     "message": "",
     "payload_hash": 11234062831410934249,

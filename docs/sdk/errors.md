@@ -49,6 +49,7 @@ it in `edax::Terminal`.
 | `ErrorCode::KeyRevoking` | `KeyRevoking` | `key_revoking` | transient | permanently revoked scope awaits destruction | consumer/relay contention retries continue until the condition changes |
 | `ErrorCode::KeyMissing` | `KeyMissing` | `key_missing` | terminal, fatal | expected generation is missing | stop visibly; absence never permits an erasure skip |
 | `ErrorCode::KeyUnauthorized` | `KeyUnauthorized` | `key_unauthorized` | terminal, fatal | scope, purpose, or provider access is unauthorized | stop visibly; never cache or dead-letter as an application failure |
+| `ErrorCode::OwnerMismatch` | `OwnerMismatch` (a `CodecError` subclass) | `owner_mismatch` | terminal | a sealed load, save or saga step meets a stream, snapshot or state owned by another tenant or subject | `retry` gives up at once; guard caches it; a host may answer it as not found |
 | any other error | any other exception | none | transient (the kernel's default) | host code, a downstream client, a panic | everything treats it as worth retrying |
 
 Every row is a code of the kernel; the second column names the constructor where one exists, and
@@ -343,10 +344,10 @@ in the kernel's declaration order, with four fields.
 
 It pins three things:
 
-1. The code set and its order. Fifteen codes: `concurrency`, `codec`, `store`,
+1. The code set and its order. Sixteen codes: `concurrency`, `codec`, `store`,
    `payload_mismatch`, `in_progress`, `cached_failure`, `handler_not_found`, `already_registered`,
    `bad_handle`, `rejected`, `shredded`, `key_unavailable`, `key_revoking`, `key_missing`,
-   `key_unauthorized`. New codes append, preserving existing positions.
+   `key_unauthorized`, `owner_mismatch`. New codes append, preserving existing positions.
 2. The verdict per code, which is what an idempotency guard persists on.
 3. The `"<code>: <message>"` framing every binding parses, with a realistic message per code.
 
