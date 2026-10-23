@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.16.0](https://github.com/haskian/edax/compare/6757c83d99b4ef7f296c297d103fa0810d2881c9..v0.16.0) - 2026-10-23
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**edax-postgres**) let a host name the erasure and ingest partition-control tables (#30) - ([6757c83](https://github.com/haskian/edax/commit/6757c83d99b4ef7f296c297d103fa0810d2881c9)) - Črtomir Majer
+
+- - -
+
 ## [v0.15.0](https://github.com/haskian/edax/compare/20c34a83f07a7d915cf979f78d456d2200c4518c..v0.15.0) - 2026-10-23
 #### Features
 - add owner_mismatch error code for sealed owner refusals (#29) - ([20c34a8](https://github.com/haskian/edax/commit/20c34a83f07a7d915cf979f78d456d2200c4518c)) - Črtomir Majer
