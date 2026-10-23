@@ -120,7 +120,7 @@
   },
   {
     "config": "{\"names\":{\"ingest_events\":\"shared\",\"ingest_state\":\"shared\"}}",
-    "error": "bad_handle: postgres ingestion roles need distinct tables, \"shared\" is named twice",
+    "error": "bad_handle: postgres tables ingest_events and ingest_state are both named \"shared\"",
     "name": "shared_name",
     "op": "statements",
     "want": null

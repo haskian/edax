@@ -649,12 +649,12 @@ mod catalog_tests {
                     "privacy",
                     &[("erasure_operations", "same"), ("erasure_revocations", "same")],
                 ),
-                "named twice",
+                "are both named",
             ),
             (
                 "default name taken",
                 config("privacy", &[("erasure_operations", "edax_erasure_revocations")]),
-                "named twice",
+                "are both named",
             ),
             (
                 "bad table name",

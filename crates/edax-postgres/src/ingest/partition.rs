@@ -168,7 +168,7 @@ mod tests {
                 let config =
                     format!(r#"{{"partitioned":{partitioned},"names":{{"{role}":"edax_ingest_partition_control"}}}}"#);
                 let error = statements(&config).unwrap_err();
-                assert!(error.message.contains("named twice"), "{role}: {error}");
+                assert!(error.message.contains("are both named"), "{role}: {error}");
             }
         }
     }

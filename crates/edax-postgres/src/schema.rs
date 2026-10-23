@@ -115,7 +115,7 @@ impl Logical {
 
     /// The name a table of this role takes when the host names none: `edax_` and the role.
     pub fn default_name(self) -> String {
-        format!("edax_{}", self.as_str())
+        default_table_name(self.as_str())
     }
 }
 
@@ -156,7 +156,8 @@ fn default_table_name(role: &str) -> String {
     format!("edax_{role}")
 }
 
-/// The table name of each of `roles`: the host's name where `names` gives one, else the default. An unknown role (`what` names the store's roles), a name outside the
+/// The table name of each of `roles`: the host's name where `names` gives one, else the default. The
+/// event store, ingestion and erasure resolve their names here. An unknown role (`what` names the store's roles), a name outside the
 /// identifier rule, or two roles under one name is a `bad_handle` error.
 fn resolve_names(
     what: &str,
@@ -166,18 +167,19 @@ fn resolve_names(
     if let Some(role) = names.keys().find(|role| !roles.contains(&role.as_str())) {
         return Err(Error::bad_handle(format_args!("unknown postgres {what} role: {role}")));
     }
-    let mut resolved: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut owners: BTreeMap<String, &str> = BTreeMap::new();
+    let mut resolved = BTreeMap::new();
     for role in roles {
         let name = match names.get(*role) {
             Some(name) => identifier("table name", name)?,
             None => default_table_name(role),
         };
-        if resolved.values().any(|taken| *taken == name) {
+        if let Some(other) = owners.insert(name.clone(), role) {
             return Err(Error::bad_handle(format_args!(
-                "postgres {what} roles need distinct tables, {name:?} is named twice"
+                "postgres tables {other} and {role} are both named {name:?}"
             )));
         }
-        resolved.insert(role, name);
+        resolved.insert(*role, name);
     }
     Ok(resolved)
 }
@@ -257,25 +259,17 @@ impl Tables {
     /// or two roles under one name, is a `bad_handle` error.
     pub fn new(schema: &str, names: BTreeMap<Logical, String>) -> Result<Tables, Error> {
         let schema = identifier("schema", schema)?;
-        let mut seen: BTreeMap<String, Logical> = BTreeMap::new();
-        let mut resolved = BTreeMap::new();
-        for role in Logical::ALL {
-            let name = match names.get(role) {
-                Some(name) => identifier("table name", name)?,
-                None => role.default_name(),
-            };
-            if let Some(other) = seen.insert(name.clone(), *role) {
-                return Err(Error::bad_handle(format_args!(
-                    "postgres tables {} and {} are both named {name:?}",
-                    other.as_str(),
-                    role.as_str()
-                )));
-            }
-            resolved.insert(*role, name);
-        }
+        let names: BTreeMap<String, String> = names
+            .into_iter()
+            .map(|(role, name)| (role.as_str().to_owned(), name))
+            .collect();
+        let resolved = resolve_names("table", Logical::NAMES, &names)?;
         Ok(Tables {
             schema,
-            names: resolved,
+            names: Logical::ALL
+                .iter()
+                .filter_map(|role| resolved.get(role.as_str()).map(|name| (*role, name.clone())))
+                .collect(),
         })
     }
 
