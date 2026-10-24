@@ -14,9 +14,11 @@
 --   UNION ALL SELECT 'edax_snapshots', stream FROM public.edax_snapshots
 --   WHERE encryption LIKE '%\\u0000%';
 --
--- The pattern also matches an escaped backslash before "u0000", so check each row it lists. Let the
--- previous release's relay publish a listed outbox row before you stop it. A listed event must be
--- edited or removed by hand. A sealed one cannot be edited: its maps are part of its authenticated data.
+-- The pattern also matches an escaped backslash before "u0000", so check each row it lists. The new
+-- release refuses a NUL message on decode too, so publishing a listed outbox row helps only if the
+-- previous release's consumers handle it: let them, and see the consumer group's lag reach zero, before
+-- you stop it. Otherwise edit or remove the row by hand. A listed event must be edited or removed by
+-- hand. A sealed one cannot be edited: its maps are part of its authenticated data.
 BEGIN;
 ALTER TABLE public.edax_events
   ALTER COLUMN encryption TYPE jsonb USING encryption::jsonb,

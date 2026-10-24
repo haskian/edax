@@ -164,15 +164,12 @@ impl KeyScope {
     }
 }
 
-/// A key namespace or key ID: nonempty, and free of NUL, which no store can hold alike.
+/// A key namespace or key ID: nonempty, and text under [`edax_core::check_text`].
 fn key_name(value: &str, name: &str) -> Result<(), Error> {
     if value.is_empty() {
         return Err(Error::codec(format_args!("{name} is empty")));
     }
-    if value.contains('\0') {
-        return Err(Error::codec(format_args!("{name} holds a NUL character")));
-    }
-    Ok(())
+    edax_core::check_text(name, value)
 }
 
 /// Version-one associated-data encoding. Field order is defined by the owning record kernel.

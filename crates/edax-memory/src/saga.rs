@@ -293,6 +293,18 @@ mod tests {
                 ..base
             },
             Case {
+                name: "a command the message check refuses is a codec error and stages nothing",
+                commands: || {
+                    vec![CommandMessage {
+                        metadata: [("note".to_owned(), "a\0b".to_owned())].into(),
+                        ..command("order-1", 2, 0)
+                    }]
+                },
+                want: Err("codec: metadata holds a NUL character"),
+                want_row: Some((1, "awaiting_payment")),
+                ..base
+            },
+            Case {
                 name: "a stale save conflicts and stages no command",
                 version: 0,
                 commands: || vec![command("order-1", 1, 0)],

@@ -481,7 +481,7 @@ A caller therefore never restates the sort to build one.
 | total order | number < string < bool < array < object < null; numbers by value (exact for two integers), strings by code point, bools `false < true` |
 | decimal key | a `SortKey` with `"collation": "decimal"` orders decimal text by exact value; other strings sort after it, by code point; the collation is part of the cursor's fingerprint |
 | tiebreak | `effective_sort` appends `{"path": "id"}` unless the sort already ends on that key with no collation (`"7"` and `"07"` tie under the decimal one); `TIEBREAK_PATH` names it |
-| document | `document(id, value)` and `document_json(id, json)` refuse a stored document that is not a JSON object as `codec`, since the query reads each row's key from its `id` field; the JSON form also refuses an integer wider than 64 bits. `projection_document.json` pins it |
+| document | `document(id, value)` and `document_json(id, json)` refuse a stored document that is not a JSON object as `codec`, since the query reads each row's key from its `id` field; the JSON form also refuses an integer wider than 64 bits. Both refuse a string or key holding NUL (`holds_nul`). `projection_document.json` pins it |
 | cursor | `base64url_nopad(canonical_json({"s": <fingerprint>, "v": [<sort-key values>]}))`; the fingerprint is the `payload_hash` of the canonical effective sort, as 16 hex digits |
 | replay | `decode_cursor` refuses a cursor whose fingerprint is not the query's sort, a forged arity, and any cursor on an unsorted query, each as `codec` |
 | mint | `encode_cursor` refuses an empty sort and a row whose `id` is missing or `null`, so tied rows can never be dropped silently |

@@ -83,8 +83,8 @@ as `in_progress`, which a dispatcher retries without counting, so the deadlock w
 
 **Versions.** `CONTRACT_VERSION` names the contract, and a release that changes it raises it. Old
 replicas run beside an addition, a new column or table. They do not run beside a type change,
-such as contract 3's: [Upgrades](../backends/postgres.md#schema-yours-held-to-a-contract) gives the
-steps. The release notes say which contract a release requires.
+such as contract 3's: [Upgrades](../backends/postgres.md#schema-yours-held-to-a-contract) gives the steps. The release notes
+say which contract a release requires.
 
 **The reference schema.** `reference_ddl(tables)` writes one schema that meets the contract: a
 starting point to copy into a migration, never run by edax. `docs/backends/postgres-schema.sql` is
@@ -94,7 +94,8 @@ that schema for the default names, regenerated with the golden vectors.
 
 Each parameter is declared `text` and cast in the statement. Each statement opens with an
 `/* edax:<op> */` tag, so `pg_stat_statements` groups it. A kernel function gives every statement its
-parameters, and NUL in any text parameter is refused as `codec` before any I/O. Where the statement
+parameters, and NUL in any text parameter is refused as `codec` before any I/O, by the kernel's text
+rule (`edax_core::check_text`) every store applies. Where the statement
 turns on the input, the function names it too. It picks an insert or a compare-and-set by the
 expected version, a locked or a plain read, and a leased or an unleased outbox read. The adapter only
 runs what it is handed.
@@ -157,10 +158,9 @@ exact text. A document written to the table by other means is outside the guaran
 spells numbers its own way on the way out: `1e-7` comes back as `0.0000001`, and `-0.0` as `0`. Each
 reads back as the same value.
 
-A string or a key holding NUL is refused as `codec`, because Postgres text cannot hold it. This is
-the one value Postgres refuses that the memory store keeps. The same holds inside a message's
-`extensions` and `metadata`, which are stored as `jsonb`. Encryption information is refused with a NUL
-in every store: `edax-seal` checks it.
+A string or a key holding NUL is refused as `codec` by `edax_cqrs::document`, the rule every store's save
+runs, because Postgres text cannot hold it. The same rule (`edax_core::check_text`) refuses NUL in a
+message's text fields, its `extensions` and `metadata`, and its encryption information, for every store.
 
 ## The query
 

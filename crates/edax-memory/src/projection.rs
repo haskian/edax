@@ -56,8 +56,11 @@ impl MemoryProjectionStore {
     /// saved and not yet committed; that conflict names the committed version, since the holder's own
     /// may yet roll back. The document is an object, never a scalar or an array, which the typed
     /// [`Document`] guarantees: build it with [`edax_cqrs::document`], the kernel's rule, since a read
-    /// injects the row key as its `"id"` field.
+    /// injects the row key as its `"id"` field. A read-model name or id holding NUL is a codec error
+    /// ([`edax_core::check_text`]), as in every store.
     pub fn save(&self, tx: Tx, projection: &str, id: &str, version: u64, document: Document) -> Result<u64, Error> {
+        edax_core::check_text("projection", projection)?;
+        edax_core::check_text("projection id", id)?;
         lock(&self.state).write(tx, |committed, others, own| {
             let key = key(projection, id);
             let others = others.values().map(|set| &set.projections);

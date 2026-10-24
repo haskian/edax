@@ -54,8 +54,9 @@ pub struct CompiledQuery {
 /// kernel's applier gives.
 pub fn compile(tables: &Tables, projection: &str, spec: &[u8]) -> Result<CompiledQuery, Error> {
     let query = edax_cqrs::query_spec(spec)?;
+    edax_core::check_text("projection name", projection)?;
     let mut sql = Sql::new();
-    let projection = sql.bind(crate::rows::text("projection name", projection)?);
+    let projection = sql.bind(projection);
     let keys = edax_cqrs::effective_sort(&query.sort);
     let sorted: Vec<Key> = keys
         .iter()
@@ -833,9 +834,18 @@ mod tests {
 
     #[test]
     fn compile_refuses_what_the_kernel_refuses() {
-        assert!(compile(&schema(), "a", br#"{"limt":1}"#).is_err());
-        assert!(compile(&schema(), "a", br#"{"after":"x"}"#).is_err());
-        assert!(compile(&schema(), "a\0", b"{}").is_err());
+        for (name, projection, spec) in [
+            ("misspelled_field", "a", &br#"{"limt":1}"#[..]),
+            ("cursor_without_sort", "a", br#"{"after":"x"}"#),
+        ] {
+            let err = compile(&schema(), projection, spec).map(|_| ()).unwrap_err();
+            assert_eq!(err.code, edax_core::ErrorCode::Codec, "{name}: {err}");
+        }
+        assert_eq!(
+            compile(&schema(), "a\0", b"{}").map(|_| ()).map_err(|e| e.to_string()),
+            Err("codec: projection name holds a NUL character".to_owned()),
+            "nul_in_projection_name"
+        );
     }
 
     #[test]

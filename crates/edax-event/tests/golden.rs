@@ -636,6 +636,25 @@ fn envelope_decode_cases() -> Vec<Value> {
             )),
             b"",
         ),
+        // No store keeps NUL in text, so the wire refuses it in every text field and map entry.
+        (
+            "a_nul_in_a_text_field_is_refused",
+            Event,
+            W::Map(replacing("id", W::Str("evt\0-1"))),
+            b"",
+        ),
+        (
+            "a_nul_in_a_metadata_value_is_refused",
+            Event,
+            W::Map(replacing("metadata", W::Map(vec![("note", W::Str("a\0b"))]))),
+            b"",
+        ),
+        (
+            "a_nul_in_an_extension_value_is_refused",
+            Event,
+            W::Map(replacing("extensions", W::Map(vec![("traceparent", W::Str("00\0"))]))),
+            b"",
+        ),
         // The positional form, of the base length and with one element more, is refused either way.
         ("a_positional_message_is_refused", Event, positional(), b""),
         (
@@ -683,6 +702,12 @@ fn envelope_decode_cases() -> Vec<Value> {
             "a_command_with_an_over_long_tenant_is_refused",
             Command,
             W::Map(command_replacing("tenant", tenant("a", 65))),
+            b"",
+        ),
+        (
+            "a_command_with_a_nul_in_its_idempotency_key_is_refused",
+            Command,
+            W::Map(command_replacing("idempotency_key", W::Str("req\0-1"))),
             b"",
         ),
         (

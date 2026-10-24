@@ -19,11 +19,12 @@
 //!   missing; every other field is required.
 //! - **Trailing bytes** after the message are refused in both formats: a frame holds one message.
 //! - A repeated field is refused; a repeated key inside `extensions` or `metadata` keeps its last value.
-//! - An [`Extensions`](crate::message::Extensions) key outside [`check_extensions`] is refused on
-//!   encode and on decode, so a producer never writes what every consumer would refuse.
-//! - A `tenant` outside [`check_tenant`] (empty, or over [`edax_core::TENANT_MAX`] bytes) is refused
-//!   on encode and on decode, so a tenant another service minted is checked before any key is composed
-//!   from it.
+//! - A message [`Message::check`] refuses is refused on encode and on decode, so a producer never
+//!   writes what every consumer would refuse, and a field another service minted is checked before any
+//!   key is composed from it: an [`Extensions`](crate::message::Extensions) key outside
+//!   [`check_extensions`](crate::message::check_extensions), a `tenant` outside
+//!   [`check_tenant`](edax_core::check_tenant) (empty, or over [`edax_core::TENANT_MAX`] bytes), and
+//!   NUL in any text field or map entry ([`edax_core::check_text`]).
 //!
 //! The bytes do not say which kind they hold: the media type does. A transport that carries one, such
 //! as a Kafka `content-type` header, decodes by it ([`Format::from_media_type`]), and a decode of the
@@ -42,8 +43,7 @@ mod maps;
 
 pub use maps::StructsFromMaps;
 
-use crate::message::{check_extensions, Kind, Message};
-use edax_core::check_tenant;
+use crate::message::{Kind, Message};
 use edax_core::Error;
 use serde::de::{DeserializeOwned, DeserializeSeed};
 use serde::Serialize;
@@ -66,16 +66,6 @@ edax_core::closed_names! {
         /// Compact MessagePack; `data` is native bytes.
         Msgpack = "msgpack",
     }
-}
-
-/// The field rules the codec holds every message to, in both directions: the extension key rule, and
-/// the tenant rule when the message names a tenant. Checking on decode as well as on encode makes the
-/// wire a trust boundary, so a tenant minted by another service is checked before a key is composed
-/// from it.
-fn check_message<M: Message>(msg: &M) -> Result<(), Error> {
-    check_extensions(msg.extensions())?;
-    msg.tenant().map_or(Ok(()), check_tenant)?;
-    crate::sealing::check_protection(msg.subject(), msg.encryption(), msg.data())
 }
 
 impl Format {
@@ -137,11 +127,11 @@ impl Format {
     }
 
     /// Encode a message of either kind to this format's canonical wire bytes: a map keyed by field
-    /// name in both formats (MessagePack through `to_vec_named`, never the positional array). A bad
-    /// extension key or tenant id is a `codec` error. A message holds only strings, integers, bytes and
+    /// name in both formats (MessagePack through `to_vec_named`, never the positional array). A message
+    /// [`Message::check`] refuses is a `codec` error. A message holds only strings, integers, bytes and
     /// string maps, so the serializer itself has nothing to refuse.
     pub fn encode<M: Message + Serialize>(self, msg: &M) -> Result<Vec<u8>, Error> {
-        check_message(msg)?;
+        msg.check()?;
         self.encode_payload(msg)
     }
 
@@ -150,7 +140,7 @@ impl Format {
     /// same way every time.
     pub fn decode<M: Message + DeserializeOwned>(self, bytes: &[u8]) -> Result<M, Error> {
         let msg: M = self.decode_payload(bytes, PhantomData)?;
-        check_message(&msg)?;
+        msg.check()?;
         Ok(msg)
     }
 

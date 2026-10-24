@@ -37,6 +37,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
     "error": "codec: tenant id is empty: pass none, or pass a name",
     "expected": null,
     "key": "order-1",
@@ -67,6 +76,15 @@
     "error": "codec: tenant id is empty: pass none, or pass a name",
     "expected": null,
     "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "silo",
     "requires_tenant": false,
     "tenant": ""
@@ -109,6 +127,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -139,6 +166,15 @@
     "error": null,
     "expected": "héllo",
     "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "silo",
     "requires_tenant": false,
     "tenant": "a:b"
@@ -181,6 +217,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -217,6 +262,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -253,6 +307,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -283,6 +346,15 @@
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "silo",
     "requires_tenant": false,
     "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -325,6 +397,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
     "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -358,6 +439,60 @@
     "mode": "silo",
     "requires_tenant": false,
     "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "a:b",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "héllo",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "silo",
+    "requires_tenant": false,
+    "tenant": "ac\u0000me"
   },
   {
     "composes_keys": true,
@@ -391,6 +526,15 @@
     "error": "codec: tenancy pool requires a tenant, and none was given",
     "expected": null,
     "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenancy pool requires a tenant, and none was given",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "pool",
     "requires_tenant": true,
     "tenant": null
@@ -427,6 +571,15 @@
     "error": "codec: tenant id is empty: pass none, or pass a name",
     "expected": null,
     "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "pool",
     "requires_tenant": true,
     "tenant": ""
@@ -469,6 +622,15 @@
   },
   {
     "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": true,
     "error": null,
     "expected": "3:a:b:order-1",
     "key": "order-1",
@@ -499,6 +661,15 @@
     "error": null,
     "expected": "3:a:b:héllo",
     "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "pool",
     "requires_tenant": true,
     "tenant": "a:b"
@@ -541,6 +712,15 @@
   },
   {
     "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": true,
     "error": null,
     "expected": "2:é:order-1",
     "key": "order-1",
@@ -571,6 +751,15 @@
     "error": null,
     "expected": "2:é:héllo",
     "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "pool",
     "requires_tenant": true,
     "tenant": "é"
@@ -613,6 +802,15 @@
   },
   {
     "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -643,6 +841,15 @@
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "pool",
     "requires_tenant": true,
     "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -685,6 +892,15 @@
   },
   {
     "composes_keys": true,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
     "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -720,6 +936,60 @@
     "tenant": "ééééééééééééééééééééééééééééééééé"
   },
   {
+    "composes_keys": true,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "a:b",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "héllo",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": true,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "pool",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
     "composes_keys": false,
     "error": "codec: tenancy bridge requires a tenant, and none was given",
     "expected": null,
@@ -751,6 +1021,15 @@
     "error": "codec: tenancy bridge requires a tenant, and none was given",
     "expected": null,
     "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": null
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenancy bridge requires a tenant, and none was given",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": null
@@ -793,6 +1072,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: tenant id is empty: pass none, or pass a name",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": ""
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -823,6 +1111,15 @@
     "error": null,
     "expected": "héllo",
     "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "acme"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": "acme"
@@ -865,6 +1162,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a:b"
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -895,6 +1201,15 @@
     "error": null,
     "expected": "héllo",
     "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "a"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": "a"
@@ -937,6 +1252,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "é"
+  },
+  {
+    "composes_keys": false,
     "error": null,
     "expected": "order-1",
     "key": "order-1",
@@ -973,6 +1297,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -1003,6 +1336,15 @@
     "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 65 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -1045,6 +1387,15 @@
   },
   {
     "composes_keys": false,
+    "error": "codec: key holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "éééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
     "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
     "expected": null,
     "key": "order-1",
@@ -1078,5 +1429,59 @@
     "mode": "bridge",
     "requires_tenant": true,
     "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant id is 66 bytes, over the 64 the key rule allows",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ééééééééééééééééééééééééééééééééé"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "a:b",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "héllo",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
+  },
+  {
+    "composes_keys": false,
+    "error": "codec: tenant holds a NUL character",
+    "expected": null,
+    "key": "order\u0000-1",
+    "mode": "bridge",
+    "requires_tenant": true,
+    "tenant": "ac\u0000me"
   }
 ]

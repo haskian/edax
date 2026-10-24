@@ -520,6 +520,10 @@ fn golden_rows() {
         serde_json::from_str(&rows::commands_param(&[nul_command.clone()]).unwrap()).unwrap();
     nul_command.metadata.insert("note".into(), "a\0b".into());
     nul_command_rows[0]["metadata"]["note"] = json!("a\u{0}b");
+    let mut nul_saga_command = saga_commands[0].clone();
+    nul_saga_command.metadata.insert("note".into(), "a\0b".into());
+    let mut nul_saga_rows = saga_command_rows.clone();
+    nul_saga_rows[0]["metadata"]["note"] = json!("a\u{0}b");
     let foreign = [command("x", "order-1")];
     let foreign_rows: Value = serde_json::from_str(&rows::commands_param(&foreign).unwrap()).unwrap();
     let nul_document = r#"{"s":"\u0000"}"#;
@@ -553,6 +557,9 @@ fn golden_rows() {
                "want": chosen(rows::saga_write("ship", "order-1", 3, None, "m", &[])).unwrap()}),
         json!({"name": "saga_foreign_command", "saga": "ship", "id": "order-1", "version": 0, "state": null, "folded": "",
                "command_rows": foreign_rows, "error": refusal(&rows::saga_write("ship", "order-1", 0, None, "", &foreign))}),
+        json!({"name": "saga_refuses_nul_in_metadata", "saga": "ship", "id": "order-1", "version": 0, "state": null, "folded": "",
+               "command_rows": nul_saga_rows,
+               "error": refusal(&rows::saga_write("ship", "order-1", 0, None, "", &[nul_saga_command]))}),
         json!({"name": "saga_completed", "result": r#"{"written":null,"stored":4,"completed":true}"#,
                "error": refusal(&rows::saga_result("ship", "order-1", 3, r#"{"written":null,"stored":4,"completed":true}"#))}),
         json!({"name": "saga_conflict", "result": r#"{"written":null,"stored":4,"completed":false}"#,

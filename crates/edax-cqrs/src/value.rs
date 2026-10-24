@@ -142,8 +142,8 @@ pub(crate) fn check_document(json: &[u8]) -> Result<(), Error> {
     check_integers(json, Width::Bits64)
 }
 
-/// Whether a string or an object key anywhere in `value` holds NUL. Postgres `jsonb` cannot store one,
-/// so every store refuses such a value alike, as `codec`, rather than only the store that fails.
+/// Whether a string or an object key anywhere in `value` holds NUL: [`edax_core::check_text`]'s rule over
+/// a JSON value, which every store refuses alike, as `codec`.
 pub fn holds_nul(value: &Value) -> bool {
     match value {
         Value::String(s) => s.contains('\0'),

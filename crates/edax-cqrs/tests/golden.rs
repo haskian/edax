@@ -662,9 +662,10 @@ fn idempotency_record_cases() -> Vec<Value> {
 
 /// `document_json`: what a projection store's save accepts as a read-model document, and
 /// `keyed_document`: what its `get` and `get_many` read back, the row key under `id`. Only an object can
-/// carry that key; an integer past 64 bits would come back rounded.
+/// carry that key; an integer past 64 bits would come back rounded. NUL is refused in the row id too, as
+/// in the document.
 fn projection_document_cases() -> Vec<Value> {
-    [
+    let cases = [
         (
             "an_object_is_kept",
             r#"{"email":"ada@example.com","age":36,"tags":["eu","paid"]}"#,
@@ -679,16 +680,21 @@ fn projection_document_cases() -> Vec<Value> {
             r#"{"balance":18446744073709551616}"#,
         ),
         ("text_that_is_not_json_is_refused", r#"{"email":"#),
+        ("nul_in_a_nested_string_is_refused", r#"{"tags":["a\u0000b"]}"#),
+        ("nul_in_a_key_is_refused", r#"{"a\u0000":1}"#),
     ]
-    .into_iter()
-    .map(|(name, json)| {
-        let want = match document_json("user-1", json.as_bytes()) {
-            Ok(document) => json!({ "ok": document, "keyed": keyed_document("user-1", document.clone()) }),
-            Err(error) => json!({ "error": error.to_string() }),
-        };
-        json!({ "name": name, "id": "user-1", "json": json, "want": want })
-    })
-    .collect()
+    .map(|(name, json)| (name, "user-1", json));
+    cases
+        .into_iter()
+        .chain([("nul_in_the_row_id_is_refused", "user\0-1", "{}")])
+        .map(|(name, id, json)| {
+            let want = match document_json(id, json.as_bytes()) {
+                Ok(document) => json!({ "ok": document, "keyed": keyed_document(id, document.clone()) }),
+                Err(error) => json!({ "error": error.to_string() }),
+            };
+            json!({ "name": name, "id": id, "json": json, "want": want })
+        })
+        .collect()
 }
 
 fn filter_cases() -> Vec<Value> {

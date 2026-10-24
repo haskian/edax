@@ -38,8 +38,8 @@ pub use error::{is_terminal, Error, ErrorCode};
 pub use guid::{guid, guid_simple, uuid7_micros};
 pub use hash::{fnv1a32, fnv1a64, payload_hash};
 pub use key::{
-    check_subject, check_tenancy, check_tenant, guard_key, scoped, tenant_key, GuardKind, Tenancy, SUBJECT_MAX,
-    TENANT_MAX,
+    check_subject, check_tenancy, check_tenant, check_text, guard_key, scoped, tenant_key, GuardKind, Tenancy,
+    SUBJECT_MAX, TENANT_MAX,
 };
 pub use names::{distinct_names, is_open_name, OPEN_NAME_MAX};
 pub use sync::lock;

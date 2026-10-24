@@ -7,7 +7,7 @@
 use std::sync::{Arc, Mutex};
 
 use edax_core::{lock, Error};
-use edax_event::CommandMessage;
+use edax_event::{CommandMessage, Message};
 
 use crate::tx::{store_view, MemoryState, MemoryTransactor, Tx};
 
@@ -22,8 +22,10 @@ impl MemoryCommandOutbox {
     /// Stage `commands` under `tx`, to commit with every other write the transaction makes. An id
     /// already waiting in the outbox, staged by any open transaction, or repeated in the batch, is a
     /// `codec` error: the relay marks rows sent by id, so two rows under one id could not be told
-    /// apart, and marking one would prune both. A refused batch stages nothing.
+    /// apart, and marking one would prune both. So is a command [`Message::check`] refuses. A refused batch
+    /// stages nothing.
     pub fn enqueue(&self, tx: Tx, commands: Vec<CommandMessage>) -> Result<(), Error> {
+        commands.iter().try_for_each(Message::check)?;
         lock(&self.state).write(tx, |committed, others, own| {
             let staged_by_others = others.values().flat_map(|set| &set.command_outbox);
             committed
@@ -89,22 +91,32 @@ mod tests {
     }
 
     #[test]
-    fn an_id_already_waiting_is_refused() {
+    fn enqueue_refusals() {
         let outbox = MemoryCommandOutbox::new();
         outbox.enqueue(Tx::auto_commit(), vec![command("cmd-1", None)]).unwrap();
         let cases = [
-            ("waiting_in_the_outbox", vec![command("cmd-1", None)]),
             (
-                "repeated_in_the_batch",
+                "an_id_waiting_in_the_outbox",
+                vec![command("cmd-1", None)],
+                "codec: command cmd-1 is already in the outbox",
+            ),
+            (
+                "an_id_repeated_in_the_batch",
                 vec![command("cmd-2", None), command("cmd-2", None)],
+                "codec: command cmd-2 is already in the outbox",
+            ),
+            (
+                "a_nul_in_a_command_is_refused",
+                vec![command("cmd-2", None), command("cmd-3\0", None)],
+                "codec: command id holds a NUL character",
             ),
         ];
-        for (name, batch) in cases {
-            let want = Err(format!(
-                "codec: command {} is already in the outbox",
-                batch[batch.len() - 1].id
-            ));
-            assert_eq!(wire(outbox.enqueue(Tx::auto_commit(), batch)), want, "{name}");
+        for (name, batch, want) in cases {
+            assert_eq!(
+                wire(outbox.enqueue(Tx::auto_commit(), batch)),
+                Err(want.to_owned()),
+                "{name}"
+            );
         }
         assert_eq!(
             ids(&outbox.unpublished(10)),

@@ -10,7 +10,7 @@ Python service and a Rust service cannot drift.
 
 | Module | Owns | Golden vector |
 |---|---|---|
-| `message` | the event and command message shapes and the `Payload` each carries, the extension key rule, the ordering key, the tenant of a command a save sends | `envelopes.json`, `extensions.json`, `ordering_key.json`, `command_owner.json` |
+| `message` | the event and command message shapes and the `Payload` each carries, the extension key rule, the message check (`Message::check`, `EventDraft::check`: extension keys, tenant, protection, and NUL in every text field and map entry) every codec and store runs, the ordering key, the tenant of a command a save sends | `envelopes.json`, `extensions.json`, `envelope_decode.json`, `ordering_key.json`, `command_owner.json` |
 | `sealing` | message/state AAD, immutable owners, protected state including completion, prepared-write reconciliation and opening policy | `sealing.json` and unit tests |
 | `erasure` | frozen participants, irreversible workflow transitions and control notifications | unit and SDK conformance tests |
 | `partition` | which local worker runs an ordering key (never broker placement) | `partition.json` |
@@ -209,6 +209,7 @@ both formats follow one rule, pinned by `testdata/golden/envelope_decode.json`:
 | an `extensions` key outside the key rule | `codec` error | `codec` error |
 | a `tenant` outside `check_tenant`: empty, or over `TENANT_MAX` (64) bytes, counted in bytes and not characters | `codec` error | `codec` error |
 | a present `subject` outside 1–256 UTF-8 bytes | `codec` error | `codec` error |
+| NUL in a text field or in a key or value of `extensions` or `metadata` (`edax_core::check_text`) | `codec` error | `codec` error |
 | malformed encryption framing, encryption without a subject, or ciphertext shorter than its tag | `codec` error | `codec` error |
 | a field repeated | `codec` error | `codec` error |
 | a key repeated inside `extensions` or `metadata` | the last wins | the last wins |

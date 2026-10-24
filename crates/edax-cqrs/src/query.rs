@@ -39,7 +39,7 @@
 use crate::collation::{self, Collation};
 use crate::filter::{self, Filter};
 use crate::json_numbers::MAX_SAFE_INTEGER;
-use crate::value::{check_path, parse_strict, read_json, resolve};
+use crate::value::{check_path, holds_nul, parse_strict, read_json, resolve};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use bigdecimal::BigDecimal;
 use edax_core::Error;
@@ -409,9 +409,14 @@ pub fn query_json(spec: &[u8], docs: &[u8]) -> Result<String, Error> {
 /// A read-model document as a store keeps it: a JSON object, because the query reads the row key from
 /// its [`TIEBREAK_PATH`] field and a store that keys rows itself injects the key there. A scalar, an
 /// array or `null` could be saved and never queried, so it is refused as `codec`, naming the row `id`.
-/// Every store's save runs this, or [`document_json`] for a document held as text.
+/// So is a row id holding NUL ([`edax_core::check_text`]), and a document whose strings or keys hold
+/// one ([`holds_nul`]). Every store's save runs this, or [`document_json`] for a document held as text.
 pub fn document(id: &str, value: Value) -> Result<serde_json::Map<String, Value>, Error> {
+    edax_core::check_text("projection id", id)?;
     match value {
+        Value::Object(_) if holds_nul(&value) => {
+            Err(Error::codec(format_args!("projection {id} holds a NUL character")))
+        }
         Value::Object(fields) => Ok(fields),
         _ => Err(Error::codec(format_args!(
             "projection {id} is not a JSON object: the query reads each row's key from its `{TIEBREAK_PATH}` field"

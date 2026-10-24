@@ -1,5 +1,6 @@
-//! Scoped keys: one key namespaced by a scope, so two scopes never spell the same key, and the
-//! [`Tenancy`] rule that decides when a tenant is one of those scopes.
+//! Scoped keys: one key namespaced by a scope, so two scopes never spell the same key, the
+//! [`Tenancy`] rule that decides when a tenant is one of those scopes, and [`check_text`], the rule on
+//! the text a key or a stored field is made of.
 
 use crate::Error;
 
@@ -14,6 +15,17 @@ pub const TENANT_MAX: usize = 64;
 /// it the same way.
 pub fn scoped(scope: &str, key: &str) -> String {
     format!("{}:{scope}:{key}", scope.len())
+}
+
+/// Refuse text holding NUL, as a `codec` error naming it `what`. Every store refuses it alike, through
+/// this one rule: Postgres `text` and `jsonb` cannot hold NUL, a C string ends at it, and a rule only
+/// one store kept would let a message pass every test on one store and fail on another. Bytes (a
+/// payload, a nonce, a hash) are not text and may hold any value.
+pub fn check_text(what: &str, value: &str) -> Result<(), Error> {
+    if value.contains('\0') {
+        return Err(Error::codec(format_args!("{what} holds a NUL character")));
+    }
+    Ok(())
 }
 
 crate::closed_names! {
@@ -69,7 +81,7 @@ pub fn check_tenant(tenant: &str) -> Result<(), Error> {
             tenant.len()
         )));
     }
-    Ok(())
+    check_text("tenant", tenant)
 }
 
 /// Check a tenant id against `mode`: present and valid where the mode requires one, absent or valid
@@ -92,6 +104,7 @@ pub fn check_tenancy(mode: Tenancy, tenant: Option<&str>) -> Result<(), Error> {
 /// stream and its snapshot, an idempotency claim, a saga correlation, a read-model id.
 pub fn tenant_key(mode: Tenancy, tenant: Option<&str>, key: &str) -> Result<String, Error> {
     check_tenancy(mode, tenant)?;
+    check_text("key", key)?;
     match tenant {
         Some(tenant) if mode.composes_keys() => Ok(scoped(tenant, key)),
         _ => Ok(key.to_owned()),
@@ -141,10 +154,7 @@ pub fn check_subject(subject: &str) -> Result<(), Error> {
     if subject.is_empty() || subject.len() > SUBJECT_MAX {
         return Err(Error::codec("subject must contain 1 to 256 UTF-8 bytes"));
     }
-    if subject.contains('\0') {
-        return Err(Error::codec("subject holds a NUL character"));
-    }
-    Ok(())
+    check_text("subject", subject)
 }
 
 #[cfg(test)]

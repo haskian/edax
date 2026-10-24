@@ -325,7 +325,7 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _refusal(lambda: _native.postgres_snapshot_result("invoice-7", 4, 3)) == case["error"]
     elif name == "projection_conflict":
         assert _refusal(lambda: _native.postgres_projection_result("acct-1", 2, None)) == case["error"]
-    elif name in ("saga_insert", "saga_complete", "saga_foreign_command"):
+    elif name in ("saga_insert", "saga_complete", "saga_foreign_command", "saga_refuses_nul_in_metadata"):
         commands = [_command(row) for row in case["command_rows"]]
         args = (case["saga"], case["id"], case["version"], case["state"], case["folded"])
         assert _refusal(lambda: _native.postgres_saga_write(*args, commands)) == case.get("error")

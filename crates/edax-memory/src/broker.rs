@@ -191,6 +191,11 @@ impl MemoryBroker {
     }
 
     fn publish(&self, message: LogMessage) -> Result<(), Error> {
+        // The codec's rule, so a message the Kafka publisher would refuse on encode is refused here too.
+        match &message {
+            LogMessage::Event(event) => event.check(),
+            LogMessage::Command(command) => command.check(),
+        }?;
         let key = message.record_key(self.tenancy)?;
         let partition = partition_for(key.as_bytes(), self.partitions)?;
         let mut state = lock(&self.state);
