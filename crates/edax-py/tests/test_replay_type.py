@@ -76,7 +76,7 @@ async def issue_optional(cmd: IssueInvoice) -> Invoice | None:
     return None
 
 
-async def issue_untyped(cmd):  # type: ignore[no-untyped-def]
+async def issue_untyped(cmd):  # noqa: ANN001, ANN201 - the unannotated handler under test
     return invoice()
 
 
@@ -104,7 +104,7 @@ async def issue_any(cmd: IssueInvoice) -> Any:
     return {"invoice_id": "inv-7"}
 
 
-async def issue_forward_ref(cmd: IssueInvoice) -> NotDefinedAnywhere:  # type: ignore[name-defined]  # noqa: F821  # ty: ignore[unresolved-reference]
+async def issue_forward_ref(cmd: IssueInvoice) -> NotDefinedAnywhere:  # noqa: F821  # ty: ignore[unresolved-reference]
     return {"invoice_id": "inv-7"}
 
 

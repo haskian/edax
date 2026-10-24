@@ -21,6 +21,7 @@ select = [
     "BLE",     # blind except — the tree already carries `noqa: BLE001` where one is deliberate
     "SIM",
     "RUF",
+    "ANN",     # every argument and return annotated; ty checks the types themselves
 ]
 
 ignore = [
@@ -28,6 +29,9 @@ ignore = [
     # functions, errors) and sorted within each group. One flat alphabetical list would read
     # worse, not better.
     "RUF022",
+    # An explicit `Any` is allowed: it marks data opaque at a boundary (a host's payload, a client
+    # the caller owns). The rule is against a missing annotation, not against `Any`.
+    "ANN401",
 ]
 
 [lint.flake8-builtins]

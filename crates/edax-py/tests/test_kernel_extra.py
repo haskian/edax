@@ -932,7 +932,7 @@ BAD_OP: Any = {"compare": {"path": "status", "op": "no_such_op", "value": "settl
         (
             "encode_cursor_rejects_a_malformed_sort_key",
             # A type checker refuses this too; the row pins the run-time refusal.
-            lambda: Q.encode_cursor(ACCOUNT_ROW, [{"desc": True}]),  # type: ignore[typeddict-item]  # ty: ignore[missing-typed-dict-key, invalid-argument-type]
+            lambda: Q.encode_cursor(ACCOUNT_ROW, [{"desc": True}]),  # ty: ignore[missing-typed-dict-key, invalid-argument-type]
         ),
     ],
 )

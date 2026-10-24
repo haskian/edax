@@ -41,7 +41,7 @@ from ._kafka import (
 )
 
 if TYPE_CHECKING:
-    from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
+    from aiokafka import ConsumerRebalanceListener, TopicPartition
 
 T = TypeVar("T")
 logger = logging.getLogger("edax.backend.kafka_ingest")

@@ -1073,7 +1073,7 @@ class AsyncHooks(edax.Observer):
     def __init__(self) -> None:
         self.ran = 0
 
-    async def transaction(self, outcome: str, duration_ns: int) -> None:  # type: ignore[override]  # ty: ignore[invalid-method-override]
+    async def transaction(self, outcome: str, duration_ns: int) -> None:  # ty: ignore[invalid-method-override]
         self.ran += 1
 
 

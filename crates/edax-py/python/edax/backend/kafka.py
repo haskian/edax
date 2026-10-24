@@ -25,7 +25,7 @@ from ..serializer import KernelSerializer, Serializer
 from ..tenancy import Tenancy
 
 if TYPE_CHECKING:  # the base package imports no broker library; these names are for the annotations only
-    from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
+    from aiokafka import ConsumerRebalanceListener, TopicPartition
 
 from . import _kafka
 from ._kafka import (
@@ -381,7 +381,7 @@ class KafkaConsumer:
 
         consumer = self
 
-        class _Listener(ConsumerRebalanceListener):  # type: ignore[misc]  # aiokafka ships no stubs
+        class _Listener(ConsumerRebalanceListener):  # aiokafka ships no stubs
             async def on_partitions_revoked(self, revoked: Collection[TopicPartition]) -> None:
                 await consumer._revoke(revoked, drain_timeout_s)
 

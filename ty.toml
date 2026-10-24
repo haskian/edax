@@ -24,3 +24,7 @@ exclude = [
 # (`edax[kafka]`, `[redis]`). The base package deliberately depends on none of them, so they are
 # absent from a plain checkout. An unresolved import here is the design, not a mistake.
 allowed-unresolved-imports = ["aiokafka", "aiokafka.**", "redis", "redis.**"]
+
+[rules]
+# A suppression ty no longer needs hides the next real error on that line.
+unused-ignore-comment = "error"
