@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.17.0](https://github.com/haskian/edax/compare/eb49e5734cc036b31269123b808e6165436b7076..v0.17.0) - 2026-10-24
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**edax-postgres**) store message maps and encryption info as jsonb (#31) - ([eb49e57](https://github.com/haskian/edax/commit/eb49e5734cc036b31269123b808e6165436b7076)) - Črtomir Majer
+
+- - -
+
 ## [v0.16.0](https://github.com/haskian/edax/compare/6757c83d99b4ef7f296c297d103fa0810d2881c9..v0.16.0) - 2026-10-23
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**edax-postgres**) let a host name the erasure and ingest partition-control tables (#30) - ([6757c83](https://github.com/haskian/edax/commit/6757c83d99b4ef7f296c297d103fa0810d2881c9)) - Črtomir Majer
