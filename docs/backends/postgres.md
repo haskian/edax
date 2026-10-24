@@ -84,9 +84,22 @@ example "`billing.edax_ledger.record` is json, needs text or character varying".
 db.check()` at startup to fail fast. The check reads the catalog only, so the service's role needs no
 DDL rights.
 
-**Upgrades.** The contract has a version, `CONTRACT_VERSION`, and changes only by an addition. A release
-that needs a new column or table says so in its notes. Migrate first, then roll out the release. Old
-replicas ignore the addition.
+**Upgrades.** The contract has a version, `CONTRACT_VERSION`. A release that changes it says so in its
+notes. For an addition, migrate first, then roll out the release: old replicas ignore it. A type change
+has no such order. Table contract 3 changed `extensions`, `metadata` and `encryption` from `text` to
+`jsonb`: stop every process of the previous release, run the
+[migration](postgres-jsonb-migration.sql), then start the new release.
+
+**Query message maps.** `extensions`, `metadata` and `encryption` are `jsonb` columns, so plain SQL reads
+them and an index serves a lookup:
+
+```sql
+SELECT stream, sequence FROM edax_events WHERE metadata ->> 'origin' = 'web';
+CREATE INDEX edax_events_trace ON edax_events ((extensions ->> 'traceparent'));
+CREATE INDEX edax_events_key ON edax_events ((encryption ->> 'key_id'));
+```
+
+A NUL in a key or a value of these maps is refused with `CodecError`, as in every other field.
 
 **Suggestions, not requirements.** Tune these to your workload.
 

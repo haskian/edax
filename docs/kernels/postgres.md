@@ -45,7 +45,7 @@ without escaping. Every statement qualifies every table with its schema, so no s
 
 | Role | Holds | Unique keys |
 |---|---|---|
-| `events` | one row per event, every field its own column | `id`; `(stream, sequence)` |
+| `events` | one row per event, every field its own column; `extensions`, `metadata` and `encryption` as `jsonb` | `id`; `(stream, sequence)` |
 | `snapshots` | the latest snapshot per stream | `stream` |
 | `event_outbox` | one row per unpublished event, `position` defaulted | none |
 | `command_outbox` | the commands a save sends, until a relay marks them | `id` |
@@ -81,8 +81,10 @@ It also refuses a `lock_timeout_ms` at or below the server's `deadlock_timeout`.
 timeout, both sides of a deadlock time out before Postgres looks for one. A claim reports that timeout
 as `in_progress`, which a dispatcher retries without counting, so the deadlock would repeat forever.
 
-**Versions.** `CONTRACT_VERSION` names the contract. It changes only by an addition, a new column or
-table a release needs. The release notes say which contract a release requires.
+**Versions.** `CONTRACT_VERSION` names the contract, and a release that changes it raises it. Old
+replicas run beside an addition, a new column or table. They do not run beside a type change,
+such as contract 3's: [Upgrades](../backends/postgres.md#schema-yours-held-to-a-contract) gives the
+steps. The release notes say which contract a release requires.
 
 **The reference schema.** `reference_ddl(tables)` writes one schema that meets the contract: a
 starting point to copy into a migration, never run by edax. `docs/backends/postgres-schema.sql` is
@@ -156,8 +158,9 @@ spells numbers its own way on the way out: `1e-7` comes back as `0.0000001`, and
 reads back as the same value.
 
 A string or a key holding NUL is refused as `codec`, because Postgres text cannot hold it. This is
-the one value Postgres refuses that the memory store keeps. A NUL inside a metadata value survives,
-because the map is stored as JSON text.
+the one value Postgres refuses that the memory store keeps. The same holds inside a message's
+`extensions` and `metadata`, which are stored as `jsonb`. Encryption information is refused with a NUL
+in every store: `edax-seal` checks it.
 
 ## The query
 

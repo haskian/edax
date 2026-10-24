@@ -45,7 +45,8 @@ from edax.testing import event as build_message
 from edax.testing import event_of
 from edax.testing.faults import Refusing
 
-GOLDEN_DIR: Path = Path(__file__).resolve().parents[3] / "testdata" / "golden"
+REPO_ROOT: Path = Path(__file__).resolve().parents[3]
+GOLDEN_DIR: Path = REPO_ROOT / "testdata" / "golden"
 
 #: The ``scope`` of the ``idempotent`` and ``idempotent_by_id`` guards the suites wire.
 SCOPE = "test"

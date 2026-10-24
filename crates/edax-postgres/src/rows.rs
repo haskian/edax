@@ -2,16 +2,17 @@
 //! row layout every SDK sharing one database must write and read alike.
 //!
 //! A message travels as one JSON object per row: `data` as hex (Postgres `bytea` text without line
-//! breaks), `extensions` and `metadata` as the JSON text of their sorted map, which the table stores as
-//! `text` so it is kept exactly as written. Versions and sequences are `bigint`, so a value past
-//! `i64::MAX` is refused (`config::check_bigint`). A string field holding NUL is refused as `codec`
-//! before any I/O: Postgres `text` cannot hold it, and a server refusal would abort the caller's
-//! transaction.
+//! breaks), `extensions`, `metadata` and `encryption` as JSON objects, which the table stores as `jsonb`
+//! so a host can query and index them. Versions and sequences are `bigint`, so a value past `i64::MAX`
+//! is refused (`config::check_bigint`). A string holding NUL, in a field or inside one of those objects,
+//! is refused as `codec` before any I/O: neither Postgres `text` nor `jsonb` can hold it, and a server
+//! refusal would abort the caller's transaction.
 
 use edax_core::{Error, ErrorCode};
 use edax_event::{
-    check_saga_commands, check_snapshot, saga_completed, CommandMessage, EventDraft, EventMessage, Metadata,
+    check_saga_commands, check_snapshot, saga_completed, CommandMessage, EventDraft, EventMessage, Extensions, Metadata,
 };
+use edax_seal::EncryptionInfo;
 use serde::{Deserialize, Serialize};
 
 use crate::config::{check_bigint, check_lease, clamp_bigint};
@@ -72,7 +73,7 @@ struct EventRow {
     #[serde(default)]
     subject: Option<String>,
     #[serde(default)]
-    encryption: Option<String>,
+    encryption: Option<EncryptionInfo>,
     sequence: i64,
     name: String,
     version: i64,
@@ -83,8 +84,8 @@ struct EventRow {
     // The store's own clock writes it; a draft carries none.
     #[serde(default, skip_serializing)]
     recorded_at: i64,
-    extensions: String,
-    metadata: String,
+    extensions: Extensions,
+    metadata: Metadata,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -96,15 +97,15 @@ struct CommandRow {
     #[serde(default)]
     subject: Option<String>,
     #[serde(default)]
-    encryption: Option<String>,
+    encryption: Option<EncryptionInfo>,
     name: String,
     version: i64,
     data: String,
     correlation_id: String,
     causation_id: String,
     issued_at: i64,
-    extensions: String,
-    metadata: String,
+    extensions: Extensions,
+    metadata: Metadata,
 }
 
 /// The parameters of `append`: the stream, the expected version and the drafts. A batch the kernel's
@@ -239,7 +240,7 @@ pub struct SnapshotRow {
     /// Immutable state owner.
     pub subject: Option<String>,
     /// State encryption information.
-    pub encryption: Option<edax_seal::EncryptionInfo>,
+    pub encryption: Option<EncryptionInfo>,
     /// The aggregate type it marshals.
     pub type_name: String,
     /// The stream version it was taken at.
@@ -260,18 +261,13 @@ pub fn decode_snapshot(row: &str) -> Result<SnapshotRow, Error> {
         #[serde(default)]
         subject: Option<String>,
         #[serde(default)]
-        encryption: Option<String>,
+        encryption: Option<EncryptionInfo>,
     }
     let row: Row = decode("snapshot row", row)?;
     Ok(SnapshotRow {
         tenant: row.tenant,
         subject: row.subject,
-        encryption: row
-            .encryption
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(Error::codec)?,
+        encryption: row.encryption,
         type_name: row.type_name,
         version: unsigned("snapshot version", row.version)?,
         data: from_hex(&row.data)?,
@@ -292,7 +288,7 @@ pub fn protected_snapshot_params(
     data: &[u8],
     tenant: Option<&str>,
     subject: Option<&str>,
-    encryption: Option<&edax_seal::EncryptionInfo>,
+    encryption: Option<&EncryptionInfo>,
 ) -> Result<Vec<Param>, Error> {
     edax_event::sealing::check_protection(subject, encryption, data)?;
     Ok(vec![
@@ -446,7 +442,7 @@ fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
         aggregate_id: text("aggregate id", &draft.aggregate_id)?.to_owned(),
         tenant: optional_text("tenant", draft.tenant.as_deref())?,
         subject: optional_text("subject", draft.subject.as_deref())?,
-        encryption: draft.encryption.as_ref().map(json).transpose()?,
+        encryption: draft.encryption.clone(),
         sequence: check_bigint("sequence", sequence)?,
         name: text("event name", &draft.name)?.to_owned(),
         version: i64::from(draft.version),
@@ -455,8 +451,8 @@ fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
         causation_id: text("causation id", &draft.causation_id)?.to_owned(),
         occurred_at: draft.occurred_at,
         recorded_at: 0,
-        extensions: json(&draft.extensions)?,
-        metadata: json(&draft.metadata)?,
+        extensions: string_map("extensions", &draft.extensions)?.clone(),
+        metadata: string_map("metadata", &draft.metadata)?.clone(),
     })
 }
 
@@ -466,12 +462,7 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
         aggregate_id: row.aggregate_id,
         tenant: row.tenant,
         subject: row.subject,
-        encryption: row
-            .encryption
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(Error::codec)?,
+        encryption: row.encryption,
         sequence: Some(unsigned("sequence", row.sequence)?),
         name: row.name,
         version: payload_version(row.version)?,
@@ -480,8 +471,8 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
         causation_id: row.causation_id,
         occurred_at: row.occurred_at,
         recorded_at: row.recorded_at,
-        extensions: map("extensions", &row.extensions)?,
-        metadata: map("metadata", &row.metadata)?,
+        extensions: row.extensions,
+        metadata: row.metadata,
     })
 }
 
@@ -493,15 +484,15 @@ fn command_row(command: &CommandMessage) -> Result<CommandRow, Error> {
         aggregate_id: optional_text("aggregate id", command.aggregate_id.as_deref())?,
         tenant: optional_text("tenant", command.tenant.as_deref())?,
         subject: optional_text("subject", command.subject.as_deref())?,
-        encryption: command.encryption.as_ref().map(json).transpose()?,
+        encryption: command.encryption.clone(),
         name: text("command name", &command.name)?.to_owned(),
         version: i64::from(command.version),
         data: to_hex(&command.data),
         correlation_id: text("correlation id", &command.correlation_id)?.to_owned(),
         causation_id: text("causation id", &command.causation_id)?.to_owned(),
         issued_at: command.issued_at,
-        extensions: json(&command.extensions)?,
-        metadata: json(&command.metadata)?,
+        extensions: string_map("extensions", &command.extensions)?.clone(),
+        metadata: string_map("metadata", &command.metadata)?.clone(),
     })
 }
 
@@ -512,31 +503,40 @@ fn command_of_row(row: CommandRow) -> Result<CommandMessage, Error> {
         aggregate_id: row.aggregate_id,
         tenant: row.tenant,
         subject: row.subject,
-        encryption: row
-            .encryption
-            .as_deref()
-            .map(serde_json::from_str)
-            .transpose()
-            .map_err(Error::codec)?,
+        encryption: row.encryption,
         name: row.name,
         version: payload_version(row.version)?,
         data: from_hex(&row.data)?,
         correlation_id: row.correlation_id,
         causation_id: row.causation_id,
         issued_at: row.issued_at,
-        extensions: map("extensions", &row.extensions)?,
-        metadata: map("metadata", &row.metadata)?,
+        extensions: row.extensions,
+        metadata: row.metadata,
     })
 }
 
 /// `value`, refused as `codec` when it holds NUL.
 pub(crate) fn text<'a>(what: &str, value: &'a str) -> Result<&'a str, Error> {
     if value.contains('\0') {
-        return Err(Error::codec(format_args!(
-            "{what} holds a NUL character, which Postgres cannot store"
-        )));
+        return Err(holds_nul_error(what));
     }
     Ok(value)
+}
+
+/// `map`, refused as [`text`] refuses a key or a value.
+fn string_map<'a>(what: &str, map: &'a Metadata) -> Result<&'a Metadata, Error> {
+    for (key, value) in map {
+        text(what, key)?;
+        text(what, value)?;
+    }
+    Ok(map)
+}
+
+/// The refusal of a value holding NUL, named `what`.
+pub(crate) fn holds_nul_error(what: &str) -> Error {
+    Error::codec(format_args!(
+        "{what} holds a NUL character, which Postgres cannot store"
+    ))
 }
 
 /// `value` as a bound parameter, refused as [`text`] refuses it.
@@ -560,10 +560,6 @@ fn json<T: Serialize + ?Sized>(value: &T) -> Result<String, Error> {
 
 fn decode<'a, T: Deserialize<'a>>(what: &str, row: &'a str) -> Result<T, Error> {
     serde_json::from_str(row).map_err(|e| Error::codec(format_args!("{what} is not the stored layout: {e}")))
-}
-
-fn map(what: &str, text: &str) -> Result<Metadata, Error> {
-    serde_json::from_str(text).map_err(|e| Error::codec(format_args!("stored {what} are not a string map: {e}")))
 }
 
 fn unsigned(what: &str, value: i64) -> Result<u64, Error> {
@@ -623,7 +619,7 @@ mod tests {
             causation_id: "cause-1".into(),
             occurred_at: Some(1_700_000_000_000_000_000),
             extensions: BTreeMap::from([("traceparent".into(), "00-ab".into())]),
-            metadata: BTreeMap::from([("note".into(), "a\u{0}b".into())]),
+            metadata: BTreeMap::from([("note".into(), "é \"quoted\"".into())]),
         }
     }
 
@@ -635,9 +631,11 @@ mod tests {
         let rows: Vec<serde_json::Value> = serde_json::from_str(params[2].as_deref().unwrap()).unwrap();
         assert_eq!(rows[0]["data"], "0001feff");
         assert_eq!(
-            rows[0]["metadata"], r#"{"note":"a\u0000b"}"#,
-            "map NUL survives as JSON text"
+            rows[0]["metadata"],
+            serde_json::json!({"note": "é \"quoted\""}),
+            "a map travels as a JSON object, for a jsonb column"
         );
+        assert_eq!(rows[0]["encryption"], serde_json::Value::Null);
         let events = append_result(0, vec![draft(1), draft(2)], r#"{"stored":0,"recorded_at":5}"#).unwrap();
         assert_eq!(events, vec![draft(1).record(5), draft(2).record(5)]);
     }
@@ -655,6 +653,13 @@ mod tests {
             err(append_params("s", 0, &[nul])).as_deref(),
             Some("codec: event id holds a NUL character, which Postgres cannot store")
         );
+        let mut nul = draft(1);
+        nul.extensions.insert("t\0".into(), "v".into());
+        assert_eq!(
+            err(append_params("s", 0, &[nul])).as_deref(),
+            Some("codec: extensions holds a NUL character, which Postgres cannot store"),
+            "jsonb refuses NUL in a map key"
+        );
         assert!(err(append_params("s", i64::MAX as u64, &[draft(i64::MAX as u64 + 1)])).is_some());
         assert_eq!(
             append_result(3, vec![draft(4)], r#"{"stored":4,"recorded_at":5}"#).map_err(|e| e.to_string()),
@@ -665,6 +670,44 @@ mod tests {
             Ok(vec![]),
             "empty batch checks the version"
         );
+    }
+
+    /// Encryption information is checked before it is bound, at each call that binds it.
+    #[test]
+    fn encryption_is_checked_where_it_is_bound() {
+        let info = EncryptionInfo {
+            format_version: 1,
+            key_namespace: "billing".into(),
+            key_id: "k\0".into(),
+            cipher: edax_seal::default_cipher(),
+            nonce: vec![0; 24],
+        };
+        let refused = Some("codec: key id holds a NUL character".to_owned());
+        let sealed = vec![0; edax_seal::TAG_LEN];
+        let snapshot = protected_snapshot_params("s", "Invoice", 1, &sealed, None, Some("customer-42"), Some(&info));
+        assert_eq!(snapshot.err().map(|e| e.to_string()), refused, "snapshot");
+        let event = EventDraft {
+            subject: Some("customer-42".into()),
+            encryption: Some(info),
+            data: sealed,
+            ..draft(1)
+        };
+        assert_eq!(
+            append_params("s", 0, &[event]).err().map(|e| e.to_string()),
+            refused,
+            "append"
+        );
+    }
+
+    #[test]
+    fn decode_refuses_a_map_that_is_not_strings() {
+        let params = append_params("s", 0, &[draft(1)]).unwrap();
+        let mut row: Vec<serde_json::Value> = serde_json::from_str(params[2].as_deref().unwrap()).unwrap();
+        row[0]["recorded_at"] = 5.into();
+        assert!(decode_events(&[row[0].to_string()]).is_ok());
+        row[0]["metadata"] = serde_json::json!({"n": 1});
+        let err = decode_events(&[row[0].to_string()]).unwrap_err().to_string();
+        assert!(err.starts_with("codec: event row is not the stored layout"), "{err}");
     }
 
     #[test]

@@ -19,9 +19,9 @@
 //! - **Extra columns** are allowed when nullable or defaulted, so an `INSERT` that does not name them lands.
 //!   Extra indexes, any constraint names, partitioning and storage settings are the host's.
 //!
-//! The contract is additive across edax releases: [`CONTRACT_VERSION`] names it, and a release that needs
-//! more raises it. Constraint names are the host's, so the check reports which unique index guards which
-//! key ([`Compatibility`]); the error verdict reads a unique violation by it.
+//! [`CONTRACT_VERSION`] names the contract, and a release that changes it raises it. Constraint names are
+//! the host's, so the check reports which unique index guards which key ([`Compatibility`]); the error
+//! verdict reads a unique violation by it.
 
 use std::collections::BTreeMap;
 
@@ -46,8 +46,8 @@ pub(crate) fn omitted_columns_check(written: &[&str]) -> String {
     )
 }
 
-/// The version of the table contract this build requires. Raised only by an addition.
-pub const CONTRACT_VERSION: u32 = 2;
+/// The version of the table contract this build requires. Raised by any change a host must migrate.
+pub const CONTRACT_VERSION: u32 = 3;
 
 /// The oldest Postgres major version the statements run on (`server_version_num` / 10000).
 pub const MIN_SERVER_VERSION: i64 = 14;
@@ -442,21 +442,21 @@ const fn position() -> Column {
 
 /// The columns of a message row after its key columns, shared by the command and saga outboxes.
 fn command_columns() -> Vec<Column> {
-    use ColumnType::{Bigint, Bytea, Text};
+    use ColumnType::{Bigint, Bytea, Jsonb, Text};
     vec![
         nullable("idempotency_key", Text),
         nullable("aggregate_id", Text),
         nullable("tenant", Text),
         nullable("subject", Text),
-        nullable("encryption", Text),
+        nullable("encryption", Jsonb),
         col("name", Text),
         col("version", Bigint),
         col("data", Bytea),
         col("correlation_id", Text),
         col("causation_id", Text),
         col("issued_at", Bigint),
-        col("extensions", Text),
-        col("metadata", Text),
+        col("extensions", Jsonb),
+        col("metadata", Jsonb),
     ]
 }
 
@@ -472,7 +472,7 @@ pub fn table_contract(role: Logical) -> TableContract {
                 col("aggregate_id", Text),
                 nullable("tenant", Text),
                 nullable("subject", Text),
-                nullable("encryption", Text),
+                nullable("encryption", Jsonb),
                 col("name", Text),
                 col("version", Bigint),
                 col("data", Bytea),
@@ -480,8 +480,8 @@ pub fn table_contract(role: Logical) -> TableContract {
                 col("causation_id", Text),
                 nullable("occurred_at", Bigint),
                 col("recorded_at", Bigint),
-                col("extensions", Text),
-                col("metadata", Text),
+                col("extensions", Jsonb),
+                col("metadata", Jsonb),
             ],
             vec![
                 (UniqueKey::EventsId, vec!["id"]),
@@ -494,7 +494,7 @@ pub fn table_contract(role: Logical) -> TableContract {
                 key("stream"),
                 nullable("tenant", Text),
                 nullable("subject", Text),
-                nullable("encryption", Text),
+                nullable("encryption", Jsonb),
                 col("type_name", Text),
                 col("version", Bigint),
                 col("data", Bytea),
