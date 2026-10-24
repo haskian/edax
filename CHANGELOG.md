@@ -2,6 +2,16 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.18.0](https://github.com/haskian/edax/compare/1be3f8d28b90818967596d45779344468954466d..v0.18.0) - 2026-10-24
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) store message maps as jsonb, refuse NUL text in every store (#34) - ([438013c](https://github.com/haskian/edax/commit/438013c2b643fe2977b9fd7710325dd3be9e2850)) - Črtomir Majer
+#### Documentation
+- document dedup-only idempotent commands (#33) - ([61726e6](https://github.com/haskian/edax/commit/61726e6e3172d95f6870c94111644d37b7e8302b)) - Črtomir Majer
+#### Continuous Integration
+- (**edax-py**) type-check with ruff and ty, not mypy --strict (#32) - ([1be3f8d](https://github.com/haskian/edax/commit/1be3f8d28b90818967596d45779344468954466d)) - Črtomir Majer
+
+- - -
+
 ## [v0.17.0](https://github.com/haskian/edax/compare/eb49e5734cc036b31269123b808e6165436b7076..v0.17.0) - 2026-10-24
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) (**edax-postgres**) store message maps and encryption info as jsonb (#31) - ([eb49e57](https://github.com/haskian/edax/commit/eb49e5734cc036b31269123b808e6165436b7076)) - Črtomir Majer
