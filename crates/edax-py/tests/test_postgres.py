@@ -217,7 +217,7 @@ def draft(aggregate: str, sequence: int, **fields: Any) -> EventDraft:
         "correlation_id": "corr",
         "causation_id": "cause",
         "extensions": {"traceparent": "00-ab"},
-        "metadata": {"note": "é \"quoted\""},
+        "metadata": {"note": 'é "quoted"'},
         "sequence": sequence,
     }
     return EventDraft(**{**base, **fields})
@@ -274,13 +274,13 @@ async def test_append_stamps_the_database_clock_and_keeps_every_field(
     # hands back must be what the rows hold.
     assert [fields_of(event) for event in stored] == [fields_of(event) for event in loaded]
     assert loaded[0].tenant == "acme"
-    assert loaded[0].metadata == {"note": "é \"quoted\""}
+    assert loaded[0].metadata == {"note": 'é "quoted"'}
     assert loaded[1].occurred_at == 7
     events = tables(db)["events"]
     queried = await pool.fetch(
         f"SELECT extensions ->> 'traceparent' AS trace, metadata ->> 'note' AS note FROM {events} ORDER BY sequence"
     )
-    assert [(row["trace"], row["note"]) for row in queried] == [("00-ab", "é \"quoted\"")] * 2, (
+    assert [(row["trace"], row["note"]) for row in queried] == [("00-ab", 'é "quoted"')] * 2, (
         "a host queries the maps as jsonb"
     )
     async with transaction(store) as tx:
