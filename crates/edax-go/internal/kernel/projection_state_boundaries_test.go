@@ -7,7 +7,7 @@ import (
 
 func TestProjectionStateBoundariesGolden(t *testing.T) {
 	for _, fixture := range []string{"projection_state_boundaries", "postgres_projection_state"} {
-		for _, row := range ingestionGoldenRows[struct {
+		for _, row := range goldenRows[struct {
 			ingestionGoldenResult
 			Request    json.RawMessage
 			Contract   json.RawMessage

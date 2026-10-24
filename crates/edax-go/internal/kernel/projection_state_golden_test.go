@@ -6,7 +6,7 @@ import (
 )
 
 func TestProjectionStateGolden(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Request json.RawMessage
 		Records json.RawMessage

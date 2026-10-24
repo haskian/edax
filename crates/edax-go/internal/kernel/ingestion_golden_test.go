@@ -15,7 +15,7 @@ type ingestionGoldenResult struct {
 	Error *string
 }
 
-func ingestionGoldenRows[T any](t *testing.T, name string) []T {
+func goldenRows[T any](t *testing.T, name string) []T {
 	t.Helper()
 	raw, err := os.ReadFile("../../../../testdata/golden/" + name + ".json")
 	if err != nil {
@@ -66,7 +66,7 @@ func ingestionGoldenCheck(t *testing.T, row ingestionGoldenResult, got any, err 
 }
 
 func TestBatchIngestionGolden(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Set         string
 		Config      json.RawMessage
@@ -120,7 +120,7 @@ func TestBatchIngestionGolden(t *testing.T) {
 }
 
 func TestIngestionGolden(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Set         string
 		Mode        string
@@ -220,7 +220,7 @@ func TestIngestionGolden(t *testing.T) {
 }
 
 func TestPostgresIngestionGolden(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Config   string
 		Plan     json.RawMessage

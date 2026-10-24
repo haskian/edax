@@ -77,8 +77,11 @@ pub struct KafkaRecord {
 /// a command's target aggregate or else its own id), composed with its tenant where the mode composes
 /// keys ([`edax_core::tenant_key`]). Under [`Tenancy::Pool`] two tenants' same-named aggregates then
 /// take two keys, and every producer of one topic places an aggregate on one partition. A mode that
-/// requires a tenant and a message that names none is a `codec` error.
+/// requires a tenant and a message that names none is a `codec` error, as is a message
+/// [`Message::check`] refuses: a record's value may come from a host serializer, which never runs the
+/// codec's check, so the key is where every producer meets it.
 pub fn record_key<M: Message>(tenancy: Tenancy, msg: &M) -> Result<String, Error> {
+    msg.check()?;
     tenant_key(tenancy, msg.tenant(), msg.ordering_key())
 }
 
@@ -88,7 +91,8 @@ pub fn record_key<M: Message>(tenancy: Tenancy, msg: &M) -> Result<String, Error
 /// job; `None` uses [`record_key`] under `tenancy`. One aggregate's messages, and a command with the
 /// events it causes, then share one partition and keep their order. `content_type` names the format
 /// and kind of `value`, so a host serializer must carry a media type of its own and register it in
-/// every SDK that reads the topic. Fails only as [`record_key`] does.
+/// every SDK that reads the topic. Fails only as [`record_key`] does, and runs its message check with a
+/// `key` too.
 pub fn record<M: Message>(
     msg: &M,
     tenancy: Tenancy,
@@ -97,7 +101,10 @@ pub fn record<M: Message>(
     content_type: &str,
 ) -> Result<KafkaRecord, Error> {
     let key = match key {
-        Some(key) => key.to_owned(),
+        Some(key) => {
+            msg.check()?;
+            key.to_owned()
+        }
         None => record_key(tenancy, msg)?,
     };
     Ok(KafkaRecord {

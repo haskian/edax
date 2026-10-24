@@ -5,40 +5,43 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
-	"os"
 	"strings"
 	"testing"
 )
 
-func readGolden[T any](t *testing.T, name string) []T {
-	t.Helper()
-	raw, err := os.ReadFile("../../../../testdata/golden/" + name + ".json")
+// decode reads a vector's wire as its kind, keeping the fields the vectors pin.
+func decode(kind, format string, wire []byte) (decodedMessage, error) {
+	if kind == "event" {
+		event, err := DecodeEvent(format, wire)
+		if err != nil {
+			return decodedMessage{}, err
+		}
+		return decodedMessage{ID: event.ID, Metadata: event.Metadata}, nil
+	}
+	command, err := DecodeCommand(format, wire)
 	if err != nil {
-		t.Fatal(err)
+		return decodedMessage{}, err
 	}
-	var rows []T
-	if err = json.Unmarshal(raw, &rows); err != nil {
-		t.Fatal(err)
-	}
-	return rows
+	return decodedMessage{ID: command.ID, Metadata: command.Metadata}, nil
+}
+
+type decodedMessage struct {
+	ID       string            `json:"id"`
+	Metadata map[string]string `json:"metadata"`
 }
 
 // The wire is a trust boundary: Go decodes each vector in both formats to the kernel's message or its
 // exact refusal. A NUL inside the wire never reaches Go's native string guard, so the kernel's rule is
 // the only one that refuses it here.
 func TestEnvelopeDecodeGolden(t *testing.T) {
-	type message struct {
-		ID       string            `json:"id"`
-		Metadata map[string]string `json:"metadata"`
-	}
-	for _, row := range readGolden[struct {
+	for _, row := range goldenRows[struct {
 		Name       string `json:"name"`
 		Kind       string `json:"kind"`
 		JSONHex    string `json:"json_hex"`
 		MsgpackHex string `json:"msgpack_hex"`
 		Want       struct {
-			Message *message `json:"message"`
-			Error   *string  `json:"error"`
+			Message *decodedMessage `json:"message"`
+			Error   *string         `json:"error"`
 		} `json:"want"`
 	}](t, "envelope_decode") {
 		for format, wireHex := range map[string]string{"json": row.JSONHex, "msgpack": row.MsgpackHex} {
@@ -46,20 +49,7 @@ func TestEnvelopeDecodeGolden(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var got message
-			if row.Kind == "event" {
-				event, decodeErr := DecodeEvent(format, wire)
-				err = decodeErr
-				if event != nil {
-					got = message{ID: event.ID, Metadata: event.Metadata}
-				}
-			} else {
-				command, decodeErr := DecodeCommand(format, wire)
-				err = decodeErr
-				if command != nil {
-					got = message{ID: command.ID, Metadata: command.Metadata}
-				}
-			}
+			got, err := decode(row.Kind, format, wire)
 			if row.Want.Error != nil {
 				// The vector holds the JSON refusal; MessagePack refuses with the same code, its own text.
 				want := *row.Want.Error
@@ -83,7 +73,7 @@ func TestEnvelopeDecodeGolden(t *testing.T) {
 
 // The document rule a Go host's own projection store calls: the check, and the keyed read.
 func TestProjectionDocumentGolden(t *testing.T) {
-	for _, row := range readGolden[struct {
+	for _, row := range goldenRows[struct {
 		Name string `json:"name"`
 		ID   string `json:"id"`
 		JSON string `json:"json"`

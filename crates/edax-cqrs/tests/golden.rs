@@ -665,36 +665,44 @@ fn idempotency_record_cases() -> Vec<Value> {
 /// carry that key; an integer past 64 bits would come back rounded. NUL is refused in the row id too, as
 /// in the document.
 fn projection_document_cases() -> Vec<Value> {
-    let cases = [
+    [
         (
             "an_object_is_kept",
+            "user-1",
             r#"{"email":"ada@example.com","age":36,"tags":["eu","paid"]}"#,
         ),
-        ("an_empty_object_is_kept", "{}"),
-        ("the_row_key_overwrites_an_id_field", r#"{"id":"stale","age":36}"#),
-        ("an_array_is_refused", r#"["ada@example.com"]"#),
-        ("a_scalar_is_refused", "36"),
-        ("null_is_refused", "null"),
+        ("an_empty_object_is_kept", "user-1", "{}"),
+        (
+            "the_row_key_overwrites_an_id_field",
+            "user-1",
+            r#"{"id":"stale","age":36}"#,
+        ),
+        ("an_array_is_refused", "user-1", r#"["ada@example.com"]"#),
+        ("a_scalar_is_refused", "user-1", "36"),
+        ("null_is_refused", "user-1", "null"),
         (
             "an_integer_past_64_bits_is_refused",
+            "user-1",
             r#"{"balance":18446744073709551616}"#,
         ),
-        ("text_that_is_not_json_is_refused", r#"{"email":"#),
-        ("nul_in_a_nested_string_is_refused", r#"{"tags":["a\u0000b"]}"#),
-        ("nul_in_a_key_is_refused", r#"{"a\u0000":1}"#),
+        ("text_that_is_not_json_is_refused", "user-1", r#"{"email":"#),
+        (
+            "nul_in_a_nested_string_is_refused",
+            "user-1",
+            r#"{"tags":["a\u0000b"]}"#,
+        ),
+        ("nul_in_a_key_is_refused", "user-1", r#"{"a\u0000":1}"#),
+        ("nul_in_the_row_id_is_refused", "user\0-1", "{}"),
     ]
-    .map(|(name, json)| (name, "user-1", json));
-    cases
-        .into_iter()
-        .chain([("nul_in_the_row_id_is_refused", "user\0-1", "{}")])
-        .map(|(name, id, json)| {
-            let want = match document_json(id, json.as_bytes()) {
-                Ok(document) => json!({ "ok": document, "keyed": keyed_document(id, document.clone()) }),
-                Err(error) => json!({ "error": error.to_string() }),
-            };
-            json!({ "name": name, "id": id, "json": json, "want": want })
-        })
-        .collect()
+    .into_iter()
+    .map(|(name, id, json)| {
+        let want = match document_json(id, json.as_bytes()) {
+            Ok(document) => json!({ "ok": document, "keyed": keyed_document(id, document.clone()) }),
+            Err(error) => json!({ "error": error.to_string() }),
+        };
+        json!({ "name": name, "id": id, "json": json, "want": want })
+    })
+    .collect()
 }
 
 fn filter_cases() -> Vec<Value> {

@@ -511,19 +511,19 @@ fn golden_rows() {
     };
     let mut nul_row = draft_row(0, &draft(1));
     nul_row["correlation_id"] = json!("c\u{0}");
-    let mut nul_metadata = draft(1);
-    nul_metadata.metadata.insert("note".into(), "a\0b".into());
-    let mut nul_metadata_row = draft_row(0, &draft(1));
-    nul_metadata_row["metadata"]["note"] = json!("a\u{0}b");
+    // A NUL metadata note, on the message a refusal is called with and on the row a replay rebuilds it from.
+    let nul_note = |metadata: &mut edax_event::Metadata, row: &mut Value| {
+        metadata.insert("note".into(), "a\0b".into());
+        row["metadata"]["note"] = json!("a\u{0}b");
+    };
+    let (mut nul_metadata, mut nul_metadata_row) = (draft(1), draft_row(0, &draft(1)));
+    nul_note(&mut nul_metadata.metadata, &mut nul_metadata_row);
     let mut nul_command = command("cmd-1", "order-1");
     let mut nul_command_rows: Value =
         serde_json::from_str(&rows::commands_param(&[nul_command.clone()]).unwrap()).unwrap();
-    nul_command.metadata.insert("note".into(), "a\0b".into());
-    nul_command_rows[0]["metadata"]["note"] = json!("a\u{0}b");
-    let mut nul_saga_command = saga_commands[0].clone();
-    nul_saga_command.metadata.insert("note".into(), "a\0b".into());
-    let mut nul_saga_rows = saga_command_rows.clone();
-    nul_saga_rows[0]["metadata"]["note"] = json!("a\u{0}b");
+    nul_note(&mut nul_command.metadata, &mut nul_command_rows[0]);
+    let (mut nul_saga_command, mut nul_saga_rows) = (saga_commands[0].clone(), saga_command_rows.clone());
+    nul_note(&mut nul_saga_command.metadata, &mut nul_saga_rows[0]);
     let foreign = [command("x", "order-1")];
     let foreign_rows: Value = serde_json::from_str(&rows::commands_param(&foreign).unwrap()).unwrap();
     let nul_document = r#"{"s":"\u0000"}"#;

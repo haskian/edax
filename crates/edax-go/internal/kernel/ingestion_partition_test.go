@@ -12,7 +12,7 @@ func TestPartitionAdmissionGolden(t *testing.T) {
 		Contract, Inputs, Want json.RawMessage
 		Floor                  string
 	}
-	for _, item := range ingestionGoldenRows[row](t, "ingestion_partition") {
+	for _, item := range goldenRows[row](t, "ingestion_partition") {
 		floor, err := strconv.ParseInt(item.Floor, 10, 64)
 		if err != nil {
 			t.Fatal(err)
@@ -29,7 +29,7 @@ func TestPartitionAdmissionGolden(t *testing.T) {
 
 func TestPartitionSQLGolden(t *testing.T) {
 	type row struct{ Config, Want json.RawMessage }
-	for _, item := range ingestionGoldenRows[row](t, "postgres_ingest_partition") {
+	for _, item := range goldenRows[row](t, "postgres_ingest_partition") {
 		actual, err := PostgresIngestStatements(string(item.Config))
 		if err != nil {
 			t.Fatal(err)
