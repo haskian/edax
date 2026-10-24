@@ -306,7 +306,8 @@ lets a handler's exception propagate untouched.
 
 Rust decodes a replayed result as `C::Output`. Python's `idempotent` converts it to `result_type`
 or the handler's return annotation. Go callers use `ExecuteAs[R]` to restore the result type. See
-[idempotency](./idempotency.md#the-loser-paths).
+[idempotency](./idempotency.md#the-loser-paths). The ledger stores the whole result, so a command that
+needs only dedup returns nothing ([dedup-only commands](./idempotency.md#dedup-only-commands)).
 
 ## The middleware chain
 

@@ -5,6 +5,7 @@ import json
 from typing import Any
 
 import pytest
+from conftest import RecordingLedger
 from edax._observer import wrap
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.errors import (
@@ -246,15 +247,8 @@ async def test_tampered_protected_results_never_replay(tamper: str) -> None:
 
 
 async def test_prepared_settlement_survives_an_ambiguous_complete_response() -> None:
-    class LostReplyLedger(MemoryLedger):
-        records: list[str]
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.records = []
-
+    class LostReplyLedger(RecordingLedger):
         async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
-            self.records.append(encode_record(record))
             await super().complete(key, handle, record, tx)
             if len(self.records) == 1:
                 raise StoreError("completed response lost")

@@ -9,6 +9,7 @@ ordering: the joining memory store, the memory ledger of its own, and Redis (the
 from __future__ import annotations
 
 import datetime
+import json
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -18,10 +19,11 @@ from typing import Any, ClassVar
 import edax
 import msgspec
 import pytest
-from conftest import TTL_MS, Recording
+from conftest import TTL_MS, Recording, RecordingLedger, expect
 from edax.backend.memory import MemoryIdempotencyStore, MemoryLedger, MemoryTransactor
 from edax.backend.redis import AsyncRedisClient, RedisIdempotencyStore
 from edax.command import CommandBus, idempotent
+from edax.errors import CachedFailure, PayloadMismatch, Rejected
 
 
 @dataclass
@@ -250,3 +252,66 @@ async def test_a_redelivery_after_a_crash_replays_the_declared_type(
     assert isinstance(redelivered, Invoice) and redelivered == first == invoice()
     assert redelivered.issued_at == ISSUED_AT and redelivered.total == Decimal("50.00")
     assert runs == 1
+
+
+@dataclass(frozen=True)
+class DedupCase:
+    name: str
+    #: Whether the handler rejects the command instead of returning ``None``.
+    rejects: bool
+    retry: IssueInvoice
+    #: The one record both dispatches leave, beside ``payload_hash``: the whole record, so a stored result shows.
+    want_record: dict[str, Any]
+    want_error: type[BaseException] | None
+    #: What the retry's error text must match: the key for a mismatch, the bare code for a cached failure.
+    want_match: str | None
+
+
+DONE: dict[str, Any] = {"result": None, "error": None, "error_code": None, "pending": False}
+
+DEDUP_CASES = [
+    DedupCase("a_retry_replays_none_without_running_the_handler", False, command(), DONE, None, None),
+    DedupCase(
+        "another_payload_under_the_key_is_a_payload_mismatch",
+        False,
+        IssueInvoice("order-8", 5000, "req-7"),
+        DONE,
+        PayloadMismatch,
+        "req-7",
+    ),
+    DedupCase(
+        "a_rejection_replays_as_a_cached_failure_without_its_message",
+        True,
+        command(),
+        {"result": None, "error": "", "error_code": "rejected", "pending": False},
+        CachedFailure,
+        r"^rejected: $",
+    ),
+]
+
+
+@pytest.mark.parametrize("case", DEDUP_CASES, ids=lambda c: c.name)
+async def test_a_command_that_returns_nothing_stores_only_its_hash_and_state(case: DedupCase) -> None:
+    """Dedup only is a command whose handler returns nothing: the record keeps the hash and the state, and a
+    retry returns what the first dispatch did and writes nothing. On a ledger of its own, so a rejection is
+    cached. See docs/sdk/idempotency.md#dedup-only-commands."""
+    runs = 0
+
+    async def handler(cmd: IssueInvoice) -> None:
+        nonlocal runs
+        runs += 1
+        if case.rejects:
+            raise Rejected("insufficient funds")
+
+    ledger = RecordingLedger()
+    bus = CommandBus(idempotent(ledger, scope="test", tenancy=edax.Tenancy.SILO))
+    bus.register(IssueInvoice, handler)
+    with expect(Rejected if case.rejects else None):
+        assert await bus.dispatch(command(), idempotency_key="req-7") is None
+    with expect(case.want_error, match=case.want_match):
+        assert await bus.dispatch(case.retry, idempotency_key="req-7") is None
+
+    [written] = [json.loads(raw) for raw in ledger.records]
+    assert isinstance(written.pop("payload_hash"), int)
+    assert written == case.want_record
+    assert runs == 1, "the retry never runs the handler"
