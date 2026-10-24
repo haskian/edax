@@ -197,8 +197,8 @@ stateDiagram-v2
     end note
 ```
 
-The wire shape is the kernel's: `{"payload_hash", "result", "error", "error_code", "pending"}`, read
-in the order `pending` wins, then `error`, then `result`. A missing `pending` reads as `false`, so a
+The wire shape is the kernel's ([the stored shape](../kernels/cqrs.md#record-and-state--the-stored-shape)),
+read in the order `pending` wins, then `error`, then `result`. A missing `pending` reads as `false`, so a
 record written before the field existed reads as completed. A `null` result on a completed,
 non-failed record is a success whose value is null, not "no result".
 
@@ -223,6 +223,22 @@ broker retry plus client retry. Expiry inside that window turns a replay into a 
 blocks its key when the worker holding it dies. `ttl_ms` is the dedup window for a terminal record.
 Pinned by `test_claim_branches` and `test_complete_branches` in
 `crates/edax-py/tests/test_redis.py`, which read each key's TTL back.
+
+### Dedup-only commands
+
+A record grows with the handler's result. To keep only the hash and the state, return nothing:
+`-> None` in Python, `type Output = ()` in Rust, `nil` in Go. The record's `result` is then `null`, and
+a retry returns nothing, as the first dispatch did. A caller that needs a handle back gets a small id and
+reads the rest from the read model. Events always work this way ([consume path](#the-four-guards)).
+
+A sealed command is the exception. Its record is the protected record, which holds the scope, the
+fingerprint and an encrypted `null` (see [Protected commands](#protected-commands)).
+
+There is no switch that drops a returned value and answers a retry with "duplicate". A retry must
+return what the first dispatch returned, or the caller can tell the two apart. A client whose first
+reply was lost would never get the value, and could take "duplicate" to mean the work failed. Pinned by
+`test_a_command_that_returns_nothing_stores_only_its_hash_and_state` in
+`crates/edax-py/tests/test_replay_type.py`.
 
 ## The loser paths
 
@@ -332,7 +348,7 @@ are counted across two dispatches of one key: the first, then its redelivery.
 | 4 | shared | commit, nothing landed | nothing | re-runs the handler | 2 | never landed | `shared_failed_commit_drops_the_claim_with_the_work` |
 | 5 | own ledger | nothing | `done`, its own commit after the work's | replays the cached result | 1 | landed once | `split_success_replays_instead_of_rerunning` |
 | 6 | own ledger | handler, transiently | nothing: the guard released the claim | re-runs the handler | 2 | rolled back both times | `split_transient_failure_releases_the_claim_so_the_redelivery_reruns` |
-| 7 | own ledger | handler, terminally | `failed`, carrying the message | raises `CachedFailure`; the handler does not run | 1 | rolled back | `split_terminal_failure_is_cached_and_replays` |
+| 7 | own ledger | handler, terminally | `failed`, carrying the code but no message | raises `CachedFailure`; the handler does not run | 1 | rolled back | `split_terminal_failure_is_cached_and_replays` |
 | 8 | own ledger | commit, nothing landed | nothing: the guard released the claim | re-runs the handler | 2 | never landed | `split_failed_commit_releases_the_claim_so_the_work_is_not_lost` |
 | 9 | own ledger | commit lands, its reply is lost | nothing; see below | re-runs and applies the work a second time | 2 | landed twice | `split_lost_commit_response_releases_a_claim_over_work_that_landed_so_it_runs_twice` |
 

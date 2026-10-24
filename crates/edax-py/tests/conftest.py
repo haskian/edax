@@ -38,8 +38,10 @@ from edax._values import fields_of
 from edax.backend.kafka import KafkaConsumer, KafkaProducer
 from edax.backend.memory import (
     MemoryIdempotencyStore,
+    MemoryLedger,
     MemoryTransactor,
 )
+from edax.idempotency import Record, encode_record
 from edax.observe import CLAIM_VERDICTS, DELIVERY_OUTCOMES, SAGA_SKIPS, SETTLEMENTS, TRANSACTIONS
 from edax.testing import event as build_message
 from edax.testing import event_of
@@ -396,6 +398,18 @@ def RefusingLedger(db: MemoryTransactor | None = None) -> Any:
     """A joining ledger whose compensating writes are refused, counted in ``refusals``. A joining ledger
     refuses because the handler's own failed statement has already aborted the transaction they share."""
     return Refusing(MemoryIdempotencyStore(db), "complete", "release")
+
+
+class RecordingLedger(MemoryLedger):
+    """The own-ledger ordering, keeping the wire JSON of each record a ``complete`` landed, in order."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.records: list[str] = []
+
+    async def complete(self, key: str, handle: bytes, record: Record, tx: Any = None) -> None:
+        await super().complete(key, handle, record, tx)
+        self.records.append(encode_record(record))
 
 
 # =========================================================================
