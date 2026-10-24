@@ -642,8 +642,9 @@ async def test_a_table_off_the_contract_is_refused_before_any_statement(pool: An
 
 
 async def test_the_contract_3_migration_brings_contract_2_tables_onto_the_contract(pool: Any) -> None:
-    """``docs/backends/postgres-jsonb-migration.sql`` takes tables holding contract 2's text maps onto the
-    contract, keeping each stored value."""
+    """``docs/backends/postgres-jsonb-migration.sql`` takes tables holding contract 2's text maps and
+    encryption onto the contract, keeping each stored value, and its listing query finds the row whose NUL
+    the cast would refuse."""
     schema = "edax_contract_2"
     await provision(pool, schema)
     json_columns = {
@@ -655,28 +656,79 @@ async def test_the_contract_3_migration_brings_contract_2_tables_onto_the_contra
     for table, columns in json_columns.items():
         changes = ", ".join(f"ALTER COLUMN {column} TYPE text USING {column}::text" for column in columns)
         await pool.execute(f'ALTER TABLE "{schema}".{table} {changes}')
+    # Contract 2's text, as its rows wrote it: the serialized maps and `EncryptionInfo`.
+    sealed = '{"cipher":"aes-256-gcm","format_version":1,"key_id":"data-key-1","key_namespace":"production-eu","nonce":"JCQkJCQkJCQkJCQk"}'
+    tag = b"\x47" * 16
+    message = "name, version, data, correlation_id, causation_id"
+    await pool.executemany(
+        f'INSERT INTO "{schema}".edax_events (id, stream, sequence, aggregate_id, subject, encryption, {message}, '
+        "recorded_at, extensions, metadata) VALUES ($1, 'acct-1', $2, 'acct-1', $3, $4, 'Deposited', 1, $5, "
+        "'corr', 'cause', 5, $6, $7)",
+        [
+            ("acct-1-1", 1, None, None, b"\x00", '{"traceparent":"00-ab"}', '{"note":"x"}'),
+            ("acct-1-2", 2, "customer-42", sealed, tag, "{}", "{}"),
+            ("acct-1-3", 3, None, None, b"\x00", "{}", '{"note":"a\\u0000b"}'),
+        ],
+    )
     await pool.execute(
-        f'INSERT INTO "{schema}".edax_events (id, stream, sequence, aggregate_id, name, version, data, '
-        "correlation_id, causation_id, recorded_at, extensions, metadata) VALUES ('acct-1-1', 'acct-1', 1, "
-        """'acct-1', 'Deposited', 1, '\\x00', 'corr', 'cause', 5, '{"traceparent":"00-ab"}', '{"note":"x"}')"""
+        f'INSERT INTO "{schema}".edax_snapshots (stream, subject, encryption, type_name, version, data) '
+        "VALUES ('acct-1', 'customer-42', $1, 'Account', 2, $2)",
+        sealed,
+        tag,
+    )
+    columns = f"id, aggregate_id, subject, encryption, {message}, issued_at, extensions, metadata"
+    values = "$1, 'order-1', 'customer-42', $2, 'Ship', 1, $3, 'corr', 'cause', 5, '{}', '{\"note\":\"y\"}'"
+    await pool.execute(
+        f'INSERT INTO "{schema}".edax_command_outbox ({columns}) VALUES ({values})', "cmd-1", sealed, tag
+    )
+    await pool.execute(
+        f"INSERT INTO \"{schema}\".edax_saga_outbox (saga, {columns}) VALUES ('ship', {values})",
+        "saga-cmd-1",
+        sealed,
+        tag,
     )
 
     db = PostgresTransactor(pool, schema=schema)
-    events = PostgresEventStore(db)
-    # Building a store registers its tables, which check() then holds to the contract.
-    PostgresCommandOutbox(db)
-    PostgresSagaStore(db)
+    events, outbox, sagas = PostgresEventStore(db), PostgresCommandOutbox(db), PostgresSagaStore(db)
     with pytest.raises(BadHandle) as refused:
         await db.check()
     for table, columns in json_columns.items():
         for column in columns:
             assert f'"{schema}"."{table}".{column} is text, needs jsonb' in str(refused.value)
     migration = (REPO_ROOT / "docs" / "backends" / "postgres-jsonb-migration.sql").read_text()
+    listing = migration.split("List them first:\n--\n", 1)[1].split(";", 1)[0]
+    listing = "\n".join(line.removeprefix("--").strip() for line in listing.splitlines())
+    rows = await pool.fetch(listing.replace("public.", f'"{schema}".'))
+    assert [(row["t"], row["id"]) for row in rows] == [("edax_events", "acct-1-3")]
+    await pool.execute(f'DELETE FROM "{schema}".edax_events WHERE id = $1', "acct-1-3")
     await pool.execute(migration.replace("public.", f'"{schema}".'))
     await db.check()
     async with transaction(db) as tx:
-        [event] = await events.load(tx, "acct-1")
-    assert (event.extensions, event.metadata) == ({"traceparent": "00-ab"}, {"note": "x"})
+        plain, sealed_event = await events.load(tx, "acct-1")
+        snapshot = await events.load_snapshot(tx, "acct-1")
+    assert (plain.extensions, plain.metadata, plain.encryption) == (
+        {"traceparent": "00-ab"},
+        {"note": "x"},
+        None,
+    )
+    assert snapshot is not None
+    [command_message] = await outbox.unpublished(10)
+    [saga_message] = await sagas.unpublished("ship", 10)
+    for kept in (
+        sealed_event.encryption,
+        snapshot.encryption,
+        command_message.encryption,
+        saga_message.encryption,
+    ):
+        assert kept is not None
+        assert (kept.cipher, kept.key_id, kept.key_namespace, kept.nonce) == (
+            "aes-256-gcm",
+            "data-key-1",
+            "production-eu",
+            b"$" * 12,
+        )
+    assert (command_message.id, command_message.metadata) == ("cmd-1", {"note": "y"})
+    assert (saga_message.id, saga_message.metadata) == ("saga-cmd-1", {"note": "y"})
 
 
 @pytest.mark.parametrize("case", golden("postgres_query.json"), ids=lambda c: c["name"])

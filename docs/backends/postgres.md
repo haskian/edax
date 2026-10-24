@@ -90,6 +90,12 @@ has no such order. Table contract 3 changed `extensions`, `metadata` and `encryp
 `jsonb`: stop every process of the previous release, run the
 [migration](postgres-jsonb-migration.sql), then start the new release.
 
+The same release refuses NUL in every text field and map entry, on decode too. A message the previous
+release wrote with NUL and left on a Kafka topic is then refused: a `KafkaConsumer` dead-letters it, and a
+`KafkaProjection` partition stops on it. Before the upgrade, let the previous release's consumers and
+projections drain every topic. Do not replay retained history through a new `KafkaProjection` until the
+records holding NUL have expired.
+
 **Query message maps.** `extensions`, `metadata` and `encryption` are `jsonb` columns, so plain SQL reads
 them and an index serves a lookup:
 
@@ -99,7 +105,8 @@ CREATE INDEX edax_events_trace ON edax_events ((extensions ->> 'traceparent'));
 CREATE INDEX edax_events_key ON edax_events ((encryption ->> 'key_id'));
 ```
 
-A NUL in a key or a value of these maps is refused with `CodecError`, as in every other field.
+A NUL in a key or a value of these maps is refused with `CodecError` by every store, as in every other
+text field.
 
 **Suggestions, not requirements.** Tune these to your workload.
 
@@ -205,8 +212,9 @@ compares it. A document written to the table by other means is outside that guar
 exact digits, and `-0.0` as `0`. Each reads back as the same value. `jsonb` also returns keys in its
 own order.
 
-**NUL.** A string or a key holding NUL is refused with `CodecError`: Postgres text cannot hold it.
-The memory store keeps it.
+**NUL.** Every store refuses a string or a key holding NUL with `CodecError`. The kernel's text rule
+(`edax_core::check_text`) refuses it in every message field, map entry, key and document. Postgres text
+cannot hold it, so no store keeps it. Bytes, such as a payload, may hold any value.
 
 **Indexes.** A filter or a sort on a document path reads the document, so a large read model pays a
 scan. The `id` path compiles to the row key column, which the primary key orders. An `id` prefix

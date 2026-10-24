@@ -202,7 +202,7 @@ fn backoff_cases() -> Vec<Value> {
 /// 32 `é` are 64 bytes and pass, 33 are 33 characters and 66 bytes and fail, which a binding that
 /// counts characters would accept.
 fn tenancy_cases() -> Vec<Value> {
-    let keys = ["order-1", "", "a:b", "héllo"];
+    let keys = ["order-1", "", "a:b", "héllo", "order\0-1"];
     let at_limit = "a".repeat(TENANT_MAX);
     let over_limit = "a".repeat(TENANT_MAX + 1);
     let wide_at_limit = "é".repeat(TENANT_MAX / 2);
@@ -218,6 +218,7 @@ fn tenancy_cases() -> Vec<Value> {
         Some(over_limit.as_str()),
         Some(wide_at_limit.as_str()),
         Some(wide_over_limit.as_str()),
+        Some("ac\0me"),
     ];
     // One row per branch of the rule, its expected key or refusal written by hand: the vector is
     // derived from the kernel, so these are the check that the rule is the intended one.
@@ -251,6 +252,13 @@ fn tenancy_cases() -> Vec<Value> {
     for (mode, tenant, want) in pinned {
         let got = tenant_key(mode, tenant, "order-1").map_err(|e| e.to_string());
         assert_eq!(got.as_deref().map_err(String::as_str), want, "{mode:?} {tenant:?}");
+    }
+    for (tenant, key, want) in [
+        (None, "order\0-1", "codec: key holds a NUL character"),
+        (Some("ac\0me"), "order-1", "codec: tenant holds a NUL character"),
+    ] {
+        let got = tenant_key(Tenancy::Silo, tenant, key).map_err(|e| e.to_string());
+        assert_eq!(got.as_deref().map_err(String::as_str), Err(want), "{key:?} {tenant:?}");
     }
     let mut cases: Vec<Value> = Vec::new();
     for &mode in Tenancy::ALL {

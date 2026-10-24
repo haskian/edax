@@ -873,7 +873,8 @@ def test_repository_matches_fold(history: list[RepoOp]) -> None:
 # P5 — kernel message serializer round-trip (the binding boundary)
 # =========================================================================
 
-text = st.text(max_size=24)
+#: Text without NUL, which the kernel refuses in every text field (``edax_core::check_text``).
+text = st.text(st.characters(exclude_categories=("Cs",), exclude_characters="\x00"), max_size=24)
 str_map = st.dictionaries(text, text, max_size=3)
 #: Extension keys under the kernel's rule, so every generated message is one a producer may send.
 extension_map = st.dictionaries(st.from_regex(r"[a-z0-9][a-z0-9._-]{0,63}", fullmatch=True), text, max_size=3)

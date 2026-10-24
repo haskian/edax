@@ -662,31 +662,45 @@ fn idempotency_record_cases() -> Vec<Value> {
 
 /// `document_json`: what a projection store's save accepts as a read-model document, and
 /// `keyed_document`: what its `get` and `get_many` read back, the row key under `id`. Only an object can
-/// carry that key; an integer past 64 bits would come back rounded.
+/// carry that key; an integer past 64 bits would come back rounded. NUL is refused in the row id too, as
+/// in the document.
 fn projection_document_cases() -> Vec<Value> {
     [
         (
             "an_object_is_kept",
+            "user-1",
             r#"{"email":"ada@example.com","age":36,"tags":["eu","paid"]}"#,
         ),
-        ("an_empty_object_is_kept", "{}"),
-        ("the_row_key_overwrites_an_id_field", r#"{"id":"stale","age":36}"#),
-        ("an_array_is_refused", r#"["ada@example.com"]"#),
-        ("a_scalar_is_refused", "36"),
-        ("null_is_refused", "null"),
+        ("an_empty_object_is_kept", "user-1", "{}"),
+        (
+            "the_row_key_overwrites_an_id_field",
+            "user-1",
+            r#"{"id":"stale","age":36}"#,
+        ),
+        ("an_array_is_refused", "user-1", r#"["ada@example.com"]"#),
+        ("a_scalar_is_refused", "user-1", "36"),
+        ("null_is_refused", "user-1", "null"),
         (
             "an_integer_past_64_bits_is_refused",
+            "user-1",
             r#"{"balance":18446744073709551616}"#,
         ),
-        ("text_that_is_not_json_is_refused", r#"{"email":"#),
+        ("text_that_is_not_json_is_refused", "user-1", r#"{"email":"#),
+        (
+            "nul_in_a_nested_string_is_refused",
+            "user-1",
+            r#"{"tags":["a\u0000b"]}"#,
+        ),
+        ("nul_in_a_key_is_refused", "user-1", r#"{"a\u0000":1}"#),
+        ("nul_in_the_row_id_is_refused", "user\0-1", "{}"),
     ]
     .into_iter()
-    .map(|(name, json)| {
-        let want = match document_json("user-1", json.as_bytes()) {
-            Ok(document) => json!({ "ok": document, "keyed": keyed_document("user-1", document.clone()) }),
+    .map(|(name, id, json)| {
+        let want = match document_json(id, json.as_bytes()) {
+            Ok(document) => json!({ "ok": document, "keyed": keyed_document(id, document.clone()) }),
             Err(error) => json!({ "error": error.to_string() }),
         };
-        json!({ "name": name, "id": "user-1", "json": json, "want": want })
+        json!({ "name": name, "id": id, "json": json, "want": want })
     })
     .collect()
 }

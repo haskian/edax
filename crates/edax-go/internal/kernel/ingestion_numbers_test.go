@@ -6,7 +6,7 @@ import (
 )
 
 func TestIngestionRawNumbers(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Envelope    json.RawMessage
 		EventJSON   string `json:"event_json"`

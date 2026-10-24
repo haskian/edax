@@ -19,7 +19,6 @@
 use std::io;
 
 use edax_core::Error;
-use edax_cqrs::holds_nul;
 use serde::Serialize;
 use serde_json::ser::{CompactFormatter, Formatter, Serializer};
 use serde_json::{Number, Value};
@@ -28,15 +27,12 @@ use serde_json::{Number, Value};
 const EXACT_FROM: f64 = 9_007_199_254_740_992.0; // 2^53
 
 /// The text projection `id`'s `document` is stored as: the kernel's keyed document (the row key as its
-/// `"id"`, refused as `codec` when it is not a JSON object or holds an integer wider than 64 bits),
-/// serialized by [`exact_json`]. A string or object key holding NUL is a `codec` error: `jsonb`
-/// cannot store it.
+/// `"id"`, refused as `codec` when [`edax_cqrs::document_json`] refuses it), serialized by [`exact_json`].
 pub fn stored_document(id: &str, document: &[u8]) -> Result<String, Error> {
-    let keyed = Value::Object(edax_cqrs::keyed_document(id, edax_cqrs::document_json(id, document)?));
-    if holds_nul(&keyed) {
-        return Err(crate::rows::holds_nul_error("a projection document"));
-    }
-    Ok(exact_json(&keyed))
+    Ok(exact_json(&Value::Object(edax_cqrs::keyed_document(
+        id,
+        edax_cqrs::document_json(id, document)?,
+    ))))
 }
 
 /// `value` as JSON text, with every non-integer number of magnitude 2^53 or more written as its exact
@@ -164,10 +160,5 @@ mod tests {
             Ok(r#"{"id":"a-1","m":[0.3],"n":58088200776852272.0}"#.to_owned())
         );
         assert!(stored_document("a-1", b"[1]").is_err(), "not an object");
-        assert_eq!(
-            stored_document("a-1", br#"{"s":"a\u0000b"}"#).map_err(|e| e.to_string()),
-            Err("codec: a projection document holds a NUL character, which Postgres cannot store".to_owned())
-        );
-        assert!(stored_document("a-1", br#"{"a\u0000":1}"#).is_err(), "NUL in a key");
     }
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestKafkaIngestionRawGolden(t *testing.T) {
-	for _, row := range ingestionGoldenRows[struct {
+	for _, row := range goldenRows[struct {
 		ingestionGoldenResult
 		Record        KafkaRecord
 		Topic         string

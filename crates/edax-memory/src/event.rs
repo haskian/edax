@@ -130,8 +130,9 @@ impl MemoryEventStore {
     /// `recorded_at` is the store's clock reading, in unix nanoseconds. The caller passes it because a
     /// binding cannot hand this store a clock to call. A durable store reads its own clock instead.
     ///
-    /// The stream's last sequence as `tx` sees it must equal `expected_version`, else a conflict error
-    /// is returned. The batch must carry sequences `expected_version + 1, + 2, ...` in order, and every
+    /// A draft [`EventDraft::check`] refuses is a codec error, before anything else is checked. The
+    /// stream's last sequence as `tx` sees it must equal `expected_version`, else a conflict error is
+    /// returned. The batch must carry sequences `expected_version + 1, + 2, ...` in order, and every
     /// event id must be new to the whole store (stored, staged by any open transaction, or earlier in
     /// the batch), else a codec error is returned and nothing is written. A stream another open
     /// transaction has appended to is held until that transaction ends: the conflict reports the
@@ -152,6 +153,7 @@ impl MemoryEventStore {
         drafts: Vec<EventDraft>,
         recorded_at: i64,
     ) -> Result<Vec<EventMessage>, Error> {
+        drafts.iter().try_for_each(EventDraft::check)?;
         lock(&self.state).write(tx, |committed, others, own| {
             // The stale-writer conflict is checked first: it is the documented reload-and-retry signal,
             // and a stale caller's sequences are wrong by construction.
@@ -384,6 +386,18 @@ mod tests {
                 expected_version: 0,
                 events: vec![draft("evt-2", None)],
                 error_code: Some("concurrency: expected 0, stored 1"),
+                stored: vec!["evt-1"],
+                outbox: vec!["evt-1"],
+            },
+            Case {
+                // The kernel's text rule, before any other: every store refuses NUL alike.
+                name: "nul_in_metadata_is_refused_before_the_version_check",
+                expected_version: 0,
+                events: vec![EventDraft {
+                    metadata: [("note".to_owned(), "a\0b".to_owned())].into(),
+                    ..draft("evt-2", Some(2))
+                }],
+                error_code: Some("codec: metadata holds a NUL character"),
                 stored: vec!["evt-1"],
                 outbox: vec!["evt-1"],
             },

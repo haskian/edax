@@ -166,7 +166,7 @@
         "version": 2
       }
     ],
-    "error": "codec: correlation id holds a NUL character, which Postgres cannot store",
+    "error": "codec: correlation id holds a NUL character",
     "expected": 0,
     "name": "append_refuses_nul",
     "stream": "s"
@@ -195,7 +195,7 @@
         "version": 2
       }
     ],
-    "error": "codec: metadata holds a NUL character, which Postgres cannot store",
+    "error": "codec: metadata holds a NUL character",
     "expected": 0,
     "name": "append_refuses_nul_in_metadata",
     "stream": "s"
@@ -221,7 +221,7 @@
         "version": 1
       }
     ],
-    "error": "codec: metadata holds a NUL character, which Postgres cannot store",
+    "error": "codec: metadata holds a NUL character",
     "name": "enqueue_refuses_nul_in_metadata"
   },
   {
@@ -349,6 +349,35 @@
     "version": 0
   },
   {
+    "command_rows": [
+      {
+        "aggregate_id": "order-1",
+        "causation_id": "evt-1",
+        "correlation_id": "corr-1",
+        "data": "0001ff",
+        "encryption": null,
+        "extensions": {},
+        "id": "4:ship:order-1:1:0",
+        "idempotency_key": "req-7",
+        "issued_at": 1700000000000000000,
+        "metadata": {
+          "note": "a\u0000b"
+        },
+        "name": "ShipOrder",
+        "subject": null,
+        "tenant": null,
+        "version": 1
+      }
+    ],
+    "error": "codec: metadata holds a NUL character",
+    "folded": "",
+    "id": "order-1",
+    "name": "saga_refuses_nul_in_metadata",
+    "saga": "ship",
+    "state": null,
+    "version": 0
+  },
+  {
     "error": "concurrency: saga ship instance order-1 completed at version 4: a completed instance takes no write",
     "name": "saga_completed",
     "result": "{\"written\":null,\"stored\":4,\"completed\":true}"
@@ -366,7 +395,7 @@
   },
   {
     "document": "{\"s\":\"\\u0000\"}",
-    "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
+    "error": "codec: projection acct-1 holds a NUL character",
     "id": "acct-1",
     "name": "stored_document_nul"
   },
@@ -391,7 +420,7 @@
       0
     ],
     "call": "load_params",
-    "error": "codec: stream holds a NUL character, which Postgres cannot store",
+    "error": "codec: stream holds a NUL character",
     "name": "load_refuses_nul",
     "want": null
   },
@@ -449,7 +478,7 @@
       false
     ],
     "call": "projection_get",
-    "error": "codec: projection id holds a NUL character, which Postgres cannot store",
+    "error": "codec: projection id holds a NUL character",
     "name": "projection_get_refuses_nul",
     "want": null
   },
@@ -512,7 +541,7 @@
       "{\"s\":\"\\u0000\"}"
     ],
     "call": "projection_save",
-    "error": "codec: a projection document holds a NUL character, which Postgres cannot store",
+    "error": "codec: projection acct-1 holds a NUL character",
     "name": "projection_save_refuses_nul",
     "want": null
   },
@@ -734,7 +763,7 @@
       "o\u0000"
     ],
     "call": "ledger_key_params",
-    "error": "codec: idempotency key holds a NUL character, which Postgres cannot store",
+    "error": "codec: idempotency key holds a NUL character",
     "name": "ledger_key_refuses_nul",
     "want": null
   },

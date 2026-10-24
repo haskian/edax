@@ -22,7 +22,7 @@ The synchronous ABI converts types; Python and Go orchestrate providers and stor
 
 `EncryptionInfo` carries `format_version: u32`, `key_namespace: String`, `key_id: String`,
 `cipher: Cipher`, and `nonce: Vec<u8>`. Only format version 1 is accepted. Namespace and key ID
-must be nonempty. A key ID is an immutable opaque generation reference, never a URL or secret.
+must be nonempty and free of NUL (`edax_core::check_text`). A key ID is an immutable opaque generation reference, never a URL or secret.
 The crypto format version is independent of a message's payload schema `version`.
 
 `SealedValue` pairs that information with `data`: ciphertext followed by the full 16-byte tag.

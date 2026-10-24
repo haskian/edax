@@ -98,6 +98,28 @@ pub struct EventDraft {
     pub metadata: Metadata,
 }
 
+/// [`check_fields`] over an event's fields: one list for [`EventDraft`] and [`EventMessage`], which share
+/// every field it reads, so a store never accepts a draft the codec refuses once it is stored.
+macro_rules! check_event {
+    ($event:expr) => {
+        check_fields(
+            &[
+                ("event id", Some($event.id.as_str())),
+                ("aggregate id", Some($event.aggregate_id.as_str())),
+                ("event name", Some($event.name.as_str())),
+                ("correlation id", Some($event.correlation_id.as_str())),
+                ("causation id", Some($event.causation_id.as_str())),
+            ],
+            $event.tenant.as_deref(),
+            $event.subject.as_deref(),
+            $event.encryption.as_ref(),
+            &$event.data,
+            &$event.extensions,
+            &$event.metadata,
+        )
+    };
+}
+
 impl EventDraft {
     /// The stored message: this draft as the store recorded it at `recorded_at`.
     pub fn record(self, recorded_at: i64) -> EventMessage {
@@ -118,6 +140,11 @@ impl EventDraft {
             extensions: self.extensions,
             metadata: self.metadata,
         }
+    }
+
+    /// Refuse a draft every store refuses, as the stored event's [`Message::check`] would.
+    pub fn check(&self) -> Result<(), Error> {
+        check_event!(self)
     }
 }
 
@@ -264,23 +291,44 @@ pub trait Message: sealed::Sealed {
     /// The message's own id: the causation id of what it causes, and the id an outbox marks it sent by.
     fn id(&self) -> &str;
 
-    /// The extension context, which the codec holds to [`check_extensions`].
-    fn extensions(&self) -> &Extensions;
-
     /// The key that orders this message against others. See [`ordering_key`].
     fn ordering_key(&self) -> &str;
 
     /// The tenant this message belongs to, which the codec holds to [`edax_core::check_tenant`].
     fn tenant(&self) -> Option<&str>;
 
-    /// Erasure owner, if any.
-    fn subject(&self) -> Option<&str>;
+    /// Refuse a message no consumer accepts and no store keeps, as a `codec` error. The codec runs it on
+    /// encode and on decode, and every store before it writes. The rules: [`check_extensions`] on the
+    /// extension keys, [`edax_core::check_tenant`] on the tenant, the protection rule
+    /// ([`crate::sealing::check_protection`]), and [`edax_core::check_text`] on every text field and on
+    /// every key and value of both maps.
+    fn check(&self) -> Result<(), Error>;
+}
 
-    /// Payload encryption information, if any.
-    fn encryption(&self) -> Option<&EncryptionInfo>;
-
-    /// Serialized plaintext or ciphertext and tag.
-    fn data(&self) -> &[u8];
+/// The rules [`Message::check`] names, over one message's text fields (each named as its refusal names
+/// it), tenant, protected envelope and maps.
+fn check_fields(
+    texts: &[(&str, Option<&str>)],
+    tenant: Option<&str>,
+    subject: Option<&str>,
+    encryption: Option<&EncryptionInfo>,
+    data: &[u8],
+    extensions: &Extensions,
+    metadata: &Metadata,
+) -> Result<(), Error> {
+    check_extensions(extensions)?;
+    tenant.map_or(Ok(()), edax_core::check_tenant)?;
+    crate::sealing::check_protection(subject, encryption, data)?;
+    for (what, text) in texts {
+        text.map_or(Ok(()), |text| edax_core::check_text(what, text))?;
+    }
+    for (what, map) in [("extensions", extensions), ("metadata", metadata)] {
+        for (key, value) in map {
+            edax_core::check_text(what, key)?;
+            edax_core::check_text(what, value)?;
+        }
+    }
+    Ok(())
 }
 
 impl Message for EventMessage {
@@ -290,29 +338,17 @@ impl Message for EventMessage {
         &self.id
     }
 
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-
     /// An event's aggregate: an event always has one.
     fn ordering_key(&self) -> &str {
         &self.aggregate_id
     }
 
-    fn subject(&self) -> Option<&str> {
-        self.subject.as_deref()
-    }
-
-    fn encryption(&self) -> Option<&EncryptionInfo> {
-        self.encryption.as_ref()
-    }
-
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-
     fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        check_event!(self)
     }
 }
 
@@ -323,28 +359,31 @@ impl Message for CommandMessage {
         &self.id
     }
 
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-
-    fn subject(&self) -> Option<&str> {
-        self.subject.as_deref()
-    }
-
-    fn encryption(&self) -> Option<&EncryptionInfo> {
-        self.encryption.as_ref()
-    }
-
-    fn data(&self) -> &[u8] {
-        &self.data
-    }
-
     fn tenant(&self) -> Option<&str> {
         self.tenant.as_deref()
     }
 
     fn ordering_key(&self) -> &str {
         ordering_key(self.aggregate_id.as_deref(), &self.id)
+    }
+
+    fn check(&self) -> Result<(), Error> {
+        check_fields(
+            &[
+                ("command id", Some(self.id.as_str())),
+                ("idempotency key", self.idempotency_key.as_deref()),
+                ("aggregate id", self.aggregate_id.as_deref()),
+                ("command name", Some(self.name.as_str())),
+                ("correlation id", Some(self.correlation_id.as_str())),
+                ("causation id", Some(self.causation_id.as_str())),
+            ],
+            self.tenant.as_deref(),
+            self.subject.as_deref(),
+            self.encryption.as_ref(),
+            &self.data,
+            &self.extensions,
+            &self.metadata,
+        )
     }
 }
 

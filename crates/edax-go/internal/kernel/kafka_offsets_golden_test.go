@@ -7,7 +7,7 @@ import (
 
 // Replay the entire offset protocol, including late commits from a revoked generation.
 func TestKafkaOffsetsGolden(t *testing.T) {
-	for _, scenario := range ingestionGoldenRows[struct {
+	for _, scenario := range goldenRows[struct {
 		Name  string
 		Steps []struct {
 			Op        string

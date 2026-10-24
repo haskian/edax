@@ -191,6 +191,7 @@ impl MemoryBroker {
     }
 
     fn publish(&self, message: LogMessage) -> Result<(), Error> {
+        // `record_key` runs the message check, as on Kafka.
         let key = message.record_key(self.tenancy)?;
         let partition = partition_for(key.as_bytes(), self.partitions)?;
         let mut state = lock(&self.state);

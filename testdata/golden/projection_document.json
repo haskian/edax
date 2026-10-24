@@ -88,5 +88,29 @@
     "want": {
       "error": "codec: projection user-1 is not JSON: EOF while parsing a value at line 1 column 9"
     }
+  },
+  {
+    "id": "user-1",
+    "json": "{\"tags\":[\"a\\u0000b\"]}",
+    "name": "nul_in_a_nested_string_is_refused",
+    "want": {
+      "error": "codec: projection user-1 holds a NUL character"
+    }
+  },
+  {
+    "id": "user-1",
+    "json": "{\"a\\u0000\":1}",
+    "name": "nul_in_a_key_is_refused",
+    "want": {
+      "error": "codec: projection user-1 holds a NUL character"
+    }
+  },
+  {
+    "id": "user\u0000-1",
+    "json": "{}",
+    "name": "nul_in_the_row_id_is_refused",
+    "want": {
+      "error": "codec: projection id holds a NUL character"
+    }
   }
 ]

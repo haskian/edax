@@ -13,7 +13,7 @@
 use edax_core::Error;
 
 use crate::causation::Lineage;
-use crate::message::{check_extensions, EventDraft, Extensions, Metadata, Payload};
+use crate::message::{EventDraft, Extensions, Metadata, Payload};
 
 /// Check that `sequences` is the dense ascending run `expected + 1, expected + 2, ...`.
 ///
@@ -89,7 +89,7 @@ pub struct SaveContext<'a> {
     pub subject: Option<&'a str>,
     /// The flow every event of the batch continues.
     pub lineage: &'a Lineage,
-    /// Edax extension context, under [`check_extensions`]'s key rule.
+    /// Edax extension context, under [`check_extensions`](crate::check_extensions)'s key rule.
     pub extensions: &'a Extensions,
     /// The application's own context.
     pub metadata: &'a Metadata,
@@ -102,8 +102,10 @@ pub struct SaveContext<'a> {
 /// interval.
 ///
 /// Refused before anything is written: as `bad_handle`, a count of `ids` that is not the count of
-/// `payloads`; as `codec`, an extension key outside [`check_extensions`], a tenant outside
-/// [`edax_core::check_tenant`], and a batch that would run the stream past sequence `u64::MAX`.
+/// `payloads`; as `codec`, a batch that would run the stream past sequence `u64::MAX`, and a draft
+/// [`EventDraft::check`] refuses (an extension key outside
+/// [`check_extensions`](crate::check_extensions), a tenant outside [`edax_core::check_tenant`], or NUL
+/// in text).
 pub fn draft_batch(
     aggregate_id: &str,
     initial: u64,
@@ -127,10 +129,6 @@ pub fn draft_batch(
             payloads.len()
         )));
     }
-    check_extensions(extensions)?;
-    if let Some(tenant) = tenant {
-        edax_core::check_tenant(tenant)?;
-    }
     let version = u64::try_from(payloads.len())
         .ok()
         .and_then(|count| initial.checked_add(count))
@@ -140,7 +138,7 @@ pub fn draft_batch(
                 u64::MAX
             ))
         })?;
-    let drafts = payloads
+    let drafts: Vec<EventDraft> = payloads
         .into_iter()
         .zip(ids)
         .zip(initial.saturating_add(1)..=version)
@@ -161,6 +159,7 @@ pub fn draft_batch(
             metadata: metadata.clone(),
         })
         .collect();
+    drafts.iter().try_for_each(EventDraft::check)?;
     Ok(DraftBatch {
         drafts,
         version,

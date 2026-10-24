@@ -293,9 +293,10 @@ fn is_command_id_of(id: &str, saga: &str, instance_id: &str) -> bool {
 }
 
 /// Refuse a command that does not belong to the write of instance `id` of `saga` at `version`: every id
-/// must be the kernel's for its saga and index, and every command must target the instance.
-/// Every saga store runs it before its write. Deterministic, so `codec`. The instance is the command's `aggregate_id`, so a command without one
-/// belongs to no instance.
+/// must be the kernel's for its saga and index, every command must target the instance, and every command
+/// must pass [`Message::check`](crate::Message::check). The instance is the command's `aggregate_id`, so a
+/// command without one belongs to no instance. Every saga store runs it before its write. Deterministic,
+/// so `codec`.
 pub fn check_saga_commands(saga: &str, id: &str, version: u64, commands: &[CommandMessage]) -> Result<(), Error> {
     for (index, command) in (0u64..).zip(commands) {
         let want = saga_command_id(saga, id, version, index);
@@ -306,6 +307,7 @@ pub fn check_saga_commands(saga: &str, id: &str, version: u64, commands: &[Comma
                 command.id
             )));
         }
+        crate::Message::check(command)?;
     }
     Ok(())
 }

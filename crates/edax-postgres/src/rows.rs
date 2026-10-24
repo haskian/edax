@@ -4,13 +4,14 @@
 //! A message travels as one JSON object per row: `data` as hex (Postgres `bytea` text without line
 //! breaks), `extensions`, `metadata` and `encryption` as JSON objects, which the table stores as `jsonb`
 //! so a host can query and index them. Versions and sequences are `bigint`, so a value past `i64::MAX`
-//! is refused (`config::check_bigint`). A string holding NUL, in a field or inside one of those objects,
-//! is refused as `codec` before any I/O: neither Postgres `text` nor `jsonb` can hold it, and a server
-//! refusal would abort the caller's transaction.
+//! is refused (`config::check_bigint`). Text holding NUL is refused as `codec` before any I/O, by the
+//! kernel's rule ([`edax_core::check_text`], through [`edax_event::Message::check`] for a message): a
+//! server refusal would abort the caller's transaction.
 
 use edax_core::{Error, ErrorCode};
 use edax_event::{
-    check_saga_commands, check_snapshot, saga_completed, CommandMessage, EventDraft, EventMessage, Extensions, Metadata,
+    check_saga_commands, check_snapshot, saga_completed, CommandMessage, EventDraft, EventMessage, Extensions, Message,
+    Metadata,
 };
 use edax_seal::EncryptionInfo;
 use serde::{Deserialize, Serialize};
@@ -109,8 +110,8 @@ struct CommandRow {
 }
 
 /// The parameters of `append`: the stream, the expected version and the drafts. A batch the kernel's
-/// dense-batch rule refuses (`edax_event::check_batch`), a version past `bigint`, or a NUL in a field is
-/// a `codec` error, before any I/O.
+/// dense-batch rule refuses (`edax_event::check_batch`), a version past `bigint`, or a draft
+/// [`EventDraft::check`] refuses is a `codec` error, before any I/O.
 pub fn append_params(stream: &str, expected: u64, drafts: &[EventDraft]) -> Result<Vec<Param>, Error> {
     let sequences: Vec<Option<u64>> = drafts.iter().map(|d| d.sequence).collect();
     let last = edax_event::check_batch(expected, &sequences)?;
@@ -169,14 +170,17 @@ pub fn decode_commands(rows: &[String]) -> Result<Vec<CommandMessage>, Error> {
         .collect()
 }
 
-/// The parameter holding `commands`, in order, for `command_enqueue` and the saga writes.
+/// The parameter holding `commands`, in order, for `command_enqueue` and the saga writes. It binds them as
+/// they are: [`enqueue_params`] and [`saga_write`] check them first ([`Message::check`]).
 pub fn commands_param(commands: &[CommandMessage]) -> Result<String, Error> {
-    let rows = commands.iter().map(command_row).collect::<Result<Vec<_>, _>>()?;
+    let rows: Vec<CommandRow> = commands.iter().map(command_row).collect();
     json(&rows)
 }
 
-/// The parameters of `command_enqueue`: the commands.
+/// The parameters of `command_enqueue`: the commands. A command [`Message::check`] refuses is a `codec`
+/// error, before any I/O.
 pub fn enqueue_params(commands: &[CommandMessage]) -> Result<Vec<Param>, Error> {
+    commands.iter().try_for_each(Message::check)?;
     Ok(vec![Some(commands_param(commands)?)])
 }
 
@@ -433,26 +437,26 @@ pub fn saga_result(saga: &str, id: &str, expected: u64, result: &str) -> Result<
 }
 
 fn event_row_of_draft(draft: &EventDraft) -> Result<EventRow, Error> {
-    edax_event::sealing::check_protection(draft.subject.as_deref(), draft.encryption.as_ref(), &draft.data)?;
+    draft.check()?;
     let sequence = draft
         .sequence
         .ok_or_else(|| Error::codec("an appended draft carries no sequence"))?;
     Ok(EventRow {
-        id: text("event id", &draft.id)?.to_owned(),
-        aggregate_id: text("aggregate id", &draft.aggregate_id)?.to_owned(),
-        tenant: optional_text("tenant", draft.tenant.as_deref())?,
-        subject: optional_text("subject", draft.subject.as_deref())?,
+        id: draft.id.clone(),
+        aggregate_id: draft.aggregate_id.clone(),
+        tenant: draft.tenant.clone(),
+        subject: draft.subject.clone(),
         encryption: draft.encryption.clone(),
         sequence: check_bigint("sequence", sequence)?,
-        name: text("event name", &draft.name)?.to_owned(),
+        name: draft.name.clone(),
         version: i64::from(draft.version),
         data: to_hex(&draft.data),
-        correlation_id: text("correlation id", &draft.correlation_id)?.to_owned(),
-        causation_id: text("causation id", &draft.causation_id)?.to_owned(),
+        correlation_id: draft.correlation_id.clone(),
+        causation_id: draft.causation_id.clone(),
         occurred_at: draft.occurred_at,
         recorded_at: 0,
-        extensions: string_map("extensions", &draft.extensions)?.clone(),
-        metadata: string_map("metadata", &draft.metadata)?.clone(),
+        extensions: draft.extensions.clone(),
+        metadata: draft.metadata.clone(),
     })
 }
 
@@ -476,24 +480,23 @@ fn event_of_row(row: EventRow) -> Result<EventMessage, Error> {
     })
 }
 
-fn command_row(command: &CommandMessage) -> Result<CommandRow, Error> {
-    edax_event::sealing::check_protection(command.subject.as_deref(), command.encryption.as_ref(), &command.data)?;
-    Ok(CommandRow {
-        id: text("command id", &command.id)?.to_owned(),
-        idempotency_key: optional_text("idempotency key", command.idempotency_key.as_deref())?,
-        aggregate_id: optional_text("aggregate id", command.aggregate_id.as_deref())?,
-        tenant: optional_text("tenant", command.tenant.as_deref())?,
-        subject: optional_text("subject", command.subject.as_deref())?,
+fn command_row(command: &CommandMessage) -> CommandRow {
+    CommandRow {
+        id: command.id.clone(),
+        idempotency_key: command.idempotency_key.clone(),
+        aggregate_id: command.aggregate_id.clone(),
+        tenant: command.tenant.clone(),
+        subject: command.subject.clone(),
         encryption: command.encryption.clone(),
-        name: text("command name", &command.name)?.to_owned(),
+        name: command.name.clone(),
         version: i64::from(command.version),
         data: to_hex(&command.data),
-        correlation_id: text("correlation id", &command.correlation_id)?.to_owned(),
-        causation_id: text("causation id", &command.causation_id)?.to_owned(),
+        correlation_id: command.correlation_id.clone(),
+        causation_id: command.causation_id.clone(),
         issued_at: command.issued_at,
-        extensions: string_map("extensions", &command.extensions)?.clone(),
-        metadata: string_map("metadata", &command.metadata)?.clone(),
-    })
+        extensions: command.extensions.clone(),
+        metadata: command.metadata.clone(),
+    }
 }
 
 fn command_of_row(row: CommandRow) -> Result<CommandMessage, Error> {
@@ -515,38 +518,15 @@ fn command_of_row(row: CommandRow) -> Result<CommandMessage, Error> {
     })
 }
 
-/// `value`, refused as `codec` when it holds NUL.
-pub(crate) fn text<'a>(what: &str, value: &'a str) -> Result<&'a str, Error> {
-    if value.contains('\0') {
-        return Err(holds_nul_error(what));
-    }
-    Ok(value)
-}
-
-/// `map`, refused as [`text`] refuses a key or a value.
-fn string_map<'a>(what: &str, map: &'a Metadata) -> Result<&'a Metadata, Error> {
-    for (key, value) in map {
-        text(what, key)?;
-        text(what, value)?;
-    }
-    Ok(map)
-}
-
-/// The refusal of a value holding NUL, named `what`.
-pub(crate) fn holds_nul_error(what: &str) -> Error {
-    Error::codec(format_args!(
-        "{what} holds a NUL character, which Postgres cannot store"
-    ))
-}
-
-/// `value` as a bound parameter, refused as [`text`] refuses it.
+/// `value` as a bound parameter, refused as [`edax_core::check_text`] refuses it.
 pub(crate) fn text_param(what: &str, value: &str) -> Result<Param, Error> {
-    Ok(Some(text(what, value)?.to_owned()))
+    edax_core::check_text(what, value)?;
+    Ok(Some(value.to_owned()))
 }
 
-/// `value`, when there is one, refused as [`text`] refuses it.
-fn optional_text(what: &str, value: Option<&str>) -> Result<Option<String>, Error> {
-    value.map(|v| text(what, v).map(str::to_owned)).transpose()
+/// `value`, when there is one, as [`text_param`] binds it.
+fn optional_text(what: &str, value: Option<&str>) -> Result<Param, Error> {
+    value.map_or(Ok(None), |value| text_param(what, value))
 }
 
 /// A limit, an offset or a load's `after` as `bigint` text: past `i64::MAX` it means "no bound".
@@ -651,14 +631,14 @@ mod tests {
         nul.id = "e\0".into();
         assert_eq!(
             err(append_params("s", 0, &[nul])).as_deref(),
-            Some("codec: event id holds a NUL character, which Postgres cannot store")
+            Some("codec: event id holds a NUL character")
         );
         let mut nul = draft(1);
-        nul.extensions.insert("t\0".into(), "v".into());
+        nul.metadata.insert("t\0".into(), "v".into());
         assert_eq!(
             err(append_params("s", 0, &[nul])).as_deref(),
-            Some("codec: extensions holds a NUL character, which Postgres cannot store"),
-            "jsonb refuses NUL in a map key"
+            Some("codec: metadata holds a NUL character"),
+            "the kernel refuses NUL in a map key"
         );
         assert!(err(append_params("s", i64::MAX as u64, &[draft(i64::MAX as u64 + 1)])).is_some());
         assert_eq!(
