@@ -1586,7 +1586,7 @@ def test_a_producer_refuses_a_serializer_of_the_wrong_kind(role: str, kwargs: di
 class _MisnamedKind(_UpperSerializer):
     """A third-party serializer whose ``kind`` names no message kind the kernel knows."""
 
-    kind = "events"  # type: ignore[assignment]  # the typo under test
+    kind = "events"  # the typo under test
 
 
 @pytest.mark.parametrize(

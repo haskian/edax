@@ -22,7 +22,7 @@ from ..observe import error_type
 from ..serializer import KernelSerializer, Serializer
 
 if TYPE_CHECKING:
-    from aiokafka import ConsumerRebalanceListener, TopicPartition  # type: ignore[import-untyped]
+    from aiokafka import ConsumerRebalanceListener, TopicPartition
 
 logger = logging.getLogger("edax.backend.kafka")
 KafkaRecord = _native.KafkaRecord
@@ -99,7 +99,7 @@ def topic_partition(topic: str, partition: int) -> TopicPartition:
 def consumer_stopped(e: Exception) -> bool:
     """Whether ``getone`` raised because the client was stopped: the end of the stream, not a failure."""
     try:
-        from aiokafka.errors import ConsumerStoppedError  # type: ignore[import-untyped]
+        from aiokafka.errors import ConsumerStoppedError
     except ImportError:  # a client that is not aiokafka has no such error
         return False
     return isinstance(e, ConsumerStoppedError)
@@ -468,7 +468,7 @@ def rebalance_listener(
     the base package installs no broker library."""
     from aiokafka import ConsumerRebalanceListener
 
-    class Listener(ConsumerRebalanceListener):  # type: ignore[misc]
+    class Listener(ConsumerRebalanceListener):
         async def on_partitions_revoked(self, revoked: Collection[TopicPartition]) -> None:
             await on_revoked(revoked)
 
