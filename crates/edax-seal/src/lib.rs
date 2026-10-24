@@ -77,8 +77,8 @@ pub struct EncryptionInfo {
 impl EncryptionInfo {
     /// Build the current framing with a fresh OS-random nonce after reserving key usage.
     pub fn fresh(key_namespace: String, key_id: String, cipher: Cipher) -> Result<Self, Error> {
-        nonempty(&key_namespace, "key namespace")?;
-        nonempty(&key_id, "key id")?;
+        key_name(&key_namespace, "key namespace")?;
+        key_name(&key_id, "key id")?;
         Ok(Self {
             format_version: 1,
             key_namespace,
@@ -93,8 +93,8 @@ impl EncryptionInfo {
         if self.format_version != 1 {
             return Err(Error::codec("unsupported encryption format version"));
         }
-        nonempty(&self.key_namespace, "key namespace")?;
-        nonempty(&self.key_id, "key id")?;
+        key_name(&self.key_namespace, "key namespace")?;
+        key_name(&self.key_id, "key id")?;
         if self.nonce.len() != self.cipher.nonce_len() {
             return Err(Error::codec("invalid encryption nonce length"));
         }
@@ -137,7 +137,7 @@ pub struct KeyScope {
 impl KeyScope {
     /// Validate each present identifier. An empty identifier is never absence.
     pub fn check(&self) -> Result<(), Error> {
-        nonempty(&self.key_namespace, "key namespace")?;
+        key_name(&self.key_namespace, "key namespace")?;
         if let Some(tenant) = &self.tenant {
             edax_core::check_tenant(tenant)?;
         }
@@ -164,9 +164,13 @@ impl KeyScope {
     }
 }
 
-fn nonempty(value: &str, name: &str) -> Result<(), Error> {
+/// A key namespace or key ID: nonempty, and free of NUL, which no store can hold alike.
+fn key_name(value: &str, name: &str) -> Result<(), Error> {
     if value.is_empty() {
         return Err(Error::codec(format_args!("{name} is empty")));
+    }
+    if value.contains('\0') {
+        return Err(Error::codec(format_args!("{name} holds a NUL character")));
     }
     Ok(())
 }

@@ -64,7 +64,7 @@ fn command(id: &str, aggregate: &str) -> CommandMessage {
         causation_id: "evt-1".into(),
         issued_at: 1_700_000_000_000_000_000,
         extensions: BTreeMap::new(),
-        metadata: BTreeMap::from([("note".into(), "a\u{0}b".into())]),
+        metadata: BTreeMap::from([("note".into(), "é \"quoted\"".into())]),
     }
 }
 
@@ -459,7 +459,7 @@ fn sealed_row_cases() -> Vec<Value> {
             Some(&info),
         )
         .unwrap();
-        let snapshot_row = json!({"type_name":"Invoice","version":1,"data":hex(&ciphertext),"tenant":"acme","subject":"customer-42","encryption":serde_json::to_string(&info).unwrap()}).to_string();
+        let snapshot_row = json!({"type_name":"Invoice","version":1,"data":hex(&ciphertext),"tenant":"acme","subject":"customer-42","encryption":info}).to_string();
         let snapshot = rows::decode_snapshot(&snapshot_row).unwrap();
         assert_eq!(snapshot.data, ciphertext);
         assert_eq!(snapshot.encryption.as_ref(), Some(&info));
@@ -511,6 +511,15 @@ fn golden_rows() {
     };
     let mut nul_row = draft_row(0, &draft(1));
     nul_row["correlation_id"] = json!("c\u{0}");
+    let mut nul_metadata = draft(1);
+    nul_metadata.metadata.insert("note".into(), "a\0b".into());
+    let mut nul_metadata_row = draft_row(0, &draft(1));
+    nul_metadata_row["metadata"]["note"] = json!("a\u{0}b");
+    let mut nul_command = command("cmd-1", "order-1");
+    let mut nul_command_rows: Value =
+        serde_json::from_str(&rows::commands_param(&[nul_command.clone()]).unwrap()).unwrap();
+    nul_command.metadata.insert("note".into(), "a\0b".into());
+    nul_command_rows[0]["metadata"]["note"] = json!("a\u{0}b");
     let foreign = [command("x", "order-1")];
     let foreign_rows: Value = serde_json::from_str(&rows::commands_param(&foreign).unwrap()).unwrap();
     let nul_document = r#"{"s":"\u0000"}"#;
@@ -526,6 +535,10 @@ fn golden_rows() {
                "error": refusal(&rows::append_params("s", 0, &[draft(2)]))}),
         json!({"name": "append_refuses_nul", "stream": "s", "expected": 0, "draft_rows": [nul_row],
                "error": refusal(&rows::append_params("s", 0, &[nul]))}),
+        json!({"name": "append_refuses_nul_in_metadata", "stream": "s", "expected": 0, "draft_rows": [nul_metadata_row],
+               "error": refusal(&rows::append_params("s", 0, &[nul_metadata]))}),
+        json!({"name": "enqueue_refuses_nul_in_metadata", "command_rows": nul_command_rows,
+               "error": refusal(&rows::enqueue_params(&[nul_command]))}),
         json!({"name": "event_row", "row": event_row, "decoded": rows::decode_events(std::slice::from_ref(&event_row)).unwrap().len()}),
         json!({"name": "enqueue_params", "params": rows::enqueue_params(&commands).unwrap(),
                "decoded": rows::decode_commands(&command_rows).unwrap().iter().map(|c| c.id.clone()).collect::<Vec<_>>()}),

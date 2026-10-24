@@ -14,7 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 import pytest
-from conftest import golden
+from conftest import REPO_ROOT, golden
 from edax._units import leave_every_unit_of_work
 from edax._values import fields_of
 from edax.backend.postgres import (
@@ -217,7 +217,7 @@ def draft(aggregate: str, sequence: int, **fields: Any) -> EventDraft:
         "correlation_id": "corr",
         "causation_id": "cause",
         "extensions": {"traceparent": "00-ab"},
-        "metadata": {"note": "a\x00b"},
+        "metadata": {"note": 'é "quoted"'},
         "sequence": sequence,
     }
     return EventDraft(**{**base, **fields})
@@ -274,8 +274,18 @@ async def test_append_stamps_the_database_clock_and_keeps_every_field(
     # hands back must be what the rows hold.
     assert [fields_of(event) for event in stored] == [fields_of(event) for event in loaded]
     assert loaded[0].tenant == "acme"
-    assert loaded[0].metadata == {"note": "a\x00b"}, "a NUL survives inside the metadata text"
+    assert loaded[0].metadata == {"note": 'é "quoted"'}
     assert loaded[1].occurred_at == 7
+    events = tables(db)["events"]
+    queried = await pool.fetch(
+        f"SELECT extensions ->> 'traceparent' AS trace, metadata ->> 'note' AS note FROM {events} ORDER BY sequence"
+    )
+    assert [(row["trace"], row["note"]) for row in queried] == [("00-ab", 'é "quoted"')] * 2, (
+        "a host queries the maps as jsonb"
+    )
+    async with transaction(store) as tx:
+        with pytest.raises(CodecError, match="metadata holds a NUL"):
+            await store.append(tx, "acct-1", 2, [draft("acct-1", 3, metadata={"note": "a\x00b"})])
 
 
 async def test_a_caught_failure_rolls_the_whole_unit_of_work_back(db: PostgresTransactor) -> None:
@@ -629,6 +639,44 @@ async def test_a_table_off_the_contract_is_refused_before_any_statement(pool: An
     # A failed check stays pending: the next call checks again, and names every table off the contract.
     with pytest.raises(BadHandle, match=r"edax_projections.*does not exist"):
         await PostgresProjectionStore(db, "p").get("x")
+
+
+async def test_the_contract_3_migration_brings_contract_2_tables_onto_the_contract(pool: Any) -> None:
+    """``docs/backends/postgres-jsonb-migration.sql`` takes tables holding contract 2's text maps onto the
+    contract, keeping each stored value."""
+    schema = "edax_contract_2"
+    await provision(pool, schema)
+    json_columns = {
+        "edax_events": ("encryption", "extensions", "metadata"),
+        "edax_command_outbox": ("encryption", "extensions", "metadata"),
+        "edax_saga_outbox": ("encryption", "extensions", "metadata"),
+        "edax_snapshots": ("encryption",),
+    }
+    for table, columns in json_columns.items():
+        changes = ", ".join(f"ALTER COLUMN {column} TYPE text USING {column}::text" for column in columns)
+        await pool.execute(f'ALTER TABLE "{schema}".{table} {changes}')
+    await pool.execute(
+        f'INSERT INTO "{schema}".edax_events (id, stream, sequence, aggregate_id, name, version, data, '
+        "correlation_id, causation_id, recorded_at, extensions, metadata) VALUES ('acct-1-1', 'acct-1', 1, "
+        """'acct-1', 'Deposited', 1, '\\x00', 'corr', 'cause', 5, '{"traceparent":"00-ab"}', '{"note":"x"}')"""
+    )
+
+    db = PostgresTransactor(pool, schema=schema)
+    events = PostgresEventStore(db)
+    # Building a store registers its tables, which check() then holds to the contract.
+    PostgresCommandOutbox(db)
+    PostgresSagaStore(db)
+    with pytest.raises(BadHandle) as refused:
+        await db.check()
+    for table, columns in json_columns.items():
+        for column in columns:
+            assert f'"{schema}"."{table}".{column} is text, needs jsonb' in str(refused.value)
+    migration = (REPO_ROOT / "docs" / "backends" / "postgres-jsonb-migration.sql").read_text()
+    await pool.execute(migration.replace("public.", f'"{schema}".'))
+    await db.check()
+    async with transaction(db) as tx:
+        [event] = await events.load(tx, "acct-1")
+    assert (event.extensions, event.metadata) == ({"traceparent": "00-ab"}, {"note": "x"})
 
 
 @pytest.mark.parametrize("case", golden("postgres_query.json"), ids=lambda c: c["name"])

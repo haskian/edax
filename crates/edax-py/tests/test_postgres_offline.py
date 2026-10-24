@@ -331,6 +331,9 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _refusal(lambda: _native.postgres_saga_write(*args, commands)) == case.get("error")
         if case.get("error") is None:
             assert _answer(_native.postgres_saga_write(*args, commands)) == case["want"]
+    elif name == "enqueue_refuses_nul_in_metadata":
+        commands = [_command(row) for row in case["command_rows"]]
+        assert _refusal(lambda: _native.postgres_enqueue_params(commands)) == case["error"]
     elif name in ("saga_completed", "saga_conflict"):
         assert (
             _refusal(lambda: _native.postgres_saga_result("ship", "order-1", 3, case["result"]))
@@ -342,7 +345,7 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _refusal(save) == case.get("error")
         if case.get("error") is None:
             assert json.loads(save().params_json)[-1] == case["stored"]
-    elif name in ("append_refuses_a_gap", "append_refuses_nul"):
+    elif name in ("append_refuses_a_gap", "append_refuses_nul", "append_refuses_nul_in_metadata"):
         drafts = [_draft(row) for row in case["draft_rows"]]
         append_params = lambda: _native.postgres_append_params(case["stream"], case["expected"], drafts)  # noqa: E731
         assert _refusal(append_params) == case["error"]

@@ -34,9 +34,7 @@ const EXACT_FROM: f64 = 9_007_199_254_740_992.0; // 2^53
 pub fn stored_document(id: &str, document: &[u8]) -> Result<String, Error> {
     let keyed = Value::Object(edax_cqrs::keyed_document(id, edax_cqrs::document_json(id, document)?));
     if holds_nul(&keyed) {
-        return Err(Error::codec(
-            "a projection document holds a NUL character, which Postgres cannot store",
-        ));
+        return Err(crate::rows::holds_nul_error("a projection document"));
     }
     Ok(exact_json(&keyed))
 }

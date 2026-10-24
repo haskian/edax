@@ -245,7 +245,7 @@ WITH current AS (
 ),
 saved AS (
   INSERT INTO {snapshots} AS s (stream, type_name, version, data, tenant, subject, encryption)
-  SELECT $1::text, $2::text, ($3::text)::bigint, decode($4::text, 'hex'), $5::text, $6::text, $7::text
+  SELECT $1::text, $2::text, ($3::text)::bigint, decode($4::text, 'hex'), $5::text, $6::text, ($7::text)::jsonb
   FROM current
   WHERE ($3::text)::bigint <= current.version
   ON CONFLICT (stream) DO UPDATE
@@ -927,6 +927,36 @@ mod tests {
         assert!(
             !rendered.saga_unpublished.contains("'saga', "),
             "a saga's command row carries no saga"
+        );
+    }
+
+    /// The snapshot statements are written by hand, so they are held to the contract here.
+    #[test]
+    fn snapshot_statements_name_every_contract_column() {
+        let rendered = statements(&Tables::default());
+        let (save, _) = rendered.save_snapshot.split_once("ON CONFLICT").unwrap();
+        let columns = table_contract(Logical::Snapshots).columns;
+        let (_, inserted) = save.split_once("AS s (").unwrap();
+        let mut inserted: Vec<&str> = inserted.split_once(')').unwrap().0.split(", ").collect();
+        let mut contract: Vec<&str> = columns.iter().map(|column| column.name).collect();
+        inserted.sort_unstable();
+        contract.sort_unstable();
+        assert_eq!(inserted, contract, "the save writes every contract column");
+        for column in &columns {
+            let name = column.name;
+            assert_eq!(
+                rendered
+                    .load_snapshot
+                    .contains(&format!("'{name}', {}", read("s", name, column.column_type))),
+                name != "stream",
+                "{name} in the read row"
+            );
+        }
+        let jsonb = columns.iter().filter(|c| c.column_type == ColumnType::Jsonb).count();
+        assert_eq!(
+            save.matches("::jsonb").count(),
+            jsonb,
+            "each jsonb column is bound as jsonb"
         );
     }
 

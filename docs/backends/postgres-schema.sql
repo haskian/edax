@@ -1,4 +1,4 @@
--- edax Postgres table contract 2: a reference schema. Copy it into your own migration.
+-- edax Postgres table contract 3: a reference schema. Copy it into your own migration.
 
 CREATE TABLE "public"."edax_events" (
   id text COLLATE "C" NOT NULL,
@@ -7,7 +7,7 @@ CREATE TABLE "public"."edax_events" (
   aggregate_id text NOT NULL,
   tenant text,
   subject text,
-  encryption text,
+  encryption jsonb,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
@@ -15,8 +15,8 @@ CREATE TABLE "public"."edax_events" (
   causation_id text NOT NULL,
   occurred_at bigint,
   recorded_at bigint NOT NULL,
-  extensions text NOT NULL,
-  metadata text NOT NULL,
+  extensions jsonb NOT NULL,
+  metadata jsonb NOT NULL,
   PRIMARY KEY (id),
   UNIQUE (stream, sequence)
 );
@@ -25,7 +25,7 @@ CREATE TABLE "public"."edax_snapshots" (
   stream text COLLATE "C" NOT NULL,
   tenant text,
   subject text,
-  encryption text,
+  encryption jsonb,
   type_name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
@@ -46,15 +46,15 @@ CREATE TABLE "public"."edax_command_outbox" (
   aggregate_id text,
   tenant text,
   subject text,
-  encryption text,
+  encryption jsonb,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
   correlation_id text NOT NULL,
   causation_id text NOT NULL,
   issued_at bigint NOT NULL,
-  extensions text NOT NULL,
-  metadata text NOT NULL,
+  extensions jsonb NOT NULL,
+  metadata jsonb NOT NULL,
   PRIMARY KEY (id)
 );
 CREATE INDEX "edax_command_outbox_position" ON "public"."edax_command_outbox" (position);
@@ -96,15 +96,15 @@ CREATE TABLE "public"."edax_saga_outbox" (
   aggregate_id text,
   tenant text,
   subject text,
-  encryption text,
+  encryption jsonb,
   name text NOT NULL,
   version bigint NOT NULL,
   data bytea NOT NULL,
   correlation_id text NOT NULL,
   causation_id text NOT NULL,
   issued_at bigint NOT NULL,
-  extensions text NOT NULL,
-  metadata text NOT NULL,
+  extensions jsonb NOT NULL,
+  metadata jsonb NOT NULL,
   PRIMARY KEY (saga, id)
 );
 CREATE INDEX "edax_saga_outbox_saga_position" ON "public"."edax_saga_outbox" (saga, position);

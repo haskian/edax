@@ -61,16 +61,29 @@ fn tampering_and_invalid_inputs_fail_without_plaintext() {
         let mut altered = original.clone();
         altered.nonce[0] ^= 1;
         assert!(open(&altered, &key, b"event-context", &ciphertext).is_err());
-        for field in ["format", "nonce", "namespace", "key_id"] {
+        for (field, refusal) in [
+            ("format", "codec: unsupported encryption format version"),
+            ("nonce", "codec: invalid encryption nonce length"),
+            ("namespace", "codec: key namespace is empty"),
+            ("namespace_nul", "codec: key namespace holds a NUL character"),
+            ("key_id", "codec: key id is empty"),
+            ("key_id_nul", "codec: key id holds a NUL character"),
+        ] {
             let mut altered = original.clone();
             match field {
                 "format" => altered.format_version = 2,
                 "nonce" => altered.nonce.clear(),
                 "namespace" => altered.key_namespace.clear(),
+                "namespace_nul" => altered.key_namespace.push('\0'),
                 "key_id" => altered.key_id.clear(),
+                "key_id_nul" => altered.key_id.push('\0'),
                 _ => unreachable!(),
             }
-            assert!(altered.check().is_err(), "{field}");
+            assert_eq!(
+                altered.check().map_err(|e| e.to_string()),
+                Err(refusal.into()),
+                "{field}"
+            );
             assert!(seal(&altered, &key, b"", b"").is_err(), "{field}");
             assert!(open(&altered, &key, b"", &ciphertext).is_err(), "{field}");
         }
