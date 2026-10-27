@@ -648,6 +648,13 @@ class PostgresEventStore(_OutboxReads):
         # The statement returns its clock reading, not the events: the kernel stamps the drafts with it.
         return _native.postgres_append_result(expected_version, batch, result)
 
+    async def lock_stream(self, tx: Tx, aggregate_id: str) -> None:
+        """Take ``aggregate_id``'s stream lock, held until ``tx`` ends (:class:`~edax.store.StreamLock`): a
+        transaction-scoped advisory lock keyed by the events table and the stream. A rival save waits,
+        bounded by ``lock_timeout_ms``."""
+        params = postgres_params(_native.postgres_stream_lock_params(aggregate_id))
+        await self._fetch("append", tx, "stream_lock", *params)
+
     async def unpublished(self, limit: int) -> list[EventMessage]:
         return _native.postgres_decode_events(await self._unpublished(None, limit))
 
@@ -665,14 +672,17 @@ class PostgresCommandOutbox(_OutboxReads):
     a :class:`~edax.outbox.Relay` drains. A ``tx`` of another transactor raises
     :class:`~edax.errors.BadHandle`; a command id already waiting raises :class:`~edax.errors.CodecError`."""
 
-    _roles: ClassVar[tuple[TableRole, ...]] = ("command_outbox",)
+    # The read holds a command back while its save's last event waits in the event outbox.
+    _roles: ClassVar[tuple[TableRole, ...]] = ("command_outbox", "event_outbox")
     _outbox: ClassVar[_Outbox] = "command"
 
-    async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
+    async def enqueue(
+        self, tx: Tx, commands: Sequence[CommandMessage], *, after_event: str | None = None
+    ) -> None:
         if not commands:
             self._transactor._handle(tx)  # a foreign handle is refused even for an empty batch
             return
-        params = postgres_params(_native.postgres_enqueue_params(list(commands)))
+        params = postgres_params(_native.postgres_enqueue_params(list(commands), after_event))
         await self._fetchval("enqueue", tx, "command_enqueue", *params)
 
     async def unpublished(self, limit: int) -> list[CommandMessage]:

@@ -259,6 +259,9 @@ def test_the_import_fails_when_a_kernel_code_has_no_class(monkeypatch: pytest.Mo
     [
         pytest.param(tuple(mode.value for mode in edax.Tenancy), _edax.tenancy_modes, id="tenancy_modes"),
         pytest.param(
+            tuple(fence.value for fence in edax.CommandFence), _edax.command_fences, id="command_fences"
+        ),
+        pytest.param(
             edax.idempotency._RECORD_STATES, _edax.idempotency_states, id="idempotency_record_states"
         ),
         pytest.param(CLAIM_VERDICTS, _edax.idempotency_outcomes, id="claim_verdicts"),

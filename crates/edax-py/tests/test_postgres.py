@@ -14,7 +14,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 import pytest
-from conftest import REPO_ROOT, golden
+from conftest import REPO_ROOT, CounterCodec, Tick, TickEvents, golden
+from edax import CommandFence, Repository
 from edax._units import leave_every_unit_of_work
 from edax._values import fields_of
 from edax.backend.postgres import (
@@ -33,6 +34,7 @@ from edax.errors import BadHandle, CodecError, ConcurrencyError, EdaxError, InPr
 from edax.filter import gte
 from edax.idempotency import Claimed, Record, Won
 from edax.message import EventDraft
+from edax.outbox import Relay
 from edax.projection import Entity
 from edax.query import Page, Query, sort_key
 from edax.query import query as kernel_query
@@ -928,3 +930,142 @@ async def test_startup_refuses_lock_timeout_before_deadlock_detection(provisione
         db = PostgresTransactor(pool, schema=SCHEMA, settings=default_settings(lock_timeout_ms=200))
         with pytest.raises(BadHandle, match="deadlock_timeout"):
             await db.check()
+
+
+async def test_a_position_sequence_that_caches_a_block_is_refused(pool: Any) -> None:
+    """A session that caches a block of positions can hand an aggregate's later write an earlier position,
+    so the relay would send it first: the check refuses the sequence before any statement runs."""
+    schema = "edax_cached"
+    await provision(pool, schema)
+    await pool.execute(f'ALTER TABLE "{schema}".edax_command_outbox ALTER COLUMN position SET CACHE 20')
+    db = PostgresTransactor(pool, schema=schema)
+    PostgresCommandOutbox(db)
+    with pytest.raises(
+        BadHandle, match=r"edax_command_outbox\"\.position is filled by a sequence with cache 20"
+    ):
+        await db.check()
+
+
+async def test_the_contract_4_migration_brings_contract_3_tables_onto_the_contract(pool: Any) -> None:
+    schema = "edax_contract_3"
+    await provision(pool, schema)
+    await pool.execute(f'ALTER TABLE "{schema}".edax_command_outbox DROP COLUMN after_event')
+    for outbox in ("edax_event_outbox", "edax_command_outbox", "edax_saga_outbox"):
+        await pool.execute(f'ALTER TABLE "{schema}".{outbox} ALTER COLUMN position SET CACHE 32')
+    db = PostgresTransactor(pool, schema=schema)
+    PostgresEventStore(db), PostgresCommandOutbox(db), PostgresSagaStore(db)
+    with pytest.raises(BadHandle) as refused:
+        await db.check()
+    assert 'edax_command_outbox".after_event is missing' in str(refused.value)
+    assert 'edax_saga_outbox".position is filled by a sequence with cache 32' in str(refused.value)
+    migration = (REPO_ROOT / "docs" / "backends" / "postgres-contract-4-migration.sql").read_text()
+    await pool.execute(migration.replace("public.", f'"{schema}".'))
+    await db.check()
+
+
+async def test_a_saved_command_waits_behind_its_saves_event(db: PostgresTransactor) -> None:
+    events, commands = PostgresEventStore(db), PostgresCommandOutbox(db)
+    repo = Repository(events, TickEvents(), CounterCodec(), commands=commands)
+    aggregate = unique_id("ord")
+    counter = await repo.load(aggregate)
+    counter.apply(Tick(1))
+    ship = command(aggregate, tenant=None)
+    stored = await repo.save(counter, commands=[ship])
+    sent: list[Any] = []
+    relay = Relay(commands, sent.append)
+    assert await relay.drain() == 0, "the event is not published yet, so its command waits"
+    await events.mark_published([event.id for event in stored])
+    assert await relay.drain() == 1
+    assert [command.id for command in sent] == [ship.id]
+
+
+async def test_the_lock_fence_makes_a_stale_commands_only_save_wait_then_fail(
+    db: PostgresTransactor, pool: Any
+) -> None:
+    """Under ``command_fence=CommandFence.LOCK`` a save that sends commands alone takes its stream's lock: a rival save
+    of the stream waits on it, sees the holder's commit, and fails its version check."""
+    events, commands = PostgresEventStore(db), PostgresCommandOutbox(db)
+    repo = Repository(
+        events, TickEvents(), CounterCodec(), commands=commands, command_fence=CommandFence.LOCK
+    )
+    aggregate = unique_id("ord")
+    stale = await repo.load(aggregate)
+    holder = await repo.load(aggregate)
+    holder.apply(Tick(1))
+    ship = command(aggregate, tenant=None)
+    release = asyncio.Event()
+
+    async def hold(tx: PostgresTx) -> None:
+        await repo.save(holder, tx=tx)
+        await release.wait()
+
+    holding, _ = await contender(db, hold)
+    await asyncio.sleep(0.05)
+    losing = asyncio.create_task(repo.save(stale, commands=[ship]))
+    await wait_for_lock(pool, "stream_lock")
+    assert not losing.done(), "the stale save waits on the holder's stream lock"
+    release.set()
+    await asyncio.wait_for(holding, 3)
+    with pytest.raises(ConcurrencyError):
+        await asyncio.wait_for(losing, 3)
+    assert await commands.unpublished_count() == 0, "the stale save sent nothing"
+
+
+async def test_an_orphan_outbox_row_is_not_counted(db: PostgresTransactor, pool: Any) -> None:
+    """A row whose event is gone is never read, so it never counts as backlog either."""
+    store = PostgresEventStore(db)
+    before = await store.unpublished_count()
+    await pool.execute(f"INSERT INTO {tables(db)['event_outbox']} (event_id) VALUES ($1)", unique_id("gone"))
+    assert await store.unpublished_count() == before
+
+
+async def position_drawn_from(pool: Any, default: str) -> PostgresTransactor:
+    """A transactor over a schema whose command outbox ``position`` owns a sequence and has ``default``
+    (``{seq}`` names that sequence), with the command outbox registered for the check."""
+    schema = "edax_position_source"
+    await provision(pool, schema)
+    outbox = f'"{schema}".edax_command_outbox'
+    sequence = f'"{schema}".command_position'
+    await pool.execute(
+        f"ALTER TABLE {outbox} ALTER COLUMN position DROP IDENTITY; "
+        f"CREATE SEQUENCE {sequence} OWNED BY {outbox}.position; "
+        f"ALTER TABLE {outbox} ALTER COLUMN position SET DEFAULT {default.format(seq=sequence)}"
+    )
+    db = PostgresTransactor(pool, schema=schema)
+    PostgresCommandOutbox(db)
+    return db
+
+
+async def test_a_default_beside_an_unused_owned_sequence_is_refused(pool: Any) -> None:
+    """An owned sequence proves nothing unless the column draws from it: ``DEFAULT 0`` beside one would
+    give every command position 0, and the relay could send them in any order."""
+    db = await position_drawn_from(pool, "0")
+    with pytest.raises(BadHandle, match="needs an identity, or a nextval default"):
+        await db.check()
+
+
+async def test_a_nextval_default_of_the_owned_sequence_is_accepted(pool: Any) -> None:
+    db = await position_drawn_from(pool, "nextval('{seq}')")
+    await db.check()
+
+
+async def test_a_held_command_holds_back_its_aggregates_later_commands(db: PostgresTransactor) -> None:
+    """A save's command waits behind its event, and a later commands-only save of the same aggregate
+    waits behind that command, so the relay still sends the aggregate's commands in order."""
+    events, commands = PostgresEventStore(db), PostgresCommandOutbox(db)
+    repo = Repository(
+        events, TickEvents(), CounterCodec(), commands=commands, command_fence=CommandFence.LOCK
+    )
+    aggregate = unique_id("ord")
+    counter = await repo.load(aggregate)
+    counter.apply(Tick(1))
+    first, second = command(aggregate, tenant=None), command(aggregate, tenant=None)
+    stored = await repo.save(counter, commands=[first])
+    await repo.save(counter, commands=[second])
+    sent: list[Any] = []
+    relay = Relay(commands, sent.append)
+    await relay.drain()
+    assert [c.id for c in sent if c.aggregate_id == aggregate] == [], "both wait behind the event"
+    await events.mark_published([event.id for event in stored])
+    await relay.drain()
+    assert [c.id for c in sent if c.aggregate_id == aggregate] == [first.id, second.id]

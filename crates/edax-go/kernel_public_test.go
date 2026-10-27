@@ -22,6 +22,7 @@ func TestPublicKernelNamesMatchTaxonomy(t *testing.T) {
 	}{
 		{"error codes", codeNames, kernel.ErrorCodes()},
 		{"tenancy modes", modes, kernel.TenancyModes()},
+		{"command fences", []string{string(edax.CommandFenceEvent), string(edax.CommandFenceLock)}, kernel.CommandFences()},
 		{"key statuses", []string{"unknown", "active", "revoking", "destroyed"}, kernel.KeyStatuses()},
 		{"erasure stages", []string{"persisted", "revoked", "notified", "destruction_confirmed", "complete"}, kernel.ErasureStages()},
 		{"erasure actions", []string{"revoke", "notify", "acknowledge", "destroy", "complete"}, kernel.ErasureActions()},

@@ -8,15 +8,18 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from enum import Enum
+from typing import Protocol, runtime_checkable
 
-from . import _native
+from . import _names, _native
 from .message import EncryptionInfo, EventDraft, EventMessage
-from .unit_of_work import Transactor, TxT
+from .unit_of_work import Transactor, TxT, TxT_contra
 
 __all__ = [
+    "CommandFence",
     "EventStore",
     "Snapshot",
+    "StreamLock",
     "check_sequence_batch",
 ]
 
@@ -97,6 +100,35 @@ class EventStore(Transactor[TxT], Protocol[TxT]):
         their outbox rows atomically in ``tx`` and return the stored messages, each stamped with the
         store's ``recorded_at``; else raise :class:`~edax.errors.ConcurrencyError` and write nothing."""
         ...
+
+
+class CommandFence(str, Enum):
+    """What keeps a save's commands fenced to the aggregate version they were decided at, and in order
+    with the aggregate's next save: :class:`~edax.repository.Repository`'s ``command_fence``. The value is
+    the name the kernel reads. Every writer of one stream must use the same fence."""
+
+    #: A save that enqueues commands must append an event: the event's unique ``(stream, sequence)`` key
+    #: fails a rival save of the same version.
+    EVENT = "event"
+    #: Every save locks its stream first (:class:`StreamLock`), so a save may send commands alone, at one
+    #: more round trip per save.
+    LOCK = "lock"
+
+
+_names.check((fence.value for fence in CommandFence), _native.command_fences(), "command fences")
+
+
+@runtime_checkable
+class StreamLock(Protocol[TxT_contra]):
+    """An :class:`EventStore` that can lock one stream for a transaction: what a
+    :class:`~edax.repository.Repository` built with :attr:`CommandFence.LOCK` needs. Every save of such a
+    repository takes its stream's lock before it appends, so a save that enqueues commands without an event
+    is still fenced: a rival save of the stream waits for it, then fails its version check.
+
+    ``lock_stream`` holds the lock until ``tx`` ends. A store that cannot make the rival wait refuses it
+    with :class:`~edax.errors.ConcurrencyError` instead."""
+
+    async def lock_stream(self, tx: TxT_contra, aggregate_id: str) -> None: ...
 
 
 def check_sequence_batch(expected_version: int, sequences: Sequence[int | None]) -> int:

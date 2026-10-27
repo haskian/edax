@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use edax_core::{lock, Error};
 use edax_event::{check_snapshot, EventDraft, EventMessage};
 
-use crate::tx::{held_by_other, store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
+use crate::tx::{held, store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
 
 /// An event's sequence, with an unsequenced one reading as 0. The stream's version space is the
 /// kernel's `u64`, so no conversion can clamp or wrap it.
@@ -21,6 +21,12 @@ impl WriteSet {
             .get(aggregate_id)
             .and_then(|tail| tail.last())
             .map(sequence_of)
+    }
+
+    /// Whether this set holds `aggregate_id` against every other writer: it locked the stream, or staged
+    /// a tail for it.
+    fn holds(&self, aggregate_id: &str) -> bool {
+        self.held_streams.contains(aggregate_id)
     }
 }
 
@@ -130,7 +136,8 @@ impl MemoryEventStore {
     /// `recorded_at` is the store's clock reading, in unix nanoseconds. The caller passes it because a
     /// binding cannot hand this store a clock to call. A durable store reads its own clock instead.
     ///
-    /// A draft [`EventDraft::check`] refuses is a codec error, before anything else is checked. The
+    /// A draft [`EventDraft::check`] refuses, or a draft of another aggregate
+    /// ([`edax_event::check_stream`]), is a codec error, before anything else is checked. The
     /// stream's last sequence as `tx` sees it must equal `expected_version`, else a conflict error is
     /// returned. The batch must carry sequences `expected_version + 1, + 2, ...` in order, and every
     /// event id must be new to the whole store (stored, staged by any open transaction, or earlier in
@@ -154,6 +161,7 @@ impl MemoryEventStore {
         recorded_at: i64,
     ) -> Result<Vec<EventMessage>, Error> {
         drafts.iter().try_for_each(EventDraft::check)?;
+        edax_event::check_stream(aggregate_id, &drafts)?;
         lock(&self.state).write(tx, |committed, others, own| {
             // The stale-writer conflict is checked first: it is the documented reload-and-retry signal,
             // and a stale caller's sequences are wrong by construction.
@@ -163,7 +171,7 @@ impl MemoryEventStore {
                 .get(aggregate_id)
                 .and_then(|s| s.last())
                 .map_or(0, sequence_of);
-            if held_by_other(others, |set| set.stream_version(aggregate_id)).is_some() {
+            if others.values().any(|set| set.holds(aggregate_id)) {
                 return Err(Error::concurrency(expected_version, stored));
             }
             let have = own.stream_version(aggregate_id).unwrap_or(stored);
@@ -188,7 +196,24 @@ impl MemoryEventStore {
                 .or_default()
                 .extend(events.iter().cloned());
             own.event_outbox.extend(events.iter().cloned());
+            own.held_streams.insert(aggregate_id.to_owned());
             Ok(events)
+        })
+    }
+
+    /// Lock the stream `aggregate_id` for `tx`, as a durable store's stream lock does under command fence
+    /// `"lock"`: until `tx` ends, every other transaction's append to the stream, and its lock, is refused.
+    /// A durable store would make the other writer wait; this store cannot wait, so it answers the conflict
+    /// the wait would end in: a stream another open transaction holds is a conflict error. Under
+    /// [`Tx::auto_commit`] the lock ends with the call.
+    pub fn lock_stream(&self, tx: Tx, aggregate_id: &str) -> Result<(), Error> {
+        edax_core::check_text("stream", aggregate_id)?;
+        lock(&self.state).write(tx, |_, others, own| {
+            if others.values().any(|set| set.holds(aggregate_id)) {
+                return Err(held("stream", aggregate_id));
+            }
+            own.held_streams.insert(aggregate_id.to_owned());
+            Ok(())
         })
     }
 
@@ -284,7 +309,7 @@ impl MemoryEventStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testkit::{draft, event, ids, wire, RECORDED_AT};
+    use crate::testkit::{draft, draft_on, event, ids, wire, RECORDED_AT};
     use crate::tx::Tx;
     /// An event store holding one committed event at sequence 1 (also sitting in the outbox).
     fn seeded_event_store() -> MemoryEventStore {
@@ -708,20 +733,26 @@ mod tests {
                     Tx::auto_commit(),
                     "order-9",
                     0,
-                    vec![draft("evt-9", Some(1))],
+                    vec![draft_on("order-9", "evt-9", Some(1))],
                     RECORDED_AT,
                 )
                 .unwrap();
             let other = store.transactor().begin();
             if let Some((aggregate_id, id)) = c.other {
                 store
-                    .append(other, aggregate_id, 0, vec![draft(id, Some(1))], RECORDED_AT)
+                    .append(
+                        other,
+                        aggregate_id,
+                        0,
+                        vec![draft_on(aggregate_id, id, Some(1))],
+                        RECORDED_AT,
+                    )
                     .unwrap();
             }
             let tx = store.transactor().begin();
             if let Some(id) = c.own {
                 store
-                    .append(tx, "order-4", 0, vec![draft(id, Some(1))], RECORDED_AT)
+                    .append(tx, "order-4", 0, vec![draft_on("order-4", id, Some(1))], RECORDED_AT)
                     .unwrap();
             }
             let got = store.append(tx, "invoice-7", 1, c.events, RECORDED_AT).map(|_| ());
@@ -738,11 +769,43 @@ mod tests {
                 Tx::auto_commit(),
                 "order-9",
                 0,
-                vec![draft("evt-1", Some(1))],
+                vec![draft_on("order-9", "evt-1", Some(1))],
                 RECORDED_AT
             )),
             Err("codec: event id evt-1 is already stored".to_owned()),
             "an id stored on another aggregate"
+        );
+    }
+
+    #[test]
+    fn a_locked_stream_is_held_until_its_transaction_ends() {
+        let store = MemoryEventStore::new();
+        let (mine, theirs) = (store.transactor().begin(), store.transactor().begin());
+        store.lock_stream(mine, "invoice-7").unwrap();
+        let held = Err("concurrency: stream invoice-7 is held by another open transaction".to_owned());
+        assert_eq!(wire(store.lock_stream(theirs, "invoice-7")), held, "a second lock");
+        assert_eq!(
+            wire(store.append(theirs, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)),
+            Err("concurrency: expected 0, stored 0".to_owned()),
+            "another transaction's append"
+        );
+        store.lock_stream(theirs, "invoice-8").unwrap();
+        store
+            .append(mine, "invoice-7", 0, vec![draft("evt-1", Some(1))], RECORDED_AT)
+            .expect("the holder appends");
+        store.transactor().commit(mine).unwrap();
+        store
+            .lock_stream(theirs, "invoice-7")
+            .expect("free once the holder commits");
+        assert_eq!(
+            wire(store.lock_stream(Tx::auto_commit(), "invoice-7")),
+            held,
+            "an auto-commit lock conflicts too"
+        );
+        store.transactor().rollback(theirs);
+        assert_eq!(
+            wire(store.lock_stream(Tx::auto_commit(), "a\0b")),
+            Err("codec: stream holds a NUL character".to_owned())
         );
     }
 
@@ -765,7 +828,7 @@ mod tests {
                 Tx::auto_commit(),
                 "invoice-8",
                 0,
-                vec![draft("dup", Some(1))],
+                vec![draft_on("invoice-8", "dup", Some(1))],
                 RECORDED_AT
             )
             .is_err());
@@ -774,7 +837,7 @@ mod tests {
                 Tx::auto_commit(),
                 "invoice-8",
                 0,
-                vec![draft("evt-8", Some(1))],
+                vec![draft_on("invoice-8", "evt-8", Some(1))],
                 RECORDED_AT,
             )
             .unwrap();

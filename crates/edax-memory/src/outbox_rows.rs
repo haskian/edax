@@ -27,7 +27,17 @@ impl<R> Default for OutboxRows<R> {
 impl<R: Message + Clone> OutboxRows<R> {
     /// The first `limit` committed rows, oldest commit first.
     pub(crate) fn page(&self, limit: usize) -> Vec<R> {
-        self.rows.iter().take(limit).cloned().collect()
+        self.page_where(limit, |_| true)
+    }
+
+    /// The first `limit` committed rows `keep` admits, oldest commit first.
+    pub(crate) fn page_where<'a>(&'a self, limit: usize, mut keep: impl FnMut(&'a R) -> bool) -> Vec<R> {
+        self.rows.iter().filter(|row| keep(row)).take(limit).cloned().collect()
+    }
+
+    /// Whether the row `id` still waits.
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
     }
 
     /// How many committed rows wait: the backlog depth, without paging.

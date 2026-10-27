@@ -235,6 +235,7 @@ Python's also drains projection effect intents and ingestion rejections.
 |---|---|
 | `unpublished` returns committed rows only | a staged row may still roll back |
 | oldest commit first, one aggregate's rows in `sequence` order | per-key ordering downstream |
+| a save's commands held back until the save's last event is published, with every later command of the same aggregate and tenant | a command never overtakes the event it follows from, nor an earlier command of its aggregate |
 | rows stay until `mark_published` | a crash mid-batch re-delivers rather than drops |
 | `mark_published` is idempotent and durable | the acknowledgement itself can be lost |
 | row ids are unique | `mark_published` by id must not prune a row that was never sent |

@@ -71,10 +71,13 @@ need. edax never runs it.
 what correctness rests on.
 
 - **Columns:** every column edax reads or writes, with an accepted type. A column edax writes `NULL`
-  into is nullable. `position` has a default, an identity or a sequence.
+  into is nullable. `position` takes its values from its own sequence, as an identity or a
+  `nextval` default of the sequence it owns, with cache 1, a positive increment and no cycle. A relay reads an outbox in `position` order, and a sequence that caches a
+  block of values per session can hand an aggregate's later write an earlier position.
 - **Unique keys:** a unique index over exactly each key's columns. It is not partial, not over an
   expression, not deferrable.
-- **Collation:** every text key column, and its unique index, collates as `"C"`.
+- **Collation:** every text key column, and its unique index, collates as the built-in `"C"` (or
+  `"POSIX"`). A collation of that name in another schema does not pass.
 - **Yours:** extra columns that are nullable or defaulted, extra indexes, constraint names,
   partitioning, storage settings.
 
@@ -88,7 +91,10 @@ DDL rights.
 notes. For an addition, migrate first, then roll out the release: old replicas ignore it. A type change
 has no such order. Table contract 3 changed `extensions`, `metadata` and `encryption` from `text` to
 `jsonb`: stop every process of the previous release, run the
-[migration](postgres-jsonb-migration.sql), then start the new release.
+[migration](postgres-jsonb-migration.sql), then start the new release. Table contract 4 added the
+command outbox's `after_event` and requires `position` sequences with cache 1. Both are changes the
+previous release ignores: run the [migration](postgres-contract-4-migration.sql) first, restart the
+pools that write the outboxes, then roll out the release.
 
 The same release refuses NUL in every text field and map entry, on decode too. A message the previous
 release wrote with NUL and left on a Kafka topic is then refused: a `KafkaConsumer` dead-letters it, and a
@@ -156,7 +162,10 @@ connection returns to the pool.
 | `acquire_timeout_ms` | 5 s | the wait for a pooled connection |
 | `claim_ttl_ms` | 5 min | a committed pending ledger claim, before another claimant takes it over |
 
-`lock_timeout_ms` must exceed the server's `deadlock_timeout`. The startup check refuses an equal
+`lock_timeout_ms` must be below `statement_timeout_ms`. The statement's clock starts first, so at
+equal values a lock wait always ends as a statement timeout (`StoreError`), never as the
+`ConcurrencyError` or `InProgress` a lock wait reports. `lock_timeout_ms` must exceed the server's
+`deadlock_timeout`. The startup check refuses an equal
 or shorter value with `BadHandle` and names both values. Otherwise a deadlock could become a claim
 timeout before Postgres detects it. The dispatcher retries a claim timeout without counting an
 attempt, so that mistake could hide a recurring deadlock.

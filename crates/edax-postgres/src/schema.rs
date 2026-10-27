@@ -9,7 +9,9 @@
 //! The contract holds what correctness rests on and nothing more:
 //!
 //! - **Columns.** Each column edax reads or writes exists with an accepted type. One edax writes `NULL` into
-//!   is nullable. A column edax never writes (`position`) has a default.
+//!   is nullable. A column edax never writes (`position`) is filled by an identity or an owned sequence
+//!   with cache 1, a positive increment and no cycle. A relay reads an outbox in `position` order. A session
+//!   that caches a block of positions can hand an aggregate's later write an earlier position.
 //! - **Unique keys.** Each compare-and-set and each insert-if-absent rests on a unique index over exactly the
 //!   key's columns: not partial, not over an expression, not deferrable (a deferred check fires at commit,
 //!   and `ON CONFLICT` cannot use one as its arbiter).
@@ -47,7 +49,7 @@ pub(crate) fn omitted_columns_check(written: &[&str]) -> String {
 }
 
 /// The version of the table contract this build requires. Raised by any change a host must migrate.
-pub const CONTRACT_VERSION: u32 = 3;
+pub const CONTRACT_VERSION: u32 = 4;
 
 /// The oldest Postgres major version the statements run on (`server_version_num` / 10000).
 pub const MIN_SERVER_VERSION: i64 = 14;
@@ -384,7 +386,7 @@ pub struct Column {
     pub column_type: ColumnType,
     /// edax writes `NULL` into it, so it must be nullable.
     pub nullable: bool,
-    /// edax never writes it, so it must have a default (an identity or a sequence).
+    /// edax never writes it, so an identity or an owned sequence with cache 1 must fill it.
     pub defaulted: bool,
     /// A text key column: its collation must be one of [`KEY_COLLATIONS`].
     pub key: bool,
@@ -504,9 +506,15 @@ pub fn table_contract(role: Logical) -> TableContract {
         ),
         Logical::EventOutbox => (vec![position(), key("event_id")], vec![], vec![vec!["event_id"]]),
         Logical::CommandOutbox => (
-            [vec![position(), key("id")], command_columns()].concat(),
+            [
+                vec![position(), key("id")],
+                command_columns(),
+                vec![nullable("after_event", ColumnType::Text)],
+            ]
+            .concat(),
             vec![(UniqueKey::CommandOutboxId, vec!["id"])],
-            vec![vec!["position"]],
+            // The relay pages by position, and its hold looks up an aggregate's earlier commands.
+            vec![vec!["position"], vec!["aggregate_id", "position"]],
         ),
         Logical::Projections => (
             vec![
@@ -590,7 +598,7 @@ pub fn reference_ddl(tables: &Tables) -> String {
                     line.push_str(" COLLATE \"C\"");
                 }
                 if column.defaulted {
-                    line.push_str(" GENERATED ALWAYS AS IDENTITY");
+                    line.push_str(" GENERATED ALWAYS AS IDENTITY (CACHE 1)");
                 }
                 if !column.nullable {
                     line.push_str(" NOT NULL");
@@ -623,6 +631,17 @@ pub(crate) struct CatalogColumn {
     not_null: bool,
     default: bool,
     collation: Option<String>,
+    sequence: Option<CatalogSequence>,
+}
+
+/// The sequence that fills a column, as the catalog reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+pub(crate) struct CatalogSequence {
+    cache: i64,
+    increment: i64,
+    cycle: bool,
+    /// The column takes its values from this sequence: an identity, or a `nextval` default of it.
+    fills: bool,
 }
 
 /// A unique index as the catalog reports it.
@@ -717,11 +736,24 @@ fn check_table(
                 column.name
             ));
         }
-        if column.defaulted && !have.default {
-            problems.push(format!(
-                "{name}.{} needs a default (an identity or a sequence)",
-                column.name
-            ));
+        if column.defaulted {
+            match have.sequence.filter(|sequence| sequence.fills) {
+                None => problems.push(format!(
+                    "{name}.{} needs an identity, or a nextval default of the sequence it owns, to fill it",
+                    column.name
+                )),
+                Some(sequence) if sequence.cache != 1 || sequence.increment <= 0 || sequence.cycle => {
+                    problems.push(format!(
+                        "{name}.{} is filled by a sequence with cache {}, increment {}{}; needs cache 1, a \
+                         positive increment and no cycle",
+                        column.name,
+                        sequence.cache,
+                        sequence.increment,
+                        if sequence.cycle { ", cycle" } else { "" }
+                    ));
+                }
+                Some(_) => {}
+            }
         }
         if column.key && !have.collation.as_deref().is_some_and(|c| KEY_COLLATIONS.contains(&c)) {
             problems.push(format!(

@@ -254,7 +254,7 @@ def test_rows_vector(case: dict[str, Any]) -> None:
     elif case.get("kind") == "sealed_command":
         command = _native.postgres_decode_commands([case["row"]])[0]
         assert json.loads(_native.encode_command("json", command)) == case["message"]
-        assert json.loads(_native.postgres_enqueue_params([command])) == case["params"]
+        assert json.loads(_native.postgres_enqueue_params([command], None)) == case["params"]
         assert _native.open_command(command, bytes.fromhex(case["key_hex"])) == bytes.fromhex(
             case["plaintext_hex"]
         )
@@ -313,7 +313,10 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert len(_native.postgres_decode_events([case["row"]])) == case["decoded"]
     elif name == "enqueue_params":
         rows = json.loads(case["params"][0])
-        assert json.loads(_native.postgres_enqueue_params([_command(row) for row in rows])) == case["params"]
+        assert (
+            json.loads(_native.postgres_enqueue_params([_command(row) for row in rows], case["after_event"]))
+            == case["params"]
+        )
         decoded = _native.postgres_decode_commands([json.dumps(row) for row in rows])
         assert [c.id for c in decoded] == case["decoded"]
     elif name == "snapshot_params":
@@ -333,7 +336,7 @@ def test_rows_vector(case: dict[str, Any]) -> None:
             assert _answer(_native.postgres_saga_write(*args, commands)) == case["want"]
     elif name == "enqueue_refuses_nul_in_metadata":
         commands = [_command(row) for row in case["command_rows"]]
-        assert _refusal(lambda: _native.postgres_enqueue_params(commands)) == case["error"]
+        assert _refusal(lambda: _native.postgres_enqueue_params(commands, None)) == case["error"]
     elif name in ("saga_completed", "saga_conflict"):
         assert (
             _refusal(lambda: _native.postgres_saga_result("ship", "order-1", 3, case["result"]))
@@ -345,7 +348,12 @@ def test_rows_vector(case: dict[str, Any]) -> None:
         assert _refusal(save) == case.get("error")
         if case.get("error") is None:
             assert json.loads(save().params_json)[-1] == case["stored"]
-    elif name in ("append_refuses_a_gap", "append_refuses_nul", "append_refuses_nul_in_metadata"):
+    elif name in (
+        "append_refuses_a_gap",
+        "append_refuses_another_aggregate",
+        "append_refuses_nul",
+        "append_refuses_nul_in_metadata",
+    ):
         drafts = [_draft(row) for row in case["draft_rows"]]
         append_params = lambda: _native.postgres_append_params(case["stream"], case["expected"], drafts)  # noqa: E731
         assert _refusal(append_params) == case["error"]

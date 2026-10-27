@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-use edax_core::{lock, Error, TokenMint, NO_TOKEN};
+use edax_core::{lock, Error, ErrorCode, TokenMint, NO_TOKEN};
 use edax_event::{CommandMessage, EventMessage};
 
 use crate::event::{MemoryEventStore, Snapshot};
@@ -84,6 +84,7 @@ pub(crate) struct Committed {
     pub(crate) sagas: VersionedTable<SagaKey, SagaRow>,    // (saga, instance id) -> row
     pub(crate) saga_outbox: HashMap<String, OutboxRows<CommandMessage>>, // saga -> its unsent commands only
     pub(crate) command_outbox: OutboxRows<CommandMessage>, // unsent outbox commands only
+    pub(crate) command_after: HashMap<String, String>,     // command id -> the event it waits behind
 }
 
 /// One open transaction's staged writes: the overlay a read inside it sees over [`Committed`], and
@@ -98,6 +99,8 @@ pub(crate) struct WriteSet {
     pub(crate) sagas: Staged<SagaKey, SagaRow>,
     pub(crate) saga_outbox: HashMap<String, Vec<CommandMessage>>, // saga -> its commands, in write order
     pub(crate) command_outbox: Vec<CommandMessage>,               // outbox commands, in enqueue order
+    pub(crate) command_after: HashMap<String, String>,            // command id -> the event it waits behind
+    pub(crate) held_streams: HashSet<String>,                     // streams this transaction locked or appended to
 }
 
 /// The whole memory database: the committed state plus every open transaction, behind one lock.
@@ -147,6 +150,14 @@ impl MemoryState {
     }
 }
 
+/// The conflict a write to `what` `key`, which another open transaction holds, gets.
+pub(crate) fn held(what: &str, key: &str) -> Error {
+    Error::new(
+        ErrorCode::Concurrency,
+        format_args!("{what} {key} is held by another open transaction"),
+    )
+}
+
 /// What another open transaction has staged for a key, if any: the whole reason a write to that key
 /// is refused until the holder commits or rolls back. `accessor` names the seam's own map.
 ///
@@ -173,12 +184,15 @@ impl Committed {
             sagas,
             saga_outbox,
             command_outbox,
+            command_after,
+            held_streams: _,
         } = set;
         self.apply_events(streams, event_outbox, snapshots);
         self.projections.apply(projections);
         self.apply_claims(claims);
         self.apply_sagas(sagas, saga_outbox);
         self.command_outbox.apply(command_outbox);
+        self.command_after.extend(command_after);
     }
 }
 
@@ -322,7 +336,7 @@ mod tests {
     use super::*;
     use crate::idempotency::Owner;
     use crate::saga::SagaRow;
-    use crate::testkit::{draft, ids, RECORDED_AT};
+    use crate::testkit::{draft, draft_on, ids, RECORDED_AT};
     use edax_cqrs::Claimed;
     use serde_json::{json, Value};
     /// One database with every seam, and a handle on each view.
@@ -571,7 +585,7 @@ mod tests {
             /// Whether `req-A` is claimed once both transactions have committed, in either order.
             claimed_after: bool,
         }
-        let held = Err(crate::idempotency::held_claim("req-A"));
+        let held = Err(held("idempotency key", "req-A"));
         let claim = |db: &Db, tx: Tx, _: Vec<u8>| won(db.claims.claim(tx, "req-A", HASH));
         let claim_then_release = |db: &Db, tx: Tx, _: Vec<u8>| {
             let handle = won(db.claims.claim(tx, "req-A", HASH));
@@ -1074,7 +1088,7 @@ mod tests {
                 Tx::auto_commit(),
                 "invoice-8",
                 0,
-                vec![draft("evt-9", Some(1))],
+                vec![draft_on("invoice-8", "evt-9", Some(1))],
                 RECORDED_AT,
             )
             .expect("not held");

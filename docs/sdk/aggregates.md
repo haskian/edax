@@ -288,7 +288,10 @@ outright and appends nothing. Rust's `Repository::save` marshals first for that 
 the Rust store suite asserts it.
 
 An empty save still calls `append`. Nothing is written, but the compare-and-set still runs. A
-stale caller that applied no events is told it is stale. Its snapshot write is short-circuited
+stale caller that applied no events is told it is stale. The check holds no lock, so it catches a
+rival that has committed, not one still in flight. A save that sends commands therefore follows the
+repository's [command fence](./commands.md#three-routes-for-a-command): by default it must append an
+event, whose unique key fences it. Its snapshot write is short-circuited
 rather than rolling the stored snapshot backwards.
 
 `save` returns the stored event messages. Under a transaction the caller commits, they are not

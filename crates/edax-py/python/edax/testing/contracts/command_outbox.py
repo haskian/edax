@@ -100,3 +100,29 @@ class CommandOutboxContract(OutboxContract[CommandMessage]):
             async with event_store.begin() as tx:
                 await command_outbox.enqueue(tx, [command(agg), replace(first, data=b'{"order_id":"x"}')])
         assert await self._waiting(request, agg) == [first], "the refused batch wrote nothing"
+
+    async def test_a_command_waits_behind_its_event_and_holds_its_aggregates_later_commands(
+        self, command_outbox: Writer, request: pytest.FixtureRequest
+    ) -> None:
+        """ "``unpublished`` holds a command back while ``after_event`` waits in the event outbox", and
+        every later command of the same aggregate and tenant behind it, so they still leave in order. A
+        command of another aggregate waits for nothing. The event store must be an outbox of its own here:
+        publishing the event is what releases the commands."""
+        event_store: EventStore[Any] = request.getfixturevalue("event_store")
+        events: Outbox[Any] = request.getfixturevalue("event_store")
+        agg, other = unique_id("order"), unique_id("order")
+        event = draft(agg, 1)
+        first, second, elsewhere = command(agg), command(agg), command(other)
+        async with event_store.begin() as tx:
+            await event_store.append(tx, agg, 0, [event])
+            await command_outbox.enqueue(tx, [first], after_event=event.id)
+        async with event_store.begin() as tx:
+            await command_outbox.enqueue(tx, [second, elsewhere])
+        assert await self._waiting(request, agg) == [], (
+            "the first waits behind its event, the second behind it"
+        )
+        assert await self._waiting(request, other) == [elsewhere], (
+            "another aggregate's command waits for nothing"
+        )
+        await events.mark_published([event.id])
+        assert await self._waiting(request, agg) == [first, second], "released in order"

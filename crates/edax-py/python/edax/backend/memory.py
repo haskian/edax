@@ -231,6 +231,13 @@ class MemoryEventStore(_OutboxView[EventMessage]):
         async with self._writing(tx) as token:
             return self._seam().append(token, aggregate_id, expected_version, list(drafts), recorded_at)
 
+    async def lock_stream(self, tx: Tx, aggregate_id: str) -> None:
+        """Lock ``aggregate_id``'s stream until ``tx`` ends (:class:`~edax.store.StreamLock`). This store
+        cannot make a rival wait, so a stream another open transaction holds raises
+        :class:`~edax.errors.ConcurrencyError`."""
+        async with self._writing(tx) as token:
+            self._seam().lock_stream(token, aggregate_id)
+
 
 class MemoryIdempotencyStore(_StoreView):
     """:class:`~edax.idempotency.IdempotencyStore` over the native atomic claim, sharing the transactor's
@@ -432,9 +439,11 @@ class MemoryCommandOutbox(_OutboxView[CommandMessage]):
         """The native command outbox of this view's database, on the thread that built it."""
         return _native.handle(self._db().command_outbox())
 
-    async def enqueue(self, tx: Tx, commands: Sequence[CommandMessage]) -> None:
+    async def enqueue(
+        self, tx: Tx, commands: Sequence[CommandMessage], *, after_event: str | None = None
+    ) -> None:
         async with self._writing(tx) as token:
-            self._seam().enqueue(token, list(commands))
+            self._seam().enqueue(token, list(commands), after_event)
 
 
 class _Log:

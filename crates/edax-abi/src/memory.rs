@@ -182,6 +182,12 @@ impl MemoryEventStore {
         Ok(events.into_iter().map(EventMessage::from).collect())
     }
 
+    /// Lock the stream `aggregate_id` for `tx` until it ends, as command fence `"lock"` does. A stream another
+    /// open transaction holds is a `concurrency:` error.
+    pub fn lock_stream(&self, tx: i64, aggregate_id: &str) -> Result<(), String> {
+        self.inner.lock_stream(tx_of(tx), aggregate_id).map_err(to_wire)
+    }
+
     /// The snapshot for `aggregate_id` as `tx` sees it, or `None`.
     pub fn load_snapshot(&self, tx: i64, aggregate_id: &str) -> Result<Option<SnapshotResult>, String> {
         let snapshot = self.inner.load_snapshot(tx_of(tx), aggregate_id).map_err(to_wire)?;
@@ -450,14 +456,17 @@ pub struct MemoryCommandOutbox {
 
 impl MemoryCommandOutbox {
     /// Stage `commands` in the outbox under `tx`, to commit with the transaction's events. An id already
-    /// waiting, or repeated in the batch, is a `codec:` error and stages nothing.
-    pub fn enqueue(&self, tx: i64, commands: Vec<CommandMessage>) -> Result<(), String> {
+    /// waiting, or repeated in the batch, is a `codec:` error and stages nothing. Each command waits behind
+    /// `after_event`, the last event the same save appended, if any.
+    pub fn enqueue(&self, tx: i64, commands: Vec<CommandMessage>, after_event: Option<String>) -> Result<(), String> {
         let commands = commands
             .into_iter()
             .map(edax_event::CommandMessage::try_from)
             .collect::<Result<Vec<_>, _>>()
             .map_err(to_wire)?;
-        self.inner.enqueue(tx_of(tx), commands).map_err(to_wire)
+        self.inner
+            .enqueue(tx_of(tx), commands, after_event.as_deref())
+            .map_err(to_wire)
     }
 
     /// Committed outbox commands not yet sent, oldest commit first, capped at `limit`. The relay reads

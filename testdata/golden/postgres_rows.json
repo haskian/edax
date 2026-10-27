@@ -4,11 +4,11 @@
     "expected": 0,
     "name": "append_params",
     "params": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       "0",
       "[{\"id\":\"evt-1\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"subject\":null,\"encryption\":null,\"sequence\":1,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"7b22746f74616c223a22392e3530227d\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"metadata\":{\"origin\":\"web\"}},{\"id\":\"evt-2\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"subject\":null,\"encryption\":null,\"sequence\":2,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"7b22746f74616c223a22392e3530227d\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"metadata\":{\"origin\":\"web\"}}]"
     ],
-    "stream": "acme:invoice-7"
+    "stream": "4:acme:invoice-7"
   },
   {
     "draft_rows": [
@@ -141,7 +141,35 @@
     "error": "codec: event 0 has sequence 2, expected 1",
     "expected": 0,
     "name": "append_refuses_a_gap",
-    "stream": "s"
+    "stream": "invoice-7"
+  },
+  {
+    "draft_rows": [
+      {
+        "aggregate_id": "invoice-7",
+        "causation_id": "cmd-1",
+        "correlation_id": "corr-1",
+        "data": "7b22746f74616c223a22392e3530227d",
+        "encryption": null,
+        "extensions": {
+          "traceparent": "00-4bf9-00f0-01"
+        },
+        "id": "evt-1",
+        "metadata": {
+          "origin": "web"
+        },
+        "name": "InvoiceIssued",
+        "occurred_at": 1700000000123456000,
+        "sequence": 1,
+        "subject": null,
+        "tenant": "acme",
+        "version": 2
+      }
+    ],
+    "error": "codec: event 0 belongs to aggregate invoice-7, not to stream invoice-8",
+    "expected": 0,
+    "name": "append_refuses_another_aggregate",
+    "stream": "invoice-8"
   },
   {
     "draft_rows": [
@@ -169,7 +197,7 @@
     "error": "codec: correlation id holds a NUL character",
     "expected": 0,
     "name": "append_refuses_nul",
-    "stream": "s"
+    "stream": "invoice-7"
   },
   {
     "draft_rows": [
@@ -198,7 +226,7 @@
     "error": "codec: metadata holds a NUL character",
     "expected": 0,
     "name": "append_refuses_nul_in_metadata",
-    "stream": "s"
+    "stream": "invoice-7"
   },
   {
     "command_rows": [
@@ -230,13 +258,15 @@
     "row": "{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"7b22746f74616c223a22392e3530227d\",\"encryption\":null,\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"id\":\"evt-1\",\"metadata\":{\"origin\":\"web\"},\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"subject\":null,\"tenant\":\"acme\",\"version\":2}"
   },
   {
+    "after_event": "evt-2",
     "decoded": [
       "cmd-1",
       "cmd-2"
     ],
     "name": "enqueue_params",
     "params": [
-      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"subject\":null,\"encryption\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}},{\"id\":\"cmd-2\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-2\",\"tenant\":null,\"subject\":null,\"encryption\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]"
+      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":null,\"subject\":null,\"encryption\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}},{\"id\":\"cmd-2\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-2\",\"tenant\":null,\"subject\":null,\"encryption\":null,\"name\":\"ShipOrder\",\"version\":1,\"data\":\"0001ff\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]",
+      "evt-2"
     ]
   },
   {
@@ -401,7 +431,7 @@
   },
   {
     "args": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       18446744073709551615
     ],
     "call": "load_params",
@@ -409,7 +439,7 @@
     "name": "load_clamps_after",
     "want": {
       "params": [
-        "acme:invoice-7",
+        "4:acme:invoice-7",
         "9223372036854775807"
       ]
     }
@@ -426,14 +456,14 @@
   },
   {
     "args": [
-      "acme:invoice-7"
+      "4:acme:invoice-7"
     ],
     "call": "load_snapshot_params",
     "error": null,
     "name": "load_snapshot",
     "want": {
       "params": [
-        "acme:invoice-7"
+        "4:acme:invoice-7"
       ]
     }
   },
@@ -910,14 +940,14 @@
     },
     "name": "sealed_event_aes-256-gcm",
     "params": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       "0",
       "[{\"id\":\"evt-1\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"sequence\":1,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"bc960649b580b93066ba28283a3b2f60353229164fe07bbc831ca71190e99189\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"metadata\":{\"origin\":\"web\"}}]"
     ],
     "plaintext_hex": "7b22746f74616c223a22392e3530227d",
     "result": "{\"recorded_at\":1700000001000000000,\"stored\":0}",
     "row": "{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"bc960649b580b93066ba28283a3b2f60353229164fe07bbc831ca71190e99189\",\"encryption\":{\"cipher\":\"aes-256-gcm\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"id\":\"evt-1\",\"metadata\":{\"origin\":\"web\"},\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"subject\":\"customer-42\",\"tenant\":\"acme\",\"version\":2}",
-    "stream": "acme:invoice-7"
+    "stream": "4:acme:invoice-7"
   },
   {
     "key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
@@ -948,28 +978,29 @@
     },
     "name": "sealed_command_aes-256-gcm",
     "params": [
-      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"name\":\"ShipOrder\",\"version\":1,\"data\":\"c7b58de33a958da0fb6e570b1a94de2942029c\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]"
+      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"name\":\"ShipOrder\",\"version\":1,\"data\":\"c7b58de33a958da0fb6e570b1a94de2942029c\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]",
+      null
     ],
     "plaintext_hex": "0001ff",
     "row": "{\"aggregate_id\":\"order-1\",\"causation_id\":\"evt-1\",\"correlation_id\":\"corr-1\",\"data\":\"c7b58de33a958da0fb6e570b1a94de2942029c\",\"encryption\":{\"cipher\":\"aes-256-gcm\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"extensions\":{},\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"issued_at\":1700000000000000000,\"metadata\":{\"note\":\"é \\\"quoted\\\"\"},\"name\":\"ShipOrder\",\"subject\":\"customer-42\",\"tenant\":\"acme\",\"version\":1}"
   },
   {
-    "aad_hex": "00000001000000000000000d656461782e73746174652e76310000000000000008736e617073686f7400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c242424242424242424242424000000000000000e61636d653a696e766f6963652d370000000000000007496e766f696365000000000000000101000000000000000461636d6501000000000000000b637573746f6d65722d3432000000000000000000000000",
+    "aad_hex": "00000001000000000000000d656461782e73746174652e76310000000000000008736e617073686f7400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d31000000000000000b6165732d3235362d67636d000000000000000c2424242424242424242424240000000000000010343a61636d653a696e766f6963652d370000000000000007496e766f696365000000000000000101000000000000000461636d6501000000000000000b637573746f6d65722d3432000000000000000000000000",
     "key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
     "kind": "sealed_snapshot",
     "name": "sealed_snapshot_aes-256-gcm",
     "params": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       "Invoice",
       "1",
-      "bc961b48b78ebc7139c778622d312f74f8f735a7d5070c30523b45773d83831981a48cfba3aa1b5643dcbb2613905487387b5d9eee3d7d14c8",
+      "bc961b48b78ebc7139c778622d312f74f8f735a7d5070c30523b45773d83831981a48cfba3aa1b5643fec7eb6d06d7776cbd7e205350f10a0a",
       "acme",
       "customer-42",
       "{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"aes-256-gcm\",\"nonce\":\"JCQkJCQkJCQkJCQk\"}"
     ],
     "plaintext_hex": "7b22696e766f6963655f6964223a22696e766f6963652d37222c22746f74616c223a22392e3530227d",
-    "row": "{\"data\":\"bc961b48b78ebc7139c778622d312f74f8f735a7d5070c30523b45773d83831981a48cfba3aa1b5643dcbb2613905487387b5d9eee3d7d14c8\",\"encryption\":{\"cipher\":\"aes-256-gcm\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"subject\":\"customer-42\",\"tenant\":\"acme\",\"type_name\":\"Invoice\",\"version\":1}",
-    "stream": "acme:invoice-7"
+    "row": "{\"data\":\"bc961b48b78ebc7139c778622d312f74f8f735a7d5070c30523b45773d83831981a48cfba3aa1b5643fec7eb6d06d7776cbd7e205350f10a0a\",\"encryption\":{\"cipher\":\"aes-256-gcm\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQk\"},\"subject\":\"customer-42\",\"tenant\":\"acme\",\"type_name\":\"Invoice\",\"version\":1}",
+    "stream": "4:acme:invoice-7"
   },
   {
     "expected": 0,
@@ -1004,14 +1035,14 @@
     },
     "name": "sealed_event_xchacha20-poly1305",
     "params": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       "0",
       "[{\"id\":\"evt-1\",\"aggregate_id\":\"invoice-7\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"sequence\":1,\"name\":\"InvoiceIssued\",\"version\":2,\"data\":\"ff73151848526b19a9d5d880f9614ac3793a5065b73c2a5fbdcf683256ec930c\",\"correlation_id\":\"corr-1\",\"causation_id\":\"cmd-1\",\"occurred_at\":1700000000123456000,\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"metadata\":{\"origin\":\"web\"}}]"
     ],
     "plaintext_hex": "7b22746f74616c223a22392e3530227d",
     "result": "{\"recorded_at\":1700000001000000000,\"stored\":0}",
     "row": "{\"aggregate_id\":\"invoice-7\",\"causation_id\":\"cmd-1\",\"correlation_id\":\"corr-1\",\"data\":\"ff73151848526b19a9d5d880f9614ac3793a5065b73c2a5fbdcf683256ec930c\",\"encryption\":{\"cipher\":\"xchacha20-poly1305\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"extensions\":{\"traceparent\":\"00-4bf9-00f0-01\"},\"id\":\"evt-1\",\"metadata\":{\"origin\":\"web\"},\"name\":\"InvoiceIssued\",\"occurred_at\":1700000000123456000,\"recorded_at\":1700000001000000000,\"sequence\":1,\"subject\":\"customer-42\",\"tenant\":\"acme\",\"version\":2}",
-    "stream": "acme:invoice-7"
+    "stream": "4:acme:invoice-7"
   },
   {
     "key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
@@ -1042,27 +1073,28 @@
     },
     "name": "sealed_command_xchacha20-poly1305",
     "params": [
-      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"name\":\"ShipOrder\",\"version\":1,\"data\":\"84509e6a9ec1068df746a3ec22b9beca657f57\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]"
+      "[{\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"aggregate_id\":\"order-1\",\"tenant\":\"acme\",\"subject\":\"customer-42\",\"encryption\":{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"name\":\"ShipOrder\",\"version\":1,\"data\":\"84509e6a9ec1068df746a3ec22b9beca657f57\",\"correlation_id\":\"corr-1\",\"causation_id\":\"evt-1\",\"issued_at\":1700000000000000000,\"extensions\":{},\"metadata\":{\"note\":\"é \\\"quoted\\\"\"}}]",
+      null
     ],
     "plaintext_hex": "0001ff",
     "row": "{\"aggregate_id\":\"order-1\",\"causation_id\":\"evt-1\",\"correlation_id\":\"corr-1\",\"data\":\"84509e6a9ec1068df746a3ec22b9beca657f57\",\"encryption\":{\"cipher\":\"xchacha20-poly1305\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"extensions\":{},\"id\":\"cmd-1\",\"idempotency_key\":\"req-7\",\"issued_at\":1700000000000000000,\"metadata\":{\"note\":\"é \\\"quoted\\\"\"},\"name\":\"ShipOrder\",\"subject\":\"customer-42\",\"tenant\":\"acme\",\"version\":1}"
   },
   {
-    "aad_hex": "00000001000000000000000d656461782e73746174652e76310000000000000008736e617073686f7400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c79313330350000000000000018242424242424242424242424242424242424242424242424000000000000000e61636d653a696e766f6963652d370000000000000007496e766f696365000000000000000101000000000000000461636d6501000000000000000b637573746f6d65722d3432000000000000000000000000",
+    "aad_hex": "00000001000000000000000d656461782e73746174652e76310000000000000008736e617073686f7400000001000000000000000d70726f64756374696f6e2d6575000000000000000a646174612d6b65792d3100000000000000127863686163686132302d706f6c793133303500000000000000182424242424242424242424242424242424242424242424240000000000000010343a61636d653a696e766f6963652d370000000000000007496e766f696365000000000000000101000000000000000461636d6501000000000000000b637573746f6d65722d3432000000000000000000000000",
     "key_hex": "4747474747474747474747474747474747474747474747474747474747474747",
     "kind": "sealed_snapshot",
     "name": "sealed_snapshot_xchacha20-poly1305",
     "params": [
-      "acme:invoice-7",
+      "4:acme:invoice-7",
       "Invoice",
       "1",
-      "ff7308194a5c6e58f6a888caee6b4ad78631541151881995c141a13fe7b1377ee0290d53b4ed58b165e1c26766027f2c5c8e2ac738038aac27",
+      "ff7308194a5c6e58f6a888caee6b4ad78631541151881995c141a13fe7b1377ee0290d53b4ed58b1657c840f2f87b3e334ac678d24eb39bd62",
       "acme",
       "customer-42",
       "{\"format_version\":1,\"key_namespace\":\"production-eu\",\"key_id\":\"data-key-1\",\"cipher\":\"xchacha20-poly1305\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"}"
     ],
     "plaintext_hex": "7b22696e766f6963655f6964223a22696e766f6963652d37222c22746f74616c223a22392e3530227d",
-    "row": "{\"data\":\"ff7308194a5c6e58f6a888caee6b4ad78631541151881995c141a13fe7b1377ee0290d53b4ed58b165e1c26766027f2c5c8e2ac738038aac27\",\"encryption\":{\"cipher\":\"xchacha20-poly1305\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"subject\":\"customer-42\",\"tenant\":\"acme\",\"type_name\":\"Invoice\",\"version\":1}",
-    "stream": "acme:invoice-7"
+    "row": "{\"data\":\"ff7308194a5c6e58f6a888caee6b4ad78631541151881995c141a13fe7b1377ee0290d53b4ed58b1657c840f2f87b3e334ac678d24eb39bd62\",\"encryption\":{\"cipher\":\"xchacha20-poly1305\",\"format_version\":1,\"key_id\":\"data-key-1\",\"key_namespace\":\"production-eu\",\"nonce\":\"JCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQk\"},\"subject\":\"customer-42\",\"tenant\":\"acme\",\"type_name\":\"Invoice\",\"version\":1}",
+    "stream": "4:acme:invoice-7"
   }
 ]

@@ -42,6 +42,8 @@ pub struct Statements {
     pub commit: String,
     /// Ends the transaction [`begin`] opened and drops its writes.
     pub rollback: String,
+    /// `$1` stream: takes the stream's transaction lock, held until the transaction ends.
+    pub stream_lock: String,
     /// `$1` stream, `$2` expected version, `$3` the drafts: `{"stored", "recorded_at"}`, the stream's
     /// version before the write and the clock reading every event of the batch is stamped with.
     pub append: String,
@@ -60,7 +62,7 @@ pub struct Statements {
     pub event_mark_published: String,
     /// The waiting rows.
     pub event_unpublished_count: String,
-    /// `$1` the commands.
+    /// `$1` the commands, `$2` the last event the same save appended, which they wait behind, or `NULL`.
     pub command_enqueue: String,
     /// `$1` limit: command rows, oldest first.
     pub command_unpublished: String,
@@ -110,7 +112,11 @@ pub struct Statements {
 }
 
 /// What the catalog holds for each table `$1` names: its kind (`None` when it does not exist), its columns
-/// and its unique indexes, as one JSON text column. Reads only the catalog.
+/// and its unique indexes, as one JSON text column. Reads only the catalog. A collation outside `pg_catalog`
+/// is named with its schema, so a lookalike `"C"` in another schema never passes for the built-in one. A
+/// column's `sequence` is its identity or owned sequence, `None` when there is none; `fills` says whether
+/// the column takes its values from it, as an identity or a `nextval` default, rather than from another
+/// default beside an unused owned sequence.
 pub(crate) const CATALOG: &str = r"/* edax:catalog */
 SELECT coalesce(
   json_agg(
@@ -125,12 +131,28 @@ SELECT coalesce(
               'type', format_type(a.atttypid, NULL),
               'not_null', a.attnotnull,
               'default', a.atthasdef OR a.attidentity <> '' OR a.attgenerated <> '',
-              'collation', co.collname
+              'collation', CASE
+                WHEN co.collnamespace = 'pg_catalog'::regnamespace THEN co.collname
+                ELSE cn.nspname || '.' || co.collname
+              END,
+              'sequence', CASE WHEN a.attidentity <> '' OR a.atthasdef THEN (
+                SELECT json_build_object(
+                  'cache', s.seqcache,
+                  'increment', s.seqincrement,
+                  'cycle', s.seqcycle,
+                  'fills', a.attidentity <> ''
+                    OR pg_get_expr(d.adbin, d.adrelid) = format('nextval(%L::regclass)', s.seqrelid::regclass)
+                )
+                FROM pg_sequence AS s
+                LEFT JOIN pg_attrdef AS d ON d.adrelid = c.oid AND d.adnum = a.attnum
+                WHERE s.seqrelid = to_regclass(pg_get_serial_sequence(c.oid::regclass::text, a.attname))
+              ) END
             )
             ORDER BY a.attnum
           )
           FROM pg_attribute AS a
           LEFT JOIN pg_collation AS co ON co.oid = a.attcollation
+          LEFT JOIN pg_namespace AS cn ON cn.oid = co.collnamespace
           WHERE a.attrelid = c.oid
             AND a.attnum > 0
             AND NOT a.attisdropped
@@ -149,9 +171,20 @@ SELECT coalesce(
                 WHERE k.n <= i.indnkeyatts
               ),
               'collations', (
-                SELECT coalesce(json_agg(coalesce(kc.collname, '') ORDER BY k.n), '[]'::json)
+                SELECT coalesce(
+                  json_agg(
+                    CASE
+                      WHEN kc.oid IS NULL THEN ''
+                      WHEN kc.collnamespace = 'pg_catalog'::regnamespace THEN kc.collname
+                      ELSE kn.nspname || '.' || kc.collname
+                    END
+                    ORDER BY k.n
+                  ),
+                  '[]'::json
+                )
                 FROM unnest(i.indcollation::oid[]) WITH ORDINALITY AS k(oid, n)
                 LEFT JOIN pg_collation AS kc ON kc.oid = k.oid
+                LEFT JOIN pg_namespace AS kn ON kn.oid = kc.collnamespace
               ),
               'partial', i.indpred IS NOT NULL,
               'expressions', i.indexprs IS NOT NULL,
@@ -189,6 +222,12 @@ COMMIT";
 
 const ROLLBACK: &str = r"/* edax:rollback */
 ROLLBACK";
+
+// The stream's transaction lock, taken before `append` under command fence "lock". Its own statement:
+// under READ COMMITTED each statement reads a new snapshot, so `append` after the wait sees the save that
+// held the lock, and its version check fails a stale save.
+const STREAM_LOCK: &str = r"/* edax:stream_lock */
+SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended({lock_name} || ':' || $1::text, 0))";
 
 const APPEND: &str = r"/* edax:append */
 WITH clock AS (
@@ -315,9 +354,11 @@ const EVENT_MARK_PUBLISHED: &str = r"/* edax:event_mark_published */
 DELETE FROM {event_outbox}
 WHERE event_id IN (SELECT jsonb_array_elements_text(($1::text)::jsonb))";
 
+// Counts the rows the read can return: a row whose event is gone is never read, so it never counts.
 const EVENT_UNPUBLISHED_COUNT: &str = r"/* edax:event_unpublished_count */
 SELECT count(*)
-FROM {event_outbox}";
+FROM {event_outbox} AS o
+JOIN {events} AS e ON e.id = o.event_id";
 
 const COMMAND_ENQUEUE: &str = r"/* edax:command_enqueue */
 INSERT INTO {command_outbox} (
@@ -328,12 +369,26 @@ SELECT
 FROM {command_input}
 ORDER BY r.n";
 
+// A command waits behind the last event its save appended, so the relay never sends a command before
+// the event it follows from. Every later command for the same aggregate and tenant waits behind a held
+// one too, so the aggregate's commands still leave in order. A command with no aggregate is ordered by
+// its own id and holds back nothing else.
 const COMMAND_UNPUBLISHED: OutboxRead = OutboxRead {
     tag: "command_unpublished",
     role: Logical::CommandOutbox,
     select: r"SELECT {command_json}::text
 FROM {command_outbox} AS c",
-    scope: &[],
+    scope: &[
+        "NOT EXISTS (SELECT 1 FROM {event_outbox} AS held WHERE held.event_id = c.after_event)",
+        "NOT EXISTS (
+  SELECT 1
+  FROM {command_outbox} AS earlier
+  JOIN {event_outbox} AS held ON held.event_id = earlier.after_event
+  WHERE earlier.aggregate_id = c.aggregate_id
+    AND earlier.tenant IS NOT DISTINCT FROM c.tenant
+    AND earlier.position < c.position
+)",
+    ],
     lease_scope: None,
     position: "c.position",
     limit: 1,
@@ -498,6 +553,14 @@ const SAGA_UNPUBLISHED_COUNT: &str = r"/* edax:saga_unpublished_count */
 SELECT count(*)
 FROM {saga_outbox}
 WHERE saga = $1::text";
+
+/// A save's commands carry the last event it appended, the event they wait behind, from the enqueue's own
+/// parameter; only the read's hold looks at it.
+const COMMAND_FILLED: &[Filled] = &[Filled {
+    column: "after_event",
+    value: "$2::text",
+    returned: false,
+}];
 
 /// A contract column a write fills from the statement itself rather than from its input rows.
 struct Filled {
@@ -682,7 +745,7 @@ pub fn statements(tables: &Tables) -> Statements {
             },
         ],
     );
-    let command = RowSql::from_contract(Logical::CommandOutbox, "c", &[]);
+    let command = RowSql::from_contract(Logical::CommandOutbox, "c", COMMAND_FILLED);
     // A saga step's commands carry the saga the write names.
     let saga = RowSql::from_contract(
         Logical::SagaOutbox,
@@ -738,6 +801,13 @@ pub fn statements(tables: &Tables) -> Statements {
         server: SERVER.to_owned(),
         commit: COMMIT.to_owned(),
         rollback: ROLLBACK.to_owned(),
+        stream_lock: render(
+            STREAM_LOCK,
+            &[(
+                "lock_name",
+                &format!("'{}.{}'", tables.schema(), tables.name(Logical::Events)),
+            )],
+        ),
         append: render(APPEND, &[("rows", "$3")]),
         load: render(LOAD, &[]),
         load_snapshot: render(LOAD_SNAPSHOT, &[]),
@@ -910,15 +980,18 @@ mod tests {
     #[test]
     fn command_fragments_name_every_contract_column() {
         let rendered = statements(&Tables::default());
+        let saga = table_contract(Logical::SagaOutbox).columns;
         for column in table_contract(Logical::CommandOutbox).columns {
             let name = column.name;
+            let unreturned = COMMAND_FILLED.iter().any(|f| f.column == name && !f.returned);
             let in_enqueue = rendered.command_enqueue.contains(&format!("\n  {name}"));
             assert_eq!(in_enqueue, !column.defaulted, "{name} in command_enqueue");
             let in_saga = rendered.saga_insert.contains(&format!("\n    {name}"));
-            assert_eq!(in_saga, !column.defaulted, "{name} in saga_insert");
+            let saga_has = saga.iter().any(|c| c.name == name);
+            assert_eq!(in_saga, !column.defaulted && saga_has, "{name} in saga_insert");
             assert_eq!(
                 rendered.command_unpublished.contains(&format!("'{name}', ")),
-                !column.defaulted,
+                !column.defaulted && !unreturned,
                 "{name} in command_unpublished"
             );
         }

@@ -14,40 +14,45 @@ import (
 )
 
 type kernelNames struct {
-	Errors  []string `json:"errors"`
-	Tenancy []string `json:"tenancy"`
+	Errors       []string `json:"errors"`
+	Tenancy      []string `json:"tenancy"`
+	CommandFence []string `json:"command_fence"`
 }
 
 type namedConstant struct{ Name, Wire, Type, Doc string }
 
 type taxonomy struct {
-	Package         string
-	Alias           bool
-	Errors, Tenancy []namedConstant
+	Package                       string
+	Alias                         bool
+	Errors, Tenancy, CommandFence []namedConstant
 }
 
-// Read the compiled kernel's names instead of parsing Rust macros or copying their lists.
+// Read the compiled kernels' names instead of parsing Rust macros or copying their lists. Each kernel
+// crate's binding_names example exports its own closed sets into one shared object.
 func generateTaxonomy(root string) error {
-	command := exec.Command("cargo", "run", "--quiet", "-p", "edax-core", "--example", "binding_names")
-	command.Dir, command.Stderr = root, os.Stderr
-	source, err := command.Output()
-	if err != nil {
-		return fmt.Errorf("export kernel names: %w", err)
-	}
 	var names kernelNames
-	if err := json.Unmarshal(source, &names); err != nil {
-		return fmt.Errorf("decode kernel names: %w", err)
+	for _, crate := range []string{"edax-core", "edax-event"} {
+		command := exec.Command("cargo", "run", "--quiet", "-p", crate, "--example", "binding_names")
+		command.Dir, command.Stderr = root, os.Stderr
+		source, err := command.Output()
+		if err != nil {
+			return fmt.Errorf("export %s names: %w", crate, err)
+		}
+		if err := json.Unmarshal(source, &names); err != nil {
+			return fmt.Errorf("decode %s names: %w", crate, err)
+		}
 	}
-	if len(names.Errors) == 0 || len(names.Tenancy) == 0 {
+	if len(names.Errors) == 0 || len(names.Tenancy) == 0 || len(names.CommandFence) == 0 {
 		return fmt.Errorf("kernel returned an empty name set")
 	}
-	constants := make([]namedConstant, 0, len(names.Errors)+len(names.Tenancy))
+	constants := make([]namedConstant, 0, len(names.Errors)+len(names.Tenancy)+len(names.CommandFence))
 	seen := make(map[string]bool)
 	for _, group := range []struct {
 		names        []string
 		prefix, kind string
 	}{
 		{names.Errors, "Code", "ErrorCode"}, {names.Tenancy, "Tenancy", "Tenancy"},
+		{names.CommandFence, "CommandFence", "CommandFence"},
 	} {
 		for _, wire := range group.names {
 			parts := strings.Split(wire, "_")
@@ -63,18 +68,25 @@ func generateTaxonomy(root string) error {
 			}
 			seen[name] = true
 			doc := fmt.Sprintf("%s is the kernel's %s error category.", name, wire)
-			if group.kind == "Tenancy" {
+			switch group.kind {
+			case "Tenancy":
 				doc = fmt.Sprintf("%s selects %s isolation.", name, wire)
+			case "CommandFence":
+				doc = fmt.Sprintf("%s fences a save's commands with the kernel's %s fence.", name, wire)
 			}
 			constants = append(constants, namedConstant{name, wire, group.kind, doc})
 		}
+	}
+	errors, tenancy := len(names.Errors), len(names.Errors)+len(names.Tenancy)
+	split := func(pkg string, alias bool) taxonomy {
+		return taxonomy{pkg, alias, constants[:errors], constants[errors:tenancy], constants[tenancy:]}
 	}
 	for _, file := range []struct {
 		path  string
 		model taxonomy
 	}{
-		{"crates/edax-go/internal/kernel/error_codes.gen.go", taxonomy{"kernel", false, constants[:len(names.Errors)], constants[len(names.Errors):]}},
-		{"crates/edax-go/error_codes.gen.go", taxonomy{"edax", true, constants[:len(names.Errors)], constants[len(names.Errors):]}},
+		{"crates/edax-go/internal/kernel/error_codes.gen.go", split("kernel", false)},
+		{"crates/edax-go/error_codes.gen.go", split("edax", true)},
 	} {
 		var output bytes.Buffer
 		if err := taxonomyTemplate.Execute(&output, file.model); err != nil {
@@ -101,6 +113,9 @@ type ErrorCode = kernel.ErrorCode
 
 // Tenancy selects the kernel's tenant isolation mode.
 type Tenancy = kernel.Tenancy
+
+// CommandFence names what keeps a save's commands fenced to the aggregate version they were decided at.
+type CommandFence = kernel.CommandFence
 {{else}}
 // ErrorCode names a kernel error category. The kernel validates unknown values.
 type ErrorCode string
@@ -114,6 +129,14 @@ const {{.Name}}{{if $.Alias}} = kernel.{{.Name}}{{else}} {{.Type}} = {{printf "%
 type Tenancy string
 {{end}}
 {{range .Tenancy}}
+// {{.Doc}}
+const {{.Name}}{{if $.Alias}} = kernel.{{.Name}}{{else}} {{.Type}} = {{printf "%q" .Wire}}{{end}}
+{{end}}
+{{if not .Alias}}
+// CommandFence names what keeps a save's commands fenced to the aggregate version they were decided at.
+type CommandFence string
+{{end}}
+{{range .CommandFence}}
 // {{.Doc}}
 const {{.Name}}{{if $.Alias}} = kernel.{{.Name}}{{else}} {{.Type}} = {{printf "%q" .Wire}}{{end}}
 {{end}}

@@ -66,6 +66,9 @@ pub use saga::{
     check_saga_commands, saga_admit, saga_command, saga_command_failed, saga_command_id, saga_completed, saga_write,
     Cause, Loaded, SagaAdmit, SagaAdmitKind, SagaCommandFailed, SagaWrite, SagaWriteKind, SAGA_COMMAND_FAILED,
 };
-pub use sequence::{check_batch, check_snapshot, draft_batch, snapshot_due, DraftBatch, SaveContext};
+pub use sequence::{
+    check_batch, check_snapshot, check_stream, draft_batch, plan_save, snapshot_due, CommandFence, DraftBatch,
+    SaveContext, SavePlan,
+};
 pub use staleness::{advance, is_stale};
 pub use upcast::{upcast_plan, upcast_target, FIRST_VERSION};

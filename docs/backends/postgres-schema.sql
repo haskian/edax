@@ -1,4 +1,4 @@
--- edax Postgres table contract 3: a reference schema. Copy it into your own migration.
+-- edax Postgres table contract 4: a reference schema. Copy it into your own migration.
 
 CREATE TABLE "public"."edax_events" (
   id text COLLATE "C" NOT NULL,
@@ -33,14 +33,14 @@ CREATE TABLE "public"."edax_snapshots" (
 );
 
 CREATE TABLE "public"."edax_event_outbox" (
-  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  position bigint GENERATED ALWAYS AS IDENTITY (CACHE 1) NOT NULL,
   event_id text COLLATE "C" NOT NULL,
   PRIMARY KEY (position)
 );
 CREATE INDEX "edax_event_outbox_event_id" ON "public"."edax_event_outbox" (event_id);
 
 CREATE TABLE "public"."edax_command_outbox" (
-  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  position bigint GENERATED ALWAYS AS IDENTITY (CACHE 1) NOT NULL,
   id text COLLATE "C" NOT NULL,
   idempotency_key text,
   aggregate_id text,
@@ -55,9 +55,11 @@ CREATE TABLE "public"."edax_command_outbox" (
   issued_at bigint NOT NULL,
   extensions jsonb NOT NULL,
   metadata jsonb NOT NULL,
+  after_event text,
   PRIMARY KEY (id)
 );
 CREATE INDEX "edax_command_outbox_position" ON "public"."edax_command_outbox" (position);
+CREATE INDEX "edax_command_outbox_aggregate_id_position" ON "public"."edax_command_outbox" (aggregate_id, position);
 
 CREATE TABLE "public"."edax_projections" (
   projection text COLLATE "C" NOT NULL,
@@ -89,7 +91,7 @@ CREATE TABLE "public"."edax_saga_instances" (
 );
 
 CREATE TABLE "public"."edax_saga_outbox" (
-  position bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  position bigint GENERATED ALWAYS AS IDENTITY (CACHE 1) NOT NULL,
   saga text COLLATE "C" NOT NULL,
   id text COLLATE "C" NOT NULL,
   idempotency_key text,

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"time"
 
 	"github.com/haskian/edax/crates/edax-go/internal/kernel"
@@ -25,12 +27,19 @@ type AggregateCodec[A AggregateRoot] interface {
 
 // RepositoryOptions controls tenancy, snapshots, identifiers and a transactional command outbox.
 // Nil SnapshotEvery snapshots each save; a pointer to zero disables snapshots.
+//
+// CommandFence keeps a save's commands fenced to the version they were decided at, and in order with
+// the next save's; every writer of one stream must use the same one. Empty is CommandFenceEvent: a save
+// that sends commands must append an event, whose unique (stream, sequence) key fails a rival save.
+// CommandFenceLock locks each save's stream first (StreamLocker), so a save may send commands alone, at
+// one more round trip per save.
 type RepositoryOptions struct {
 	Tenancy       Tenancy
 	SnapshotEvery *uint64
 	NewID         func() string
 	Commands      CommandOutbox
 	Sealing       *Sealing
+	CommandFence  CommandFence
 }
 
 // Repository saves events, snapshots and commands in one database transaction.
@@ -39,6 +48,7 @@ type Repository[A AggregateRoot] struct {
 	events     PayloadCodec
 	aggregates AggregateCodec[A]
 	options    RepositoryOptions
+	locker     StreamLocker // the store, when the fence locks streams
 }
 
 // NewRepository validates codecs and requires event and command outboxes to share a database.
@@ -64,7 +74,62 @@ func NewRepository[A AggregateRoot](store EventStore, events PayloadCodec, aggre
 	if options.Commands != nil && options.Commands.UnitOfWork() != store.UnitOfWork() {
 		return nil, &Error{Code: CodeBadHandle, Message: "event and command outboxes must share a database"}
 	}
-	return &Repository[A]{store: store, events: events, aggregates: aggregates, options: options}, nil
+	if options.CommandFence == "" {
+		options.CommandFence = CommandFenceEvent
+	}
+	if !slices.Contains(kernel.CommandFences(), string(options.CommandFence)) {
+		return nil, &Error{Code: CodeBadHandle, Message: fmt.Sprintf("unknown command fence %q: use one of %q", options.CommandFence, kernel.CommandFences())}
+	}
+	repository := &Repository[A]{store: store, events: events, aggregates: aggregates, options: options}
+	if options.CommandFence == CommandFenceLock {
+		locker, locks := store.(StreamLocker)
+		if !locks {
+			return nil, &Error{Code: CodeBadHandle, Message: "command fence \"lock\" needs an event store that implements StreamLocker"}
+		}
+		repository.locker = locker
+	}
+	return repository, nil
+}
+
+// plan asks the kernel what a save of drafts and commands does beside its append, under the fence.
+func (r *Repository[A]) plan(drafts []EventDraft, commands []CommandMessage) (*kernel.SavePlan, error) {
+	ids := make([]string, len(drafts))
+	for index, draft := range drafts {
+		ids[index] = draft.ID
+	}
+	return kernel.PlanSave(string(r.options.CommandFence), ids, uint64(len(commands)))
+}
+
+// lockStream takes the stream's lock when the plan says so.
+func (r *Repository[A]) lockStream(txctx context.Context, plan *kernel.SavePlan, stream string) error {
+	if !plan.LockStream {
+		return nil
+	}
+	return r.locker.LockStream(txctx, stream)
+}
+
+// write runs a save's writes in txctx: the append, its commands behind the plan's event, then the
+// snapshot. The caller takes the stream lock first, and reconciles a prepared save before.
+func (r *Repository[A]) write(txctx context.Context, plan *kernel.SavePlan, stream string, initial uint64, drafts []EventDraft, commands []CommandMessage, snapshot *Snapshot) ([]EventMessage, error) {
+	stored, err := r.store.Append(txctx, stream, initial, drafts)
+	if err != nil {
+		return nil, err
+	}
+	if len(commands) > 0 {
+		afterEvent := ""
+		if plan.AfterEvent != nil {
+			afterEvent = *plan.AfterEvent
+		}
+		if err = r.options.Commands.Enqueue(txctx, commands, afterEvent); err != nil {
+			return nil, err
+		}
+	}
+	if snapshot != nil {
+		if err = r.store.SaveSnapshot(txctx, *snapshot); err != nil {
+			return nil, err
+		}
+	}
+	return stored, nil
 }
 
 func (r *Repository[A]) enlist(ctx context.Context, run func(context.Context) error) error {
@@ -280,6 +345,10 @@ func (r *Repository[A]) Save(ctx context.Context, aggregate A, options SaveOptio
 		}
 		commands[index] = *owned
 	}
+	plan, err := r.plan(batch.Drafts, commands)
+	if err != nil {
+		return nil, err
+	}
 	var snapshot *Snapshot
 	if batch.Snapshot {
 		data, dumpErr := r.aggregates.Dump(aggregate)
@@ -289,20 +358,12 @@ func (r *Repository[A]) Save(ctx context.Context, aggregate A, options SaveOptio
 		snapshot = &Snapshot{AggregateID: key, TypeName: r.aggregates.TypeName(), Version: batch.Version, Data: data, Tenant: state.Tenant(), Subject: state.Subject()}
 	}
 	err = r.enlist(ctx, func(txctx context.Context) error {
-		var saveErr error
-		stored, saveErr = r.store.Append(txctx, key, state.initial, batch.Drafts)
-		if saveErr != nil {
+		if saveErr := r.lockStream(txctx, plan, key); saveErr != nil {
 			return saveErr
 		}
-		if len(commands) > 0 {
-			if saveErr = r.options.Commands.Enqueue(txctx, commands); saveErr != nil {
-				return saveErr
-			}
-		}
-		if snapshot != nil {
-			return r.store.SaveSnapshot(txctx, *snapshot)
-		}
-		return nil
+		var saveErr error
+		stored, saveErr = r.write(txctx, plan, key, state.initial, batch.Drafts, commands, snapshot)
+		return saveErr
 	})
 	if err != nil {
 		return nil, err
@@ -364,8 +425,15 @@ func (r *Repository[A]) saveProtected(ctx context.Context, aggregate A, stream s
 		prepared.signature = signature
 		state.prepared = prepared
 	}
+	plan, err := r.plan(prepared.drafts, prepared.commands)
+	if err != nil {
+		return nil, err
+	}
 	var stored []EventMessage
 	err = r.enlist(ctx, func(txctx context.Context) error {
+		if lockErr := r.lockStream(txctx, plan, stream); lockErr != nil {
+			return lockErr
+		}
 		if prepared.attempted && len(prepared.drafts) > 0 {
 			existing, loadErr := r.store.Load(txctx, stream, state.initial)
 			if loadErr != nil {
@@ -382,19 +450,8 @@ func (r *Repository[A]) saveProtected(ctx context.Context, aggregate A, stream s
 		}
 		prepared.attempted = true
 		var writeErr error
-		stored, writeErr = r.store.Append(txctx, stream, state.initial, prepared.drafts)
-		if writeErr != nil {
-			return writeErr
-		}
-		if len(prepared.commands) > 0 {
-			if writeErr = r.options.Commands.Enqueue(txctx, prepared.commands); writeErr != nil {
-				return writeErr
-			}
-		}
-		if prepared.snapshot != nil {
-			return r.store.SaveSnapshot(txctx, *prepared.snapshot)
-		}
-		return nil
+		stored, writeErr = r.write(txctx, plan, stream, state.initial, prepared.drafts, prepared.commands, prepared.snapshot)
+		return writeErr
 	})
 	if err != nil {
 		return nil, err

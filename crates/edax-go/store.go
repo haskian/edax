@@ -44,10 +44,20 @@ type ProjectionStore interface {
 	GetMany(ctx context.Context, queryJSON string) (string, error)
 }
 
-// CommandOutbox stages commands in the context's transaction.
+// StreamLocker is an EventStore that can lock one stream until the context's transaction ends. A
+// repository built with CommandFenceLock locks each save's stream before it appends, so a save that
+// sends commands without an event is still fenced. A store that cannot make a rival wait refuses it
+// with a concurrency error instead.
+type StreamLocker interface {
+	LockStream(ctx context.Context, aggregateID string) error
+}
+
+// CommandOutbox stages commands in the context's transaction. Each command waits behind afterEvent,
+// the id of the last event the same save appended ("" for none): the outbox holds it back while that
+// event is unpublished, so a relay never sends a command before the event it follows from.
 type CommandOutbox interface {
 	TransactionalStore
-	Enqueue(ctx context.Context, commands []CommandMessage) error
+	Enqueue(ctx context.Context, commands []CommandMessage, afterEvent string) error
 	Unpublished(ctx context.Context, limit uint64) ([]CommandMessage, error)
 	MarkPublished(ctx context.Context, ids []string) error
 }

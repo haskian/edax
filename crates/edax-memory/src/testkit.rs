@@ -20,6 +20,14 @@ pub(crate) fn draft(id: &str, sequence: Option<u64>) -> EventDraft {
     }
 }
 
+/// [`draft`] for the aggregate `aggregate_id`: a draft another stream can take.
+pub(crate) fn draft_on(aggregate_id: &str, id: &str, sequence: Option<u64>) -> EventDraft {
+    EventDraft {
+        aggregate_id: aggregate_id.to_owned(),
+        ..draft(id, sequence)
+    }
+}
+
 /// The message the store returns for [`draft`]: the same fields, stamped at [`RECORDED_AT`].
 pub(crate) fn event(id: &str, sequence: Option<u64>) -> EventMessage {
     draft(id, sequence).record(RECORDED_AT)

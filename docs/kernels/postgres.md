@@ -48,7 +48,7 @@ without escaping. Every statement qualifies every table with its schema, so no s
 | `events` | one row per event, every field its own column; `extensions`, `metadata` and `encryption` as `jsonb` | `id`; `(stream, sequence)` |
 | `snapshots` | the latest snapshot per stream | `stream` |
 | `event_outbox` | one row per unpublished event, `position` defaulted | none |
-| `command_outbox` | the commands a save sends, until a relay marks them | `id` |
+| `command_outbox` | the commands a save sends, until a relay marks them; `after_event`, the save's last event, which the read holds each command behind | `id` |
 | `projections` | read-model documents, as `jsonb` | `(projection, id)` |
 | `ledger` | the record, the owner of a pending claim, who settled it | `key` |
 | `saga_instances` | saga state, a completed instance kept as a tombstone | `(saga, id)` |
@@ -60,11 +60,15 @@ carries it.
 
 - Each column edax reads or writes exists, with an accepted type: `text` or `character varying` for
   text, `bigint`, `bytea`, `jsonb`, `boolean`, `timestamp with time zone`.
-- A column edax writes `NULL` into is nullable. A column edax never writes (`position`) has a default:
-  an identity or a sequence.
+- A column edax writes `NULL` into is nullable. A column edax never writes (`position`) takes its values
+  from its own sequence, as an identity or a `nextval` default of the sequence it owns. That sequence
+  has cache 1, a positive increment and no cycle. A relay reads an
+  outbox in `position` order, and a sequence that caches a block per session can hand an aggregate's
+  later write an earlier position.
 - Each unique key has a unique index over exactly its columns. It is not partial, not over an
   expression, not deferrable and valid. Each compare-and-set and each insert-if-absent rests on one.
-- Every text key column, and its unique index, collates as `"C"` or `"POSIX"`. That is byte order,
+- Every text key column, and its unique index, collates as the built-in `"C"` or `"POSIX"`. The catalog
+  names a collation outside `pg_catalog` with its schema, so a lookalike never passes. That is byte order,
   which for UTF-8 is code point order, the order the kernel sorts strings in. A deterministic
   collation also makes two keys equal only when their bytes are.
 
@@ -82,7 +86,7 @@ timeout, both sides of a deadlock time out before Postgres looks for one. A clai
 as `in_progress`, which a dispatcher retries without counting, so the deadlock would repeat forever.
 
 **Versions.** `CONTRACT_VERSION` names the contract, and a release that changes it raises it. Old
-replicas run beside an addition, a new column or table. They do not run beside a type change,
+replicas run beside an addition, a new column or table, such as contract 4's `after_event`. They do not run beside a type change,
 such as contract 3's: [Upgrades](../backends/postgres.md#schema-yours-held-to-a-contract) gives the
 steps. The release notes say which contract a release requires.
 
@@ -246,6 +250,12 @@ row still gone on the third read gives the claim up as the transient `store` err
 
 `ingest` and `projection` each provide optional table contracts and reference DDL. They do not extend the
 base event-store schema or provision tables at runtime. Hosts apply the DDL through migrations.
+
+Advisory locks are database-wide. The projection generation lock is keyed by the generation, and the
+erasure fence by its scope. Neither key names a schema. So two services in separate schemas of one
+database can wait on each other's lock, which costs only contention. The keys stay as they are on
+purpose. A release that changed them would let old and new replicas take different locks during a
+rolling upgrade, and the locks would stop excluding each other. The stream lock and the partition gate name their table.
 
 `ingest::statements` supplies target-manifest checks, row-locking plan reads, inserts and updates,
 and pending rejection reads and marks. Ordinary ingestion takes no advisory lock: a plan read locks the

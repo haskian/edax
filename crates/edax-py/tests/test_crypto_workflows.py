@@ -94,6 +94,8 @@ async def test_repository_encrypts_events_snapshots_outboxes_and_both_wire_forma
     rows = await repo.save(profile, commands=[command])
     assert await store.load(None, profile.id) == rows
     assert await store.unpublished(100) == rows
+    assert await outbox.unpublished(100) == [], "the command waits behind its save's event"
+    await store.mark_published([row.id for row in rows])
     sent = await outbox.unpublished(100)
     assert len(sent) == 1
     for row in [*rows, *sent]:
@@ -227,13 +229,13 @@ async def test_prepared_save_reuses_ciphertext_and_does_not_duplicate_commands(l
     with pytest.raises(edax.StoreError):
         await repo.save(profile, commands=[command])
     assert len(await real.load(None, profile.id)) == int(landed)
-    assert len(await outbox.unpublished(100)) == int(landed)
+    assert await outbox.unpublished_count() == int(landed)
     with pytest.raises(edax.BadHandle):
         profile.apply(CreateUser("mutated@example.test"))
     stored = await repo.save(profile, commands=[command])
     assert len(stored) == 1 and profile.version.initial == 1 and not profile.pending
     assert await real.load(None, profile.id) == stored
-    assert len(await outbox.unpublished(100)) == 1
+    assert await outbox.unpublished_count() == 1
     assert len(real.attempts) == (1 if landed else 2)
     assert all(attempt == real.attempts[0] for attempt in real.attempts)
     assert all(snapshot == real.snapshots[0] for snapshot in real.snapshots)

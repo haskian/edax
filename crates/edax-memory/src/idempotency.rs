@@ -3,11 +3,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use edax_core::{lock, Error, ErrorCode, TokenMint};
+use edax_core::{lock, Error, TokenMint};
 use edax_cqrs::{complete_fence, release_fence, Claimed, Fence, Holder};
 use serde_json::Value;
 
-use crate::tx::{held_by_other, store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
+use crate::tx::{held, held_by_other, store_view, Committed, MemoryState, MemoryTransactor, Tx, WriteSet};
 
 /// What an idempotency key holds: the kernel's record bytes and the claim they belong to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,17 +105,9 @@ fn view<'a>(committed: &'a Committed, own: &'a WriteSet, key: &str) -> Option<&'
 /// whole reload-and-retry signal.
 fn refuse_held_claim(committed: &Committed, others: &HashMap<Tx, WriteSet>, key: &str) -> Result<(), Error> {
     match claim_held_by_other(committed, others, key) {
-        Some(_) => Err(held_claim(key)),
+        Some(_) => Err(held("idempotency key", key)),
         None => Ok(()),
     }
-}
-
-/// The conflict a write to a key another open transaction holds gets.
-pub(crate) fn held_claim(key: &str) -> Error {
-    Error::new(
-        ErrorCode::Concurrency,
-        format_args!("idempotency key {key} is held by another open transaction"),
-    )
 }
 
 /// What `held` is to the claimant `handle`, the class the kernel's fence decides from. `record` is the

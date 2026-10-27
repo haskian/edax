@@ -59,6 +59,7 @@ edax\._edax\.SagaAdmit
 edax\._edax\.SagaLookup
 edax\._edax\.SagaRow
 edax\._edax\.SagaWrite
+edax\._edax\.SavePlan
 edax\._edax\.SnapshotLookup
 edax\._edax\.SnapshotResult
 edax\._edax\.SplitError

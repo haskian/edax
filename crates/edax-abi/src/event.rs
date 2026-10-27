@@ -90,6 +90,31 @@ pub fn check_sequence_batch(expected: u64, sequences: Vec<Option<u64>>) -> Resul
     edax_event::sequence::check_batch(expected, &sequences).map_err(to_wire)
 }
 
+/// Every command fence's name (`"event"`, `"lock"`), in the kernel's order. A host checks its own list of
+/// fences against this one. See [`edax_event::CommandFence`].
+pub fn command_fences() -> Vec<String> {
+    crate::names(edax_event::CommandFence::NAMES)
+}
+
+/// What a save does beside its append. See [`edax_event::SavePlan`].
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct SavePlan {
+    pub lock_stream: bool,
+    pub after_event: Option<String>,
+}
+
+/// The plan for a save that appends the events `event_ids`, in order, and enqueues `commands` commands,
+/// under the command fence named `fence`. A fence no variant names, or a save the fence does not fence, is
+/// a `bad_handle:` error. See [`edax_event::plan_save`].
+pub fn plan_save(fence: &str, event_ids: Vec<String>, commands: u64) -> Result<SavePlan, String> {
+    let fence = edax_event::CommandFence::from_name(fence).map_err(to_wire)?;
+    let plan = edax_event::plan_save(fence, &event_ids, crate::host_count(commands)).map_err(to_wire)?;
+    Ok(SavePlan {
+        lock_stream: plan.lock_stream,
+        after_event: plan.after_event,
+    })
+}
+
 /// The batch a save appends: its drafts, the aggregate's version after it, and whether the save writes a
 /// snapshot at that version. See [`edax_event::DraftBatch`].
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
