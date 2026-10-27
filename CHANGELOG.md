@@ -2,6 +2,12 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 - - -
+## [v0.19.0](https://github.com/haskian/edax/compare/9ec6a1ae1523ab5c103a1836f9ec6783ff0d174f..v0.19.0) - 2026-10-27
+#### Features
+- ![BREAKING](https://img.shields.io/badge/BREAKING-red) keep outbox order per aggregate and fence command-only saves (#35) - ([9ec6a1a](https://github.com/haskian/edax/commit/9ec6a1ae1523ab5c103a1836f9ec6783ff0d174f)) - Črtomir Majer
+
+- - -
+
 ## [v0.18.0](https://github.com/haskian/edax/compare/1be3f8d28b90818967596d45779344468954466d..v0.18.0) - 2026-10-24
 #### Features
 - ![BREAKING](https://img.shields.io/badge/BREAKING-red) store message maps as jsonb, refuse NUL text in every store (#34) - ([438013c](https://github.com/haskian/edax/commit/438013c2b643fe2977b9fd7710325dd3be9e2850)) - Črtomir Majer

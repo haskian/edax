@@ -2,7 +2,7 @@
 name = "edax-abi"
 # A literal, not `version.workspace`: alef reads the generated binding's version straight out of this
 # file (`version_from` in /alef.toml), so it must be a plain string here.
-version = "0.18.0"
+version = "0.19.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
