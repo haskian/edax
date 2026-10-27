@@ -136,13 +136,25 @@ Specification: `edax.saga.SagaStore`.
 - `unpublished` and `mark_published` are one saga's outbox read side, as for the event outbox. A
   relay drains it through `SagaOutbox`, which `runner.outbox()` builds.
 
+### `StreamLock`
+
+Specification: `edax.store.StreamLock`. Optional: an `EventStore` that implements it backs
+`Repository(..., command_fence=CommandFence.LOCK)`. In Go it is `StreamLocker`, behind `RepositoryOptions{CommandFence: CommandFenceLock}`.
+
+- `lock_stream(tx, stream)` holds the stream's lock until `tx` ends. A lock-fenced repository takes
+  it on every save, before the append.
+- A rival save waits for the holder, then runs its own version check, which fails a stale save. A store
+  that cannot make the rival wait refuses it with `ConcurrencyError`, as the memory store does.
+- `PostgresEventStore` takes a transaction-scoped advisory lock keyed by the events table and the
+  stream. The lock is a statement of its own, so the append after the wait reads the holder's commit.
+
 ### `CommandOutbox`
 
 Specification: `edax.outbox.CommandOutbox`. Optional.
 
 A command outbox holds the commands a unit of work decided, so they commit with its events. Build the
 repository with it, `Repository(..., commands=outbox)`. Then `save(..., commands=[...])` calls
-`enqueue(tx, commands)` under the save's transaction.
+`enqueue(tx, commands, after_event=...)` under the save's transaction.
 
 - `enqueue` writes the messages under `tx` as unpublished rows keyed by message id. A rollback
   stages nothing.
@@ -152,6 +164,9 @@ repository with it, `Repository(..., commands=outbox)`. Then `save(..., commands
   because the relay marks rows by id.
 - `unpublished` and `mark_published` are its read side, run outside any `tx`, as for the event
   outbox. A `Relay` drains it.
+- `unpublished` holds a command back while `after_event`, the last event its save appended, waits
+  in the event outbox. It holds every later command for the same aggregate and tenant behind it, so
+  they still leave in order. The count still counts held rows.
 - `MemoryCommandOutbox` is the memory one.
 - A durable backend enlists in `tx` or in the ambient `current_tx` of its transactor, and
   `mark_published` prunes the rows it acknowledges.

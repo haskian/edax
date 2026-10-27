@@ -30,7 +30,7 @@ fn command() -> CommandMessage {
     }
 }
 
-/// The first event of stream `acme:invoice-7`.
+/// The first event of stream `4:acme:invoice-7`, invoice-7 of the pooled tenant acme.
 fn draft() -> EventDraft {
     EventDraft {
         id: "evt-1".into(),
@@ -52,7 +52,7 @@ fn draft() -> EventDraft {
 
 /// One waiting command in the command outbox.
 fn enqueue(client: &mut Client, sql: &Statements) {
-    let params = enqueue_params(&[command()]).unwrap();
+    let params = enqueue_params(&[command()], None).unwrap();
     client.execute(&sql.command_enqueue, &bind(&params)).unwrap();
 }
 
@@ -325,7 +325,7 @@ fn relay_leases_are_per_outbox_table() {
             .unwrap();
     }
     let second_sql = edax_postgres::statements(&second);
-    let appended = append_params("acme:invoice-7", 0, &[draft()]).unwrap();
+    let appended = append_params("4:acme:invoice-7", 0, &[draft()]).unwrap();
     let commands = Some(commands_param(&[command()]).unwrap());
     let saga_insert = [
         Some("ship".to_owned()),

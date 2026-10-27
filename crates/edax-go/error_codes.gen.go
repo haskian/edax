@@ -9,6 +9,9 @@ type ErrorCode = kernel.ErrorCode
 // Tenancy selects the kernel's tenant isolation mode.
 type Tenancy = kernel.Tenancy
 
+// CommandFence names what keeps a save's commands fenced to the aggregate version they were decided at.
+type CommandFence = kernel.CommandFence
+
 // CodeConcurrency is the kernel's concurrency error category.
 const CodeConcurrency = kernel.CodeConcurrency
 
@@ -65,3 +68,9 @@ const TenancyPool = kernel.TenancyPool
 
 // TenancyBridge selects bridge isolation.
 const TenancyBridge = kernel.TenancyBridge
+
+// CommandFenceEvent fences a save's commands with the kernel's event fence.
+const CommandFenceEvent = kernel.CommandFenceEvent
+
+// CommandFenceLock fences a save's commands with the kernel's lock fence.
+const CommandFenceLock = kernel.CommandFenceLock

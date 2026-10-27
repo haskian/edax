@@ -110,9 +110,15 @@ class CommandOutbox(Protocol[TxT_contra]):
     ``enqueue`` writes the messages under ``tx`` as unpublished rows keyed by message id. ``tx`` is the
     event store's: a backend over another database than the event store refuses it with the terminal
     :class:`~edax.errors.BadHandle`, because the two writes would not commit together.
-    :class:`~edax.backend.memory.MemoryCommandOutbox` is one."""
+    :class:`~edax.backend.memory.MemoryCommandOutbox` is one.
 
-    async def enqueue(self, tx: TxT_contra, commands: Sequence[CommandMessage]) -> None: ...
+    ``after_event`` is the id of the last event the same save appended, or ``None``. Each command waits
+    behind it: the outbox holds the command back while that event is still unpublished, so a relay never
+    sends a command before the event it follows from."""
+
+    async def enqueue(
+        self, tx: TxT_contra, commands: Sequence[CommandMessage], *, after_event: str | None = None
+    ) -> None: ...
 
 
 #: Publishes one row of an :class:`Outbox` of ``R``, and returns once the transport has durably accepted it.

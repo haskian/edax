@@ -22,7 +22,7 @@ from .message import CommandMessage, EventDraft, EventMessage, Lineage, Payload
 from .observe import Observer
 from .outbox import CommandOutbox
 from .sealing import SealedValue, Sealing
-from .store import EventStore, Snapshot, check_sequence_batch
+from .store import CommandFence, EventStore, Snapshot, StreamLock, check_sequence_batch
 from .tenancy import Tenancy, tenant_key
 from .unit_of_work import TxT, current_tx
 
@@ -65,6 +65,15 @@ class Repository(Generic[A, TxT]):
     ``commands`` is the :class:`CommandOutbox` that ``save(..., commands=...)`` writes to, over the event
     store's database. Without one, a save that sends commands raises :class:`TypeError`.
 
+    ``command_fence`` (:class:`~edax.store.CommandFence`) keeps a save's commands fenced to the version they
+    were decided at, and in order with the next save's. Under ``EVENT`` (the default) a save that enqueues
+    commands must append an event: the event's ``(stream, sequence)`` key fails a rival save of the same
+    version, and a save that sends commands without one raises :class:`~edax.errors.BadHandle`. Under
+    ``LOCK`` every save takes its stream's lock first (:class:`~edax.store.StreamLock`), so a save may send
+    commands alone, at one more round trip per save; a store with no ``lock_stream`` raises
+    :class:`~edax.errors.BadHandle` here. Every writer of one stream must use the same fence. The kernel
+    plans each save (``edax_event::plan_save``): whether it locks, and which event its commands wait behind.
+
     ``tenancy`` is how this repository separates tenants, fixed here rather than per call so no two
     calls of one service can key differently. The default :attr:`~edax.tenancy.Tenancy.SILO` takes no
     tenant and composes nothing. Under :attr:`~edax.tenancy.Tenancy.POOL` every stream and snapshot
@@ -85,7 +94,20 @@ class Repository(Generic[A, TxT]):
         commands: CommandOutbox[TxT] | None = None,
         tenancy: Tenancy = Tenancy.SILO,
         sealing: Sealing | None = None,
+        command_fence: CommandFence = CommandFence.EVENT,
     ) -> None:
+        try:
+            self._command_fence = CommandFence(command_fence)
+        except ValueError:
+            names = [fence.value for fence in CommandFence]
+            raise BadHandle(f"unknown command fence {command_fence!r}: use one of {names}") from None
+        self._lock: StreamLock[TxT] | None = None
+        if self._command_fence is CommandFence.LOCK:
+            if not isinstance(store, StreamLock):
+                raise BadHandle(
+                    f"command_fence=LOCK needs a store with lock_stream, not {type(store).__name__}"
+                )
+            self._lock = store
         self._sealing = sealing
         self._snapshot_every = wiring_u64(snapshot_every, "snapshot_every")
         self._tenancy = tenancy
@@ -343,7 +365,12 @@ class Repository(Generic[A, TxT]):
                     )
                     snapshot = replace_snapshot(snapshot, data=sealed.data, encryption=sealed.encryption)
                 aggregate._prepared = _PreparedSave(self, signature, drafts, owned, snapshot)
+            # Planned for the drafts this save writes, before any write: a retried prepared save writes the
+            # earlier ones.
+            plan = _native.plan_save(self._command_fence.value, [draft.id for draft in drafts], len(owned))
             async with self._enlist(tx) as tx:
+                if plan.lock_stream and self._lock is not None:
+                    await self._lock.lock_stream(tx, key)
                 existing = (
                     await self._store.load(tx, key, after=aggregate.version.initial)
                     if previous is not None
@@ -357,7 +384,7 @@ class Repository(Generic[A, TxT]):
                 else:
                     stored = await self._store.append(tx, key, aggregate.version.initial, drafts)
                     if owned and self._commands is not None:
-                        await self._commands.enqueue(tx, owned)
+                        await self._commands.enqueue(tx, owned, after_event=plan.after_event)
                     if snapshot is not None:
                         await self._store.save_snapshot(tx, snapshot)
             aggregate._prepared = None

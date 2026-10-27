@@ -620,7 +620,7 @@ func enqueueAndMark(t testing.TB, factory Factory[edax.CommandOutbox]) {
 	store := factory(t)
 	ctx := ctx(t)
 	message := command()
-	check(t, edax.WithinTransaction(ctx, store.UnitOfWork(), func(ctx context.Context) error { return store.Enqueue(ctx, []edax.CommandMessage{message}) }))
+	check(t, edax.WithinTransaction(ctx, store.UnitOfWork(), func(ctx context.Context) error { return store.Enqueue(ctx, []edax.CommandMessage{message}, "") }))
 	rows, err := store.Unpublished(ctx, 10)
 	check(t, err)
 	if len(rows) != 1 || rows[0].ID != message.ID {
@@ -648,7 +648,7 @@ func commandOutboxOldestCommitFirst(t testing.TB, factory Factory[edax.CommandOu
 	}
 	var want []string
 	for _, batch := range commits {
-		check(t, edax.WithinTransaction(ctx, store.UnitOfWork(), func(txctx context.Context) error { return store.Enqueue(txctx, batch) }))
+		check(t, edax.WithinTransaction(ctx, store.UnitOfWork(), func(txctx context.Context) error { return store.Enqueue(txctx, batch, "") }))
 		want = append(want, ids(batch)...)
 	}
 	rows, err := store.Unpublished(ctx, 10)
@@ -838,6 +838,43 @@ func transactionClauses() []clause[TransactionFixture] {
 	return []clause[TransactionFixture]{
 		{"commit", func(t testing.TB, factory Factory[TransactionFixture]) { settleTogether(t, factory, false) }},
 		{"rollback", func(t testing.TB, factory Factory[TransactionFixture]) { settleTogether(t, factory, true) }},
+		{"commands_wait_behind_their_event", commandsWaitBehindTheirEvent},
+	}
+}
+
+// commandsWaitBehindTheirEvent: a command waits behind the event its save appended, and every later command
+// of the same aggregate and tenant waits behind it, so the relay sends them in order and never before the
+// event. Another aggregate's command waits for nothing.
+func commandsWaitBehindTheirEvent(t testing.TB, factory Factory[TransactionFixture]) {
+	fixture := factory(t)
+	ctx := ctx(t)
+	event := draft("issued:1042", 1)
+	keyed := func(command edax.CommandMessage, aggregate string) edax.CommandMessage {
+		command.AggregateID = &aggregate
+		return command
+	}
+	first := keyed(invoiceCommand("1042", "charge:1042", "ChargeInvoice"), "invoice:1042")
+	second := keyed(invoiceCommand("1042", "notify:1042", "NotifyCustomer"), "invoice:1042")
+	elsewhere := keyed(invoiceCommand("1043", "charge:1043", "ChargeInvoice"), "invoice:1043")
+	check(t, edax.WithinTransaction(ctx, fixture.Owner, func(txctx context.Context) error {
+		if _, err := fixture.Events.Append(txctx, "invoice:1042", 0, []edax.EventDraft{event}); err != nil {
+			return err
+		}
+		return fixture.Commands.Enqueue(txctx, []edax.CommandMessage{first}, event.ID)
+	}))
+	check(t, edax.WithinTransaction(ctx, fixture.Owner, func(txctx context.Context) error {
+		return fixture.Commands.Enqueue(txctx, []edax.CommandMessage{second, elsewhere}, "")
+	}))
+	rows, err := fixture.Commands.Unpublished(ctx, 10)
+	check(t, err)
+	if got := ids(rows); !slices.Equal(got, ids([]edax.CommandMessage{elsewhere})) {
+		t.Fatalf("waiting commands %v, want only another aggregate's", got)
+	}
+	check(t, fixture.Events.MarkPublished(ctx, []string{event.ID}))
+	rows, err = fixture.Commands.Unpublished(ctx, 10)
+	check(t, err)
+	if got := ids(rows); !slices.Equal(got, ids([]edax.CommandMessage{first, second, elsewhere})) {
+		t.Fatalf("released commands %v, want them in order", got)
 	}
 }
 
@@ -871,7 +908,7 @@ func settleTogether(t testing.TB, factory Factory[TransactionFixture], rollback 
 		if err = fixture.Ledger.Complete(txctx, "billing:charge:1042", claim.Handle, edax.IdempotencyRecord{PayloadHash: 42, State: "done", ResultJSON: &result}); err != nil {
 			return err
 		}
-		if err = fixture.Commands.Enqueue(txctx, []edax.CommandMessage{command()}); err != nil {
+		if err = fixture.Commands.Enqueue(txctx, []edax.CommandMessage{command()}, ""); err != nil {
 			return err
 		}
 		if _, err = fixture.Projections.Save(txctx, "invoice:1042", 0, `{"paid":true}`); err != nil {

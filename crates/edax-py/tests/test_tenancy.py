@@ -330,6 +330,7 @@ async def test_a_saved_command_belongs_to_the_aggregates_tenant(
         assert await store.unpublished(10) == [], f"{name}: and no event"
         return
     stored = await repo.save(account, commands=[ship])
+    await store.mark_published([event.id for event in stored])  # the command waits behind its event
     rows = await outbox.unpublished(10)
     assert [row.tenant for row in rows] == [want], name
     assert [row.tenant for row in stored] == [want], f"{name}: the same tenant as the events"

@@ -95,7 +95,7 @@ from .saga import (
 )
 from .sealing import EncryptionInfo, KeyProvider, KeyScope, MemoryKeys, SealedValue, Sealing
 from .serializer import KernelSerializer, Serializer
-from .store import EventStore, Snapshot, check_sequence_batch
+from .store import CommandFence, EventStore, Snapshot, StreamLock, check_sequence_batch
 from .tenancy import TENANT_MAX, Tenancy, check_tenant, tenant_key
 from .unit_of_work import Transactor, Tx, current_tx, transaction
 from .upcast import Upcaster
@@ -219,6 +219,7 @@ __all__ = [
     "Pacing",
     # storage seam and orchestration
     "AggregateCodec",
+    "CommandFence",
     "CommandOutbox",
     "DrainStats",
     "EventCodec",
@@ -227,6 +228,7 @@ __all__ = [
     "Relay",
     "Repository",
     "Snapshot",
+    "StreamLock",
     "Transactor",
     "Tx",
     "check_sequence_batch",

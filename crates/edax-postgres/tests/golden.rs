@@ -82,7 +82,11 @@ fn reference_catalog(tables: &Tables, role: Logical) -> Value {
                 (false, edax_postgres::schema::ColumnType::Text) => json!("default"),
                 _ => Value::Null,
             };
-            json!({"name": c.name, "type": ty, "not_null": !c.nullable, "default": c.defaulted, "collation": collation})
+            let sequence = c
+                .defaulted
+                .then(|| json!({"cache": 1, "increment": 1, "cycle": false, "fills": true}));
+            json!({"name": c.name, "type": ty, "not_null": !c.nullable, "default": c.defaulted, "collation": collation,
+                "sequence": sequence})
         })
         .collect();
     let unique: Vec<Value> = table
@@ -239,6 +243,36 @@ fn golden_contract() {
             Box::new(|r| r["columns"][0]["default"] = json!(false)),
         ),
         (
+            "position_default_without_sequence",
+            Logical::EventOutbox,
+            Box::new(|r| r["columns"][0]["sequence"] = Value::Null),
+        ),
+        (
+            "position_default_beside_an_unused_sequence",
+            Logical::CommandOutbox,
+            Box::new(|r| r["columns"][0]["sequence"]["fills"] = json!(false)),
+        ),
+        (
+            "position_sequence_caches_a_block",
+            Logical::CommandOutbox,
+            Box::new(|r| r["columns"][0]["sequence"]["cache"] = json!(20)),
+        ),
+        (
+            "position_sequence_counts_down",
+            Logical::SagaOutbox,
+            Box::new(|r| r["columns"][0]["sequence"]["increment"] = json!(-1)),
+        ),
+        (
+            "position_sequence_cycles",
+            Logical::EventOutbox,
+            Box::new(|r| r["columns"][0]["sequence"]["cycle"] = json!(true)),
+        ),
+        (
+            "key_collation_in_another_schema",
+            Logical::Events,
+            Box::new(|r| r["columns"][0]["collation"] = json!("public.C")),
+        ),
+        (
             "two_indexes_on_one_key",
             Logical::Events,
             Box::new(|r| {
@@ -380,7 +414,7 @@ fn erasure_lock_cases() -> Vec<Value> {
 
 fn sealed_row_cases() -> Vec<Value> {
     const KEY: [u8; 32] = [0x47; 32];
-    const STREAM: &str = "acme:invoice-7";
+    const STREAM: &str = "4:acme:invoice-7";
     let mut cases = Vec::new();
     for cipher in edax_seal::Cipher::ALL {
         let info = edax_seal::EncryptionInfo {
@@ -417,7 +451,7 @@ fn sealed_row_cases() -> Vec<Value> {
             ..command("cmd-1", "order-1")
         };
         let sealed = edax_event::sealing::seal_command(original.clone(), info.clone(), &KEY).unwrap();
-        let enqueue = rows::enqueue_params(std::slice::from_ref(&sealed)).unwrap();
+        let enqueue = rows::enqueue_params(std::slice::from_ref(&sealed), None).unwrap();
         let command_row = serde_json::from_str::<Vec<Value>>(enqueue[0].as_deref().unwrap())
             .unwrap()
             .remove(0)
@@ -481,7 +515,7 @@ fn sealed_row_cases() -> Vec<Value> {
 #[test]
 fn golden_rows() {
     let drafts = [draft(1), draft(2)];
-    let append = rows::append_params("acme:invoice-7", 0, &drafts).unwrap();
+    let append = rows::append_params("4:acme:invoice-7", 0, &drafts).unwrap();
     let draft_rows: Vec<Value> = serde_json::from_str(append[2].as_deref().unwrap()).unwrap();
     let recorded_at = 1_700_000_001_000_000_000_i64;
     let result = json!({"stored": 0, "recorded_at": recorded_at}).to_string();
@@ -504,7 +538,7 @@ fn golden_rows() {
     // The refused inputs as rows a replay rebuilds its messages from: a draft row is the one an accepted
     // append binds, edited where the refusal needs a value no append binds.
     let draft_row = |expected: u64, draft: &EventDraft| -> Value {
-        let params = rows::append_params("s", expected, std::slice::from_ref(draft)).unwrap();
+        let params = rows::append_params("invoice-7", expected, std::slice::from_ref(draft)).unwrap();
         serde_json::from_str::<Vec<Value>>(params[2].as_deref().unwrap())
             .unwrap()
             .remove(0)
@@ -529,22 +563,25 @@ fn golden_rows() {
     let nul_document = r#"{"s":"\u0000"}"#;
     let exact_document = r#"{"n":5.808820077685227e16,"m":0.30000000000000000001}"#;
     let mut cases = vec![
-        json!({"name": "append_params", "stream": "acme:invoice-7", "expected": 0, "drafts": drafts.len(), "params": append}),
+        json!({"name": "append_params", "stream": "4:acme:invoice-7", "expected": 0, "drafts": drafts.len(), "params": append}),
         json!({"name": "append_result", "expected": 0, "draft_rows": draft_rows, "result": result,
                "events": rows::append_result(0, drafts.to_vec(), &result).unwrap()
                    .iter().map(|e| json!({"id": e.id, "recorded_at": e.recorded_at})).collect::<Vec<_>>()}),
         json!({"name": "append_result_conflict", "expected": 0, "draft_rows": draft_rows, "result": r#"{"stored":3,"recorded_at":5}"#,
                "error": refusal(&rows::append_result(0, drafts.to_vec(), r#"{"stored":3,"recorded_at":5}"#))}),
-        json!({"name": "append_refuses_a_gap", "stream": "s", "expected": 0, "draft_rows": [draft_row(1, &draft(2))],
-               "error": refusal(&rows::append_params("s", 0, &[draft(2)]))}),
-        json!({"name": "append_refuses_nul", "stream": "s", "expected": 0, "draft_rows": [nul_row],
-               "error": refusal(&rows::append_params("s", 0, &[nul]))}),
-        json!({"name": "append_refuses_nul_in_metadata", "stream": "s", "expected": 0, "draft_rows": [nul_metadata_row],
-               "error": refusal(&rows::append_params("s", 0, &[nul_metadata]))}),
+        json!({"name": "append_refuses_a_gap", "stream": "invoice-7", "expected": 0, "draft_rows": [draft_row(1, &draft(2))],
+               "error": refusal(&rows::append_params("invoice-7", 0, &[draft(2)]))}),
+        json!({"name": "append_refuses_another_aggregate", "stream": "invoice-8", "expected": 0,
+               "draft_rows": [draft_row(0, &draft(1))],
+               "error": refusal(&rows::append_params("invoice-8", 0, &[draft(1)]))}),
+        json!({"name": "append_refuses_nul", "stream": "invoice-7", "expected": 0, "draft_rows": [nul_row],
+               "error": refusal(&rows::append_params("invoice-7", 0, &[nul]))}),
+        json!({"name": "append_refuses_nul_in_metadata", "stream": "invoice-7", "expected": 0, "draft_rows": [nul_metadata_row],
+               "error": refusal(&rows::append_params("invoice-7", 0, &[nul_metadata]))}),
         json!({"name": "enqueue_refuses_nul_in_metadata", "command_rows": nul_command_rows,
-               "error": refusal(&rows::enqueue_params(&[nul_command]))}),
+               "error": refusal(&rows::enqueue_params(&[nul_command], None))}),
         json!({"name": "event_row", "row": event_row, "decoded": rows::decode_events(std::slice::from_ref(&event_row)).unwrap().len()}),
-        json!({"name": "enqueue_params", "params": rows::enqueue_params(&commands).unwrap(),
+        json!({"name": "enqueue_params", "after_event": "evt-2", "params": rows::enqueue_params(&commands, Some("evt-2")).unwrap(),
                "decoded": rows::decode_commands(&command_rows).unwrap().iter().map(|c| c.id.clone()).collect::<Vec<_>>()}),
         json!({"name": "snapshot_params", "params": rows::snapshot_params("invoice-7", "Invoice", 3, &[1, 2]).unwrap()}),
         json!({"name": "snapshot_leads", "error": refusal(&rows::snapshot_result("invoice-7", 4, 3))}),
@@ -574,8 +611,8 @@ fn golden_rows() {
         call_case(
             "load_clamps_after",
             "load_params",
-            json!(["acme:invoice-7", u64::MAX]),
-            params(rows::load_params("acme:invoice-7", u64::MAX)),
+            json!(["4:acme:invoice-7", u64::MAX]),
+            params(rows::load_params("4:acme:invoice-7", u64::MAX)),
         ),
         call_case(
             "load_refuses_nul",
@@ -586,8 +623,8 @@ fn golden_rows() {
         call_case(
             "load_snapshot",
             "load_snapshot_params",
-            json!(["acme:invoice-7"]),
-            params(rows::load_snapshot_params("acme:invoice-7")),
+            json!(["4:acme:invoice-7"]),
+            params(rows::load_snapshot_params("4:acme:invoice-7")),
         ),
         call_case(
             "projection_get",

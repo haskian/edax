@@ -478,11 +478,13 @@ class Rig:
     repo: edax.Repository[Any, Any]
 
 
-def rig() -> Rig:
+def rig(command_fence: edax.CommandFence = edax.CommandFence.EVENT) -> Rig:
     db = MemoryTransactor()
     events = MemoryEventStore(db)
     commands = MemoryCommandOutbox(db)
-    repo = edax.Repository(events, TickEvents(), CounterCodec(), commands=commands)
+    repo = edax.Repository(
+        events, TickEvents(), CounterCodec(), commands=commands, command_fence=command_fence
+    )
     return Rig(db, events, commands, repo)
 
 
@@ -506,9 +508,71 @@ async def test_saved_commands_commit_or_roll_back_with_the_events(fails: bool) -
         return
     published: list[CommandMessage] = []
     relay = Relay(r.commands, published.append)
+    assert await relay.drain() == 0, "the command waits behind its save's unpublished event"
+    assert await Relay(r.events, lambda _: None).drain() == 1
     assert await relay.drain() == 1
     assert published == [ship]
     assert await r.commands.unpublished_count() == 0, "the relay marked the row"
+
+
+class NoStreamLock:
+    """An event store with no ``lock_stream``: it cannot back ``CommandFence.LOCK``."""
+
+
+@pytest.mark.parametrize(
+    ("fence", "store", "want"),
+    [
+        pytest.param("none", None, "unknown command fence 'none'", id="unknown_fence"),
+        pytest.param(
+            edax.CommandFence.LOCK,
+            NoStreamLock(),
+            "needs a store with lock_stream",
+            id="lock_without_lock_stream",
+        ),
+    ],
+)
+def test_command_fence_wiring_refusals(fence: Any, store: Any, want: str) -> None:
+    db = MemoryTransactor()
+    with pytest.raises(edax.BadHandle, match=want):
+        edax.Repository(
+            store or MemoryEventStore(db),
+            TickEvents(),
+            CounterCodec(),
+            commands=MemoryCommandOutbox(db),
+            command_fence=fence,
+        )
+
+
+FENCED_SHIP = command_message(ORDER, idempotency_key="ship-ord-7f3c", aggregate_id="ord-7f3c")
+
+
+async def test_the_event_fence_refuses_a_commands_only_save() -> None:
+    r = rig()
+    counter = await r.repo.load("ord-7f3c")
+    with pytest.raises(edax.BadHandle, match="must append an event"):
+        await r.repo.save(counter, commands=[FENCED_SHIP])
+    assert await r.commands.unpublished_count() == 0, "nothing was written"
+
+
+async def test_the_lock_fence_takes_a_commands_only_save() -> None:
+    r = rig(edax.CommandFence.LOCK)
+    counter = await r.repo.load("ord-7f3c")
+    assert await r.repo.save(counter, commands=[FENCED_SHIP]) == []
+    assert await r.commands.unpublished(10) == [FENCED_SHIP], "a command with no event waits behind nothing"
+
+
+async def test_the_lock_fence_refuses_a_save_while_another_holds_the_stream() -> None:
+    r = rig(edax.CommandFence.LOCK)
+    stale = await r.repo.load("ord-7f3c")
+    async with r.events.begin() as held:
+        holder = await r.repo.load("ord-7f3c", tx=held)
+        holder.apply(Tick(1))
+        await r.repo.save(holder, tx=held)
+        with pytest.raises(edax.ConcurrencyError, match="held by another open transaction"):
+            await r.repo.save(stale, commands=[FENCED_SHIP])
+    with pytest.raises(edax.ConcurrencyError, match="expected 0, stored 1"):
+        await r.repo.save(stale, commands=[FENCED_SHIP])
+    assert await r.commands.unpublished_count() == 0, "the stale save sent nothing"
 
 
 async def test_save_with_commands_needs_an_outbox() -> None:

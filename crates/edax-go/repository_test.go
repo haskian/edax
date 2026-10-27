@@ -6,6 +6,7 @@ import (
 	"errors"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/haskian/edax/crates/edax-go"
@@ -326,6 +327,12 @@ func TestRepositorySnapshotReplayAndConflict(t *testing.T) {
 	if len(messages) != 1 || *messages[0].Sequence != 1 || *messages[0].Tenant != *tenant || len(aggregate.Pending()) != 0 || aggregate.Version().Initial != 1 {
 		t.Fatalf("saved %+v state=%+v", messages, aggregate.Version())
 	}
+	if held, heldErr := commands.Unpublished(ctx, 10); heldErr != nil || len(held) != 0 {
+		t.Fatalf("a command waits behind its save's event: %+v %v", held, heldErr)
+	}
+	if err = store.MarkPublished(ctx, []string{messages[0].ID}); err != nil {
+		t.Fatal(err)
+	}
 	outbox, err := commands.Unpublished(ctx, 10)
 	if err != nil || len(outbox) != 1 || *outbox[0].Tenant != *tenant {
 		t.Fatalf("outbox %+v %v", outbox, err)
@@ -549,5 +556,93 @@ func TestRepositoryCreateStartsAnAggregateWithoutReading(t *testing.T) {
 				t.Fatalf("existing id: %v", err)
 			}
 		})
+	}
+}
+
+// eventStoreOnly hides a store's LockStream, so it cannot back CommandFenceLock.
+type eventStoreOnly struct{ edax.EventStore }
+
+// fenceRepository builds a repository over a fresh memory database under fence, with events as the
+// event store when given, else the database's own.
+func fenceRepository(t *testing.T, fence edax.CommandFence, events func(edax.EventStore) edax.EventStore) (*edax.Repository[*invoice], edax.CommandOutbox, error) {
+	t.Helper()
+	database := memory.New()
+	t.Cleanup(func() { database.Close() })
+	store, _ := database.EventStore()
+	t.Cleanup(func() { store.Close() })
+	commands, _ := database.CommandOutbox()
+	t.Cleanup(func() { commands.Close() })
+	codec, err := edax.NewJSONCodec(map[string]func() any{"InvoiceIssued": func() any { return &invoiceIssued{} }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backing edax.EventStore = store
+	if events != nil {
+		backing = events(store)
+	}
+	repository, err := edax.NewRepository[*invoice](backing, codec, invoiceCodec{}, edax.RepositoryOptions{Commands: commands, CommandFence: fence})
+	return repository, commands, err
+}
+
+// sendInvoice saves a commands-only change of invoice-42 and returns what the outbox then holds.
+func sendInvoice(t *testing.T, repository *edax.Repository[*invoice], commands edax.CommandOutbox) ([]edax.CommandMessage, edax.CommandMessage, error) {
+	t.Helper()
+	ctx := context.Background()
+	aggregate, err := repository.Load(ctx, "invoice-42", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, err := edax.NewCommandMessage(ctx, edax.Payload{Name: "SendInvoice", Version: 1, Data: []byte(`{"invoice_id":"invoice-42"}`)}, edax.CommandOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, saveErr := repository.Save(ctx, aggregate, edax.SaveOptions{Commands: []edax.CommandMessage{command}})
+	queued, err := commands.Unpublished(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return queued, command, saveErr
+}
+
+func TestRepositoryCommandFenceWiringRefusals(t *testing.T) {
+	hideLock := func(store edax.EventStore) edax.EventStore { return eventStoreOnly{store} }
+	for _, c := range []struct {
+		name   string
+		fence  edax.CommandFence
+		events func(edax.EventStore) edax.EventStore
+		want   string
+	}{
+		{name: "unknown_fence", fence: "none", want: `unknown command fence "none"`},
+		{name: "lock_fence_without_a_stream_locker", fence: edax.CommandFenceLock, events: hideLock, want: "implements StreamLocker"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			_, _, err := fenceRepository(t, c.fence, c.events)
+			var refused *edax.Error
+			if !errors.As(err, &refused) || refused.Code != edax.CodeBadHandle || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("build: %v", err)
+			}
+		})
+	}
+}
+
+func TestEventFenceRefusesACommandsOnlySave(t *testing.T) {
+	repository, commands, err := fenceRepository(t, "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, _, err := sendInvoice(t, repository, commands)
+	if err == nil || !strings.Contains(err.Error(), "must append an event") || len(queued) != 0 {
+		t.Fatalf("save: %v, queued %d", err, len(queued))
+	}
+}
+
+func TestLockFenceTakesACommandsOnlySave(t *testing.T) {
+	repository, commands, err := fenceRepository(t, edax.CommandFenceLock, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, command, err := sendInvoice(t, repository, commands)
+	if err != nil || len(queued) != 1 || queued[0].ID != command.ID {
+		t.Fatalf("save: %v, queued %+v", err, queued)
 	}
 }

@@ -407,13 +407,19 @@ func TestCryptoRepositoryPersistsOnlyCiphertextAndRestoresOwner(t *testing.T) {
 			if err != nil || snapshot == nil {
 				t.Fatalf("snapshot: %v %v", snapshot, err)
 			}
-			queued, err := commands.Unpublished(ctx, 10)
-			if err != nil || len(queued) != 1 {
-				t.Fatalf("commands: %v %v", queued, err)
+			if held, err := commands.Unpublished(ctx, 10); err != nil || len(held) != 0 {
+				t.Fatalf("a command waits behind its save's event: %v %v", held, err)
 			}
 			outbox, err := store.Unpublished(ctx, 10)
 			if err != nil || !reflect.DeepEqual(outbox, rows) {
 				t.Fatalf("outbox: %v %v", outbox, err)
+			}
+			if err = store.MarkPublished(ctx, []string{rows[0].ID}); err != nil {
+				t.Fatal(err)
+			}
+			queued, err := commands.Unpublished(ctx, 10)
+			if err != nil || len(queued) != 1 {
+				t.Fatalf("commands: %v %v", queued, err)
 			}
 			for name, value := range map[string]any{"events": rows, "snapshot": snapshot, "commands": queued, "outbox": outbox} {
 				wire, err := json.Marshal(value)

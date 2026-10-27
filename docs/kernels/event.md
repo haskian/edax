@@ -19,7 +19,7 @@ Python service and a Rust service cannot drift.
 | `causation` | the lineage of a message: `correlation_id` / `causation_id` propagation | `causation.json`, `causation_originate.json` |
 | `staleness` | whether an event is older than the watermark, and the watermark after it applies | `staleness.json` |
 | `idempotency` | the key and hash an event's idempotency guard claims; the record it claims is `edax-cqrs`'s | `event_idempotency.json` |
-| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the drafts a save appends; when a save writes a snapshot, and the refusal of one that leads its stream | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
+| `sequence` | the dense-batch rule an append must satisfy, and a replay checks; the refusal of another aggregate's draft; the drafts a save appends; the plan a save runs under its command fence; when a save writes a snapshot, and the refusal of one that leads its stream | `sequence_batch.json`, `draft_batch.json`, `snapshot_due.json` |
 | `batch` | microbatch limits, admission, flush thresholds, retry ceilings and original-order bisection | `event_batch.json` |
 | `retry` | a consumer's or relay's retry and dead-letter policy: a failure's kind from its code, hand back after which step, or die | `retries.json`, `retry_failure.json`, `retry_step.json` |
 | `drain` | which rows an outbox relay's drain publishes, and what a failed row does to the rows behind it | `relay_drain.json` |
@@ -714,6 +714,19 @@ writes a snapshot: when it crosses a multiple of `every`. `1` snapshots on every
 `0` never does, and a save with nothing pending crosses no multiple. Both repositories ask it, so
 two SDKs saving one aggregate type snapshot at the same versions. `testdata/golden/snapshot_due.json`
 pins every branch.
+
+`check_stream(stream, drafts)` refuses a batch holding a draft of another aggregate, as a `codec`
+error naming its 0-based index. A draft belongs to `stream` when its aggregate id, bare or scoped by its
+tenant (the pool form of `tenant_key`), spells `stream`. An append writes every draft into one stream
+and checks that stream's version only, so a foreign draft would skip its own aggregate's check. The
+Postgres and memory appends both call it.
+
+`plan_save(fence, event_ids, commands)` plans a save under its repository's `CommandFence`, so every SDK
+runs the plan rather than deciding it. Under `Event` a save that enqueues commands must append an event,
+else it is refused as a `bad_handle` error. The event's unique `(stream, sequence)` key is what fails a
+rival save of the same version. Under `Lock` the plan locks the stream before every save, so a save may
+enqueue commands alone. Either way the commands wait behind the last event the save appends, its
+`after_event`.
 
 `check_snapshot(stream, version, stream_version)` refuses a snapshot that leads its stream, as the
 store's write sees it, with a `codec` error. A snapshot may lag the stream but never lead it, so every

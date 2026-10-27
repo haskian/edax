@@ -241,8 +241,27 @@ await repo.save(order, commands=[ship])  # the events and the command commit tog
 await Relay(outbox, producer.publish).drain()  # sent only once committed
 ```
 
-`CommandOutbox.enqueue(tx, commands)` is the write side, and an `Outbox` of command messages the read
-side. [Backends](../backends/README.md#commandoutbox) lists what it refuses. A save with commands on a repository built without an outbox raises `TypeError`.
+`CommandOutbox.enqueue(tx, commands, after_event=...)` is the write side. An `Outbox` of command
+messages is the read side. `after_event` is the id of the last event the same save appended. The outbox
+holds each command back until that event is published, so a command never reaches a broker before
+the event it follows from. Every later command for the same aggregate and tenant waits behind a held
+one, so the aggregate's commands still leave in order. A saga's commands, and a commands-only save's, follow no event and wait for
+nothing. A consumer that needs the event first must check the aggregate's version, or hand the
+command back.
+
+**Command fence.** A save's commands must not be decided on a stale aggregate, and must not overtake
+the commands of the aggregate's next save. The repository's `command_fence` decides what prevents it,
+the kernel's plan for each save (`edax_event::plan_save`):
+
+| `command_fence` | A save that sends commands | Cost |
+|---|---|---|
+| `CommandFence.EVENT` (default) | must append an event. The event's unique `(stream, sequence)` key fails a rival save of the same version, so the stale save's commands are never written. A save with commands and no event raises `BadHandle`. | nothing extra |
+| `CommandFence.LOCK` | takes its stream's lock first ([`StreamLock`](../backends/README.md#streamlock)), on every save. A rival save waits, then fails its version check. A save may send commands alone. | one round trip per save |
+
+Every writer of one stream must use the same fence. The memory store cannot make a rival wait, so a
+locked stream refuses it with `ConcurrencyError` at once.
+
+[Backends](../backends/README.md#commandoutbox) lists what `CommandOutbox` refuses. A save with commands on a repository built without an outbox raises `TypeError`.
 `MemoryCommandOutbox` is the memory outbox. A saga has its own command outbox in the `SagaStore`,
 with the same guarantee; see [sagas](./sagas.md).
 

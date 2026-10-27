@@ -3,7 +3,8 @@
 //! The timeouts are layered so the server answers first: a lock wait ends at `lock_timeout_ms`, a
 //! statement at `statement_timeout_ms`, and the client gives up on a call only at `op_timeout_ms`.
 //! A store refuses any other order, because a client that cancels first never learns which of the
-//! three ran out.
+//! three ran out. The lock wait must end strictly before the statement: the statement's clock starts
+//! first, so at equal values a lock wait always ends as a statement timeout.
 
 use edax_core::Error;
 use serde::{Deserialize, Serialize};
@@ -72,9 +73,9 @@ pub fn check_config(settings: &Settings) -> Result<(), Error> {
     if let Some((name, value)) = named.iter().find(|(_, value)| *value <= 0) {
         return Err(Error::bad_handle(format_args!("{name} must be positive, got {value}")));
     }
-    if settings.lock_timeout_ms > settings.statement_timeout_ms {
+    if settings.lock_timeout_ms >= settings.statement_timeout_ms {
         return Err(Error::bad_handle(format_args!(
-            "lock_timeout_ms {} must not exceed statement_timeout_ms {}",
+            "lock_timeout_ms {} must be below statement_timeout_ms {}",
             settings.lock_timeout_ms, settings.statement_timeout_ms
         )));
     }
@@ -132,13 +133,15 @@ mod tests {
             ("zero_lock", with(|s| s.lock_timeout_ms = 0)),
             ("negative_ttl", with(|s| s.claim_ttl_ms = -1)),
             ("lock_past_statement", with(|s| s.lock_timeout_ms = 6_000)),
+            ("lock_at_statement", with(|s| s.lock_timeout_ms = 5_000)),
             ("statement_at_op", with(|s| s.statement_timeout_ms = 10_000)),
         ];
         let want: Vec<Result<(), &str>> = vec![
             Ok(()),
             Err("bad_handle: lock_timeout_ms must be positive, got 0"),
             Err("bad_handle: claim_ttl_ms must be positive, got -1"),
-            Err("bad_handle: lock_timeout_ms 6000 must not exceed statement_timeout_ms 5000"),
+            Err("bad_handle: lock_timeout_ms 6000 must be below statement_timeout_ms 5000"),
+            Err("bad_handle: lock_timeout_ms 5000 must be below statement_timeout_ms 5000"),
             Err(
                 "bad_handle: statement_timeout_ms 10000 must be below op_timeout_ms 10000, so the server answers first",
             ),

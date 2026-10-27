@@ -130,6 +130,16 @@ func (s *EventStore) Append(ctx context.Context, key string, expected uint64, dr
 	return s.native.Append(t, key, expected, drafts, edax.CurrentTimestamp())
 }
 
+// LockStream locks key's stream until the context transaction ends. This store cannot make a rival
+// wait, so a stream another open transaction holds is a concurrency error.
+func (s *EventStore) LockStream(ctx context.Context, key string) error {
+	t, e := s.database.token(ctx)
+	if e != nil {
+		return e
+	}
+	return s.native.LockStream(t, key)
+}
+
 // LoadSnapshot returns the cached aggregate snapshot, or nil when absent.
 func (s *EventStore) LoadSnapshot(ctx context.Context, key string) (*edax.Snapshot, error) {
 	t, e := s.database.token(ctx)
@@ -404,13 +414,18 @@ func (s *CommandOutbox) Close() error { return s.native.Close() }
 // UnitOfWork identifies the database whose transaction this view joins.
 func (s *CommandOutbox) UnitOfWork() edax.UnitOfWork { return s.database }
 
-// Enqueue stages commands atomically in the context transaction, when present.
-func (s *CommandOutbox) Enqueue(ctx context.Context, messages []edax.CommandMessage) error {
+// Enqueue stages commands atomically in the context transaction, when present. Each waits behind
+// afterEvent while that event is unpublished; "" waits behind nothing.
+func (s *CommandOutbox) Enqueue(ctx context.Context, messages []edax.CommandMessage, afterEvent string) error {
 	t, e := s.database.token(ctx)
 	if e != nil {
 		return e
 	}
-	return s.native.Enqueue(t, messages)
+	var after *string
+	if afterEvent != "" {
+		after = &afterEvent
+	}
+	return s.native.Enqueue(t, messages, after)
 }
 
 // Unpublished reads at most limit committed outbox rows; staged writes are not published.

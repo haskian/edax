@@ -110,9 +110,11 @@ struct CommandRow {
 }
 
 /// The parameters of `append`: the stream, the expected version and the drafts. A batch the kernel's
-/// dense-batch rule refuses (`edax_event::check_batch`), a version past `bigint`, or a draft
-/// [`EventDraft::check`] refuses is a `codec` error, before any I/O.
+/// dense-batch rule refuses (`edax_event::check_batch`), a draft of another aggregate
+/// (`edax_event::check_stream`), a version past `bigint`, or a draft [`EventDraft::check`] refuses is a
+/// `codec` error, before any I/O.
 pub fn append_params(stream: &str, expected: u64, drafts: &[EventDraft]) -> Result<Vec<Param>, Error> {
+    edax_event::check_stream(stream, drafts)?;
     let sequences: Vec<Option<u64>> = drafts.iter().map(|d| d.sequence).collect();
     let last = edax_event::check_batch(expected, &sequences)?;
     check_bigint("stream version", last)?;
@@ -177,11 +179,20 @@ pub fn commands_param(commands: &[CommandMessage]) -> Result<String, Error> {
     json(&rows)
 }
 
-/// The parameters of `command_enqueue`: the commands. A command [`Message::check`] refuses is a `codec`
-/// error, before any I/O.
-pub fn enqueue_params(commands: &[CommandMessage]) -> Result<Vec<Param>, Error> {
+/// The parameters of `command_enqueue`: the commands, and `after_event`, the last event the same save
+/// appended, which each command waits behind in the outbox. A command [`Message::check`] refuses, or NUL
+/// in `after_event`, is a `codec` error, before any I/O.
+pub fn enqueue_params(commands: &[CommandMessage], after_event: Option<&str>) -> Result<Vec<Param>, Error> {
     commands.iter().try_for_each(Message::check)?;
-    Ok(vec![Some(commands_param(commands)?)])
+    Ok(vec![
+        Some(commands_param(commands)?),
+        optional_text("after event", after_event)?,
+    ])
+}
+
+/// The parameters of `stream_lock`: the stream.
+pub fn stream_lock_params(stream: &str) -> Result<Vec<Param>, Error> {
+    Ok(vec![text_param("stream", stream)?])
 }
 
 /// The read of `outbox`'s oldest `limit` rows, of the saga `saga` for the saga outbox. With `lease`, the
@@ -605,8 +616,8 @@ mod tests {
 
     #[test]
     fn append_round_trip() {
-        let params = append_params("acme:invoice-7", 0, &[draft(1), draft(2)]).unwrap();
-        assert_eq!(params[0].as_deref(), Some("acme:invoice-7"));
+        let params = append_params("4:acme:invoice-7", 0, &[draft(1), draft(2)]).unwrap();
+        assert_eq!(params[0].as_deref(), Some("4:acme:invoice-7"));
         assert_eq!(params[1].as_deref(), Some("0"));
         let rows: Vec<serde_json::Value> = serde_json::from_str(params[2].as_deref().unwrap()).unwrap();
         assert_eq!(rows[0]["data"], "0001feff");
@@ -624,23 +635,30 @@ mod tests {
     fn append_refusals() {
         let err = |r: Result<Vec<Param>, Error>| r.map_err(|e| e.to_string()).err();
         assert!(
-            err(append_params("s", 0, &[draft(2)])).unwrap().starts_with("codec:"),
+            err(append_params("invoice-7", 0, &[draft(2)]))
+                .unwrap()
+                .starts_with("codec:"),
             "gap"
         );
         let mut nul = draft(1);
         nul.id = "e\0".into();
         assert_eq!(
-            err(append_params("s", 0, &[nul])).as_deref(),
+            err(append_params("invoice-7", 0, &[nul])).as_deref(),
             Some("codec: event id holds a NUL character")
         );
         let mut nul = draft(1);
         nul.metadata.insert("t\0".into(), "v".into());
         assert_eq!(
-            err(append_params("s", 0, &[nul])).as_deref(),
+            err(append_params("invoice-7", 0, &[nul])).as_deref(),
             Some("codec: metadata holds a NUL character"),
             "the kernel refuses NUL in a map key"
         );
-        assert!(err(append_params("s", i64::MAX as u64, &[draft(i64::MAX as u64 + 1)])).is_some());
+        assert!(err(append_params(
+            "invoice-7",
+            i64::MAX as u64,
+            &[draft(i64::MAX as u64 + 1)]
+        ))
+        .is_some());
         assert_eq!(
             append_result(3, vec![draft(4)], r#"{"stored":4,"recorded_at":5}"#).map_err(|e| e.to_string()),
             Err("concurrency: expected 3, stored 4".into())
@@ -673,7 +691,7 @@ mod tests {
             ..draft(1)
         };
         assert_eq!(
-            append_params("s", 0, &[event]).err().map(|e| e.to_string()),
+            append_params("invoice-7", 0, &[event]).err().map(|e| e.to_string()),
             refused,
             "append"
         );
@@ -681,7 +699,7 @@ mod tests {
 
     #[test]
     fn decode_refuses_a_map_that_is_not_strings() {
-        let params = append_params("s", 0, &[draft(1)]).unwrap();
+        let params = append_params("invoice-7", 0, &[draft(1)]).unwrap();
         let mut row: Vec<serde_json::Value> = serde_json::from_str(params[2].as_deref().unwrap()).unwrap();
         row[0]["recorded_at"] = 5.into();
         assert!(decode_events(&[row[0].to_string()]).is_ok());

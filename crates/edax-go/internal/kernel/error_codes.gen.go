@@ -63,3 +63,12 @@ const TenancyPool Tenancy = "pool"
 
 // TenancyBridge selects bridge isolation.
 const TenancyBridge Tenancy = "bridge"
+
+// CommandFence names what keeps a save's commands fenced to the aggregate version they were decided at.
+type CommandFence string
+
+// CommandFenceEvent fences a save's commands with the kernel's event fence.
+const CommandFenceEvent CommandFence = "event"
+
+// CommandFenceLock fences a save's commands with the kernel's lock fence.
+const CommandFenceLock CommandFence = "lock"

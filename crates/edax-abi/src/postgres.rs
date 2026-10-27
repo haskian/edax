@@ -233,6 +233,11 @@ pub fn postgres_load_params(stream: &str, after: u64) -> Result<String, String> 
     params_json(edax_postgres::rows::load_params(stream, after).map_err(to_wire)?)
 }
 
+/// The parameters of `stream_lock`. See [`edax_postgres::rows::stream_lock_params`].
+pub fn postgres_stream_lock_params(stream: &str) -> Result<String, String> {
+    params_json(edax_postgres::rows::stream_lock_params(stream).map_err(to_wire)?)
+}
+
 /// The parameters of `load_snapshot`. See [`edax_postgres::rows::load_snapshot_params`].
 pub fn postgres_load_snapshot_params(stream: &str) -> Result<String, String> {
     params_json(edax_postgres::rows::load_snapshot_params(stream).map_err(to_wire)?)
@@ -257,13 +262,13 @@ pub fn postgres_decode_commands(rows: Vec<String>) -> Result<Vec<CommandMessage>
 }
 
 /// The parameters of `command_enqueue`. See [`edax_postgres::rows::enqueue_params`].
-pub fn postgres_enqueue_params(commands: Vec<CommandMessage>) -> Result<String, String> {
+pub fn postgres_enqueue_params(commands: Vec<CommandMessage>, after_event: Option<String>) -> Result<String, String> {
     let commands: Vec<edax_event::CommandMessage> = commands
         .into_iter()
         .map(TryInto::try_into)
         .collect::<Result<Vec<_>, _>>()
         .map_err(to_wire)?;
-    params_json(edax_postgres::rows::enqueue_params(&commands).map_err(to_wire)?)
+    params_json(edax_postgres::rows::enqueue_params(&commands, after_event.as_deref()).map_err(to_wire)?)
 }
 
 /// The outboxes a relay drains. See [`edax_postgres::Outbox`].

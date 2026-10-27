@@ -349,6 +349,9 @@ type SagaRow = native.SagaRow
 // SagaWrite is the kernel's binding record.
 type SagaWrite = native.SagaWrite
 
+// SavePlan is the kernel's binding record.
+type SavePlan = native.SavePlan
+
 // SealedValue is the kernel's binding record.
 type SealedValue = native.SealedValue
 
@@ -618,6 +621,12 @@ func CommandEncryptionContext(message CommandMessage) ([]byte, error) {
 	}
 	nativeValue, nativeError := native.CommandEncryptionContext(normalizeNative(message))
 	return nativeValue, mapNativeError(nativeError)
+}
+
+// CommandFences calls the shared kernel.
+func CommandFences() []string {
+	nativeValue := native.CommandFences()
+	return nativeValue
 }
 
 // CommandHashJSON calls the shared kernel.
@@ -1823,6 +1832,19 @@ func PayloadHashJSON(payload []byte) (uint64, error) {
 	return nativeValue, mapNativeError(nativeError)
 }
 
+// PlanSave calls the shared kernel.
+func PlanSave(fence string, eventIds []string, commands uint64) (*SavePlan, error) {
+	var zero *SavePlan
+	if err := checkNativeString("fence", fence); err != nil {
+		return zero, err
+	}
+	if err := checkNativeValue("eventIds", eventIds); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PlanSave(fence, normalizeNative(eventIds), commands)
+	return nativeValue, mapNativeError(nativeError)
+}
+
 // PostgresAppendParams calls the shared kernel.
 func PostgresAppendParams(stream string, expected uint64, drafts []EventDraft) (string, error) {
 	var zero string
@@ -2056,12 +2078,17 @@ func PostgresDecodeSnapshot(row string) (*SnapshotResult, error) {
 }
 
 // PostgresEnqueueParams calls the shared kernel.
-func PostgresEnqueueParams(commands []CommandMessage) (string, error) {
+func PostgresEnqueueParams(commands []CommandMessage, afterEvent *string) (string, error) {
 	var zero string
+	if afterEvent != nil {
+		if err := checkNativeString("afterEvent", *afterEvent); err != nil {
+			return zero, err
+		}
+	}
 	if err := checkNativeValue("commands", commands); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresEnqueueParams(normalizeNative(commands))
+	nativeValue, nativeError := native.PostgresEnqueueParams(normalizeNative(commands), afterEvent)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -2523,6 +2550,16 @@ func PostgresStatements(tablesJSON string) (string, error) {
 		return zero, err
 	}
 	nativeValue, nativeError := native.PostgresStatements(tablesJSON)
+	return nativeValue, mapNativeError(nativeError)
+}
+
+// PostgresStreamLockParams calls the shared kernel.
+func PostgresStreamLockParams(stream string) (string, error) {
+	var zero string
+	if err := checkNativeString("stream", stream); err != nil {
+		return zero, err
+	}
+	nativeValue, nativeError := native.PostgresStreamLockParams(stream)
 	return nativeValue, mapNativeError(nativeError)
 }
 
@@ -3833,7 +3870,7 @@ func (h *MemoryBroker) TryPollResult(group string) (*PollLookup, error) {
 }
 
 // Enqueue calls the shared kernel.
-func (h *MemoryCommandOutbox) Enqueue(tx int64, commands []CommandMessage) error {
+func (h *MemoryCommandOutbox) Enqueue(tx int64, commands []CommandMessage, afterEvent *string) error {
 	if h == nil || h.nativeState == nil {
 		return ClosedHandle("MemoryCommandOutbox")
 	}
@@ -3843,10 +3880,15 @@ func (h *MemoryCommandOutbox) Enqueue(tx int64, commands []CommandMessage) error
 	if h.inner == nil {
 		return ClosedHandle("MemoryCommandOutbox")
 	}
+	if afterEvent != nil {
+		if err := checkNativeString("afterEvent", *afterEvent); err != nil {
+			return err
+		}
+	}
 	if err := checkNativeValue("commands", commands); err != nil {
 		return err
 	}
-	return mapNativeError(h.inner.Enqueue(tx, normalizeNative(commands)))
+	return mapNativeError(h.inner.Enqueue(tx, normalizeNative(commands), afterEvent))
 }
 
 // Unpublished calls the shared kernel.
@@ -3937,6 +3979,23 @@ func (h *MemoryEventStore) Append(tx int64, aggregateID string, expectedVersion 
 	}
 	nativeValue, nativeError := h.inner.Append(tx, aggregateID, expectedVersion, normalizeNative(drafts), recordedAt)
 	return nativeValue, mapNativeError(nativeError)
+}
+
+// LockStream calls the shared kernel.
+func (h *MemoryEventStore) LockStream(tx int64, aggregateID string) error {
+	if h == nil || h.nativeState == nil {
+		return ClosedHandle("MemoryEventStore")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return ClosedHandle("MemoryEventStore")
+	}
+	if err := checkNativeString("aggregateID", aggregateID); err != nil {
+		return err
+	}
+	return mapNativeError(h.inner.LockStream(tx, aggregateID))
 }
 
 // LoadSnapshot calls the shared kernel.

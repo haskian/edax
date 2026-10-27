@@ -49,6 +49,91 @@ pub fn check_batch(expected: u64, sequences: &[Option<u64>]) -> Result<u64, Erro
     Ok(want)
 }
 
+edax_core::closed_names! {
+    /// What keeps a save's commands fenced to the aggregate version they were decided at, and in order
+    /// with the commands of the aggregate's next save. A host picks one per repository; every writer of
+    /// one stream must pick the same.
+    ///
+    /// Exhaustive on purpose: each fence is a different promise, so a new one is a compile error in every
+    /// SDK rather than a wildcard's silent default.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub enum CommandFence {
+        /// A save that enqueues commands must append an event. The event's unique `(stream, sequence)`
+        /// key fences the save: a rival save of the same version fails, and the next save waits for this
+        /// one to commit.
+        Event = "event",
+        /// Every save takes its stream's lock first, so a save may enqueue commands without an event. The
+        /// store serializes the stream's saves, at the cost of one more round trip per save.
+        Lock = "lock",
+    }
+}
+
+impl CommandFence {
+    /// The inverse of [`as_str`](CommandFence::as_str). Anything else is a `bad_handle` error: the fence
+    /// is wiring, chosen where a repository is built.
+    pub fn from_name(name: &str) -> Result<CommandFence, Error> {
+        CommandFence::by_name(name).ok_or_else(|| {
+            Error::bad_handle(format_args!(
+                "unknown command fence {name:?}: use one of {:?}",
+                CommandFence::NAMES
+            ))
+        })
+    }
+}
+
+/// What a save does beside its append, under its repository's [`CommandFence`]: the decisions every
+/// SDK's repository runs rather than makes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavePlan {
+    /// Take the stream's lock before the append (and before a prepared save's reload).
+    pub lock_stream: bool,
+    /// The event the save's commands wait behind in the outbox: the last event it appends, if any.
+    pub after_event: Option<String>,
+}
+
+/// The plan for a save that appends the events `event_ids`, in order, and enqueues `commands` commands,
+/// under `fence`.
+///
+/// Under [`CommandFence::Event`] a save that enqueues commands must append an event, else it is refused as
+/// a `bad_handle` error: nothing would fence it, so it could send commands decided on a stale aggregate,
+/// or out of order with a concurrent save's. The same save fails the same way on every retry. Under
+/// [`CommandFence::Lock`] every save locks its stream first. Either way the commands wait behind the
+/// last event, so the relay never sends a command before the event it follows from.
+pub fn plan_save(fence: CommandFence, event_ids: &[String], commands: usize) -> Result<SavePlan, Error> {
+    if fence == CommandFence::Event && event_ids.is_empty() && commands > 0 {
+        return Err(Error::bad_handle(
+            "a save that enqueues commands must append an event under command fence \"event\": record \
+             the decision as an event, or build the repository with command fence \"lock\"",
+        ));
+    }
+    Ok(SavePlan {
+        lock_stream: fence == CommandFence::Lock,
+        after_event: event_ids.last().cloned(),
+    })
+}
+
+/// Refuse a batch for `stream` that holds another aggregate's draft, as a `codec` error naming the 0-based
+/// index of the first such draft. A draft belongs to `stream` when its aggregate id, bare or scoped by its
+/// tenant ([`edax_core::scoped`], the pool form of [`edax_core::tenant_key`]), spells `stream`. An append
+/// writes every draft into `stream` and checks that stream's version only, so a foreign draft would join
+/// another aggregate's stream and skip its own aggregate's version check.
+pub fn check_stream(stream: &str, drafts: &[EventDraft]) -> Result<(), Error> {
+    let foreign = drafts.iter().enumerate().find(|(_, draft)| {
+        draft.aggregate_id != stream
+            && draft
+                .tenant
+                .as_deref()
+                .is_none_or(|tenant| edax_core::scoped(tenant, &draft.aggregate_id) != stream)
+    });
+    match foreign {
+        Some((index, draft)) => Err(Error::codec(format_args!(
+            "event {index} belongs to aggregate {}, not to stream {stream}",
+            draft.aggregate_id
+        ))),
+        None => Ok(()),
+    }
+}
+
 /// Refuse a snapshot of `stream` at `version` that leads the stream, at `stream_version`, as the store's
 /// write sees it. A snapshot may lag its stream but never lead it, or a load would fold events the stream
 /// does not hold. Every store refuses it the same way, a `codec` error, since the same save fails again.
@@ -170,6 +255,7 @@ pub fn draft_batch(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::base_draft;
 
     #[test]
     fn check_batch_branches() {
@@ -260,6 +346,127 @@ mod tests {
         ];
         for c in cases {
             assert_eq!(check_batch(c.expected, &c.sequences), c.want, "{}", c.name);
+        }
+    }
+
+    #[test]
+    fn plan_save_branches() {
+        let refused = "bad_handle: a save that enqueues commands must append an event under command fence \"event\": \
+                       record the decision as an event, or build the repository with command fence \"lock\"";
+        let ids = |ids: &[&str]| ids.iter().map(|id| (*id).to_owned()).collect::<Vec<_>>();
+        let plan = |lock_stream: bool, after_event: Option<&str>| SavePlan {
+            lock_stream,
+            after_event: after_event.map(str::to_owned),
+        };
+        type Case<'a> = (&'a str, CommandFence, Vec<String>, usize, Result<SavePlan, &'a str>);
+        let cases: Vec<Case> = vec![
+            (
+                "event_fence_waits_behind_the_last_event",
+                CommandFence::Event,
+                ids(&["e1", "e2"]),
+                1,
+                Ok(plan(false, Some("e2"))),
+            ),
+            (
+                "event_fence_events_only",
+                CommandFence::Event,
+                ids(&["e1"]),
+                0,
+                Ok(plan(false, Some("e1"))),
+            ),
+            (
+                "event_fence_nothing",
+                CommandFence::Event,
+                ids(&[]),
+                0,
+                Ok(plan(false, None)),
+            ),
+            (
+                "event_fence_commands_only",
+                CommandFence::Event,
+                ids(&[]),
+                1,
+                Err(refused),
+            ),
+            (
+                "lock_fence_commands_only",
+                CommandFence::Lock,
+                ids(&[]),
+                3,
+                Ok(plan(true, None)),
+            ),
+            (
+                "lock_fence_with_events",
+                CommandFence::Lock,
+                ids(&["e1"]),
+                1,
+                Ok(plan(true, Some("e1"))),
+            ),
+        ];
+        for (name, fence, event_ids, commands, want) in cases {
+            let got = plan_save(fence, &event_ids, commands).map_err(|e| e.to_string());
+            assert_eq!(got, want.map_err(str::to_owned), "{name}");
+        }
+        assert_eq!(CommandFence::from_name("lock").ok(), Some(CommandFence::Lock));
+        assert_eq!(
+            CommandFence::from_name("none").map_err(|e| e.to_string()),
+            Err("bad_handle: unknown command fence \"none\": use one of [\"event\", \"lock\"]".to_owned())
+        );
+    }
+
+    fn draft(aggregate_id: &str, tenant: Option<&str>) -> EventDraft {
+        EventDraft {
+            aggregate_id: aggregate_id.to_owned(),
+            tenant: tenant.map(ToOwned::to_owned),
+            ..base_draft()
+        }
+    }
+
+    #[test]
+    fn check_stream_branches() {
+        type Case<'a> = (&'a str, &'a str, Vec<EventDraft>, Result<(), &'a str>);
+        let cases: Vec<Case> = vec![
+            ("empty_batch", "invoice-7", vec![], Ok(())),
+            (
+                "bare_stream",
+                "invoice-7",
+                vec![draft("invoice-7", Some("acme"))],
+                Ok(()),
+            ),
+            (
+                "pooled_stream",
+                "4:acme:invoice-7",
+                vec![draft("invoice-7", Some("acme"))],
+                Ok(()),
+            ),
+            (
+                "another_aggregate",
+                "invoice-8",
+                vec![draft("invoice-7", Some("acme"))],
+                Err("codec: event 0 belongs to aggregate invoice-7, not to stream invoice-8"),
+            ),
+            (
+                "another_tenants_stream",
+                "6:globex:invoice-7",
+                vec![draft("invoice-7", Some("acme"))],
+                Err("codec: event 0 belongs to aggregate invoice-7, not to stream 6:globex:invoice-7"),
+            ),
+            (
+                "pooled_stream_without_tenant",
+                "4:acme:invoice-7",
+                vec![draft("invoice-7", None)],
+                Err("codec: event 0 belongs to aggregate invoice-7, not to stream 4:acme:invoice-7"),
+            ),
+            (
+                "second_draft_foreign",
+                "invoice-7",
+                vec![draft("invoice-7", None), draft("invoice-8", None)],
+                Err("codec: event 1 belongs to aggregate invoice-8, not to stream invoice-7"),
+            ),
+        ];
+        for (name, stream, drafts, want) in cases {
+            let got = check_stream(stream, &drafts).map_err(|e| e.to_string());
+            assert_eq!(got, want.map_err(str::to_owned), "{name}");
         }
     }
 }

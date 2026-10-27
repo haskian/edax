@@ -330,6 +330,10 @@ typedef struct EDAXSagaRow EDAXSagaRow;
  */
 typedef struct EDAXSagaWrite EDAXSagaWrite;
 /**
+ * What a save does beside its append. See `edax_event.SavePlan`.
+ */
+typedef struct EDAXSavePlan EDAXSavePlan;
+/**
  * Reusable encrypted stored value; record-specific context is supplied by its owning kernel.
  */
 typedef struct EDAXSealedValue EDAXSealedValue;
@@ -2043,13 +2047,15 @@ void edax_memory_command_outbox_free(EDAXAlefHandle handle);
 
 /**
  * Stage `commands` in the outbox under `tx`, to commit with the transaction's events. An id already
- * waiting, or repeated in the batch, is a `codec:` error and stages nothing.
+ * waiting, or repeated in the batch, is a `codec:` error and stages nothing. Each command waits behind
+ * `after_event`, the last event the same save appended, if any.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 int32_t edax_memory_command_outbox_enqueue(EDAXAlefHandle this_,
                                            int64_t tx,
-                                           const char *commands);
+                                           const char *commands,
+                                           const char *after_event);
 
 /**
  * Committed outbox commands not yet sent, oldest commit first, capped at `limit`. The relay reads
@@ -2108,6 +2114,17 @@ char *edax_memory_event_store_append(EDAXAlefHandle this_,
                                      uint64_t expected_version,
                                      const char *drafts,
                                      int64_t recorded_at);
+
+/**
+ * Lock the stream `aggregate_id` for `tx` until it ends, as command fence `"lock"` does. A stream
+ * another
+ * open transaction holds is a `concurrency:` error.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+int32_t edax_memory_event_store_lock_stream(EDAXAlefHandle this_,
+                                            int64_t tx,
+                                            const char *aggregate_id);
 
 /**
  * The snapshot for `aggregate_id` as `tx` sees it, or `None`.
@@ -4033,6 +4050,45 @@ uint64_t edax_saga_write_version(EDAXAlefHandle handle);
 int32_t edax_saga_write_has_version(EDAXAlefHandle handle);
 
 /**
+ * Create a `SavePlan` from a JSON string. Returns null on failure.
+ * # Safety
+ * JSON string must be valid UTF-8 and null-terminated.
+ * Returned handle must be freed with `edax_save_plan_free`.
+ */
+EDAXAlefHandle edax_save_plan_from_json(const char *json);
+
+/**
+ * Serialize a `SavePlan` to a JSON string. Returns null on failure.
+ * # Safety
+ * `handle` must be a valid, non-zero handle returned by a `edax` function.
+ * The returned string must be freed with `edax_free_string`.
+ */
+char *edax_save_plan_to_json(EDAXAlefHandle handle);
+
+/**
+ * Free a `SavePlan` handle.
+ * # Safety
+ * Handle must have been returned by this library, or be zero.
+ */
+void edax_save_plan_free(EDAXAlefHandle handle);
+
+/**
+ * Get the `lock_stream` field from a `SavePlan`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+int32_t edax_save_plan_lock_stream(EDAXAlefHandle handle);
+
+/**
+ * Get the `after_event` field from a `SavePlan`.
+ * A non-null returned pointer is owned by the caller.
+ * It must be freed with `edax_free_string`.
+ * # Safety
+ * Pointer must be a valid handle returned by this library.
+ */
+char *edax_save_plan_after_event(EDAXAlefHandle handle);
+
+/**
  * Create a `SealedValue` from a JSON string. Returns null on failure.
  * # Safety
  * JSON string must be valid UTF-8 and null-terminated.
@@ -4632,6 +4688,24 @@ int32_t edax_command_encryption_context(EDAXAlefHandle message,
                                         uint8_t **out_ptr,
                                         uintptr_t *out_len,
                                         uintptr_t *out_cap);
+
+/**
+ * Every command fence's name (`"event"`, `"lock"`), in the kernel's order. A host checks its own list
+ * of
+ * fences against this one. See `edax_event.CommandFence`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_command_fences(void);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_command_fences` on this
+ * thread. Returns 0 when the primary call returned null or failed before producing a string. Enables
+ * safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_command_fences`.
+ */
+uintptr_t edax_command_fences_len(void);
 
 /**
  * The hash a command's idempotency guard binds to its key: FNV-1a over the RFC 8785 form of
@@ -6129,6 +6203,18 @@ uint64_t edax_payload_hash_json(const uint8_t *payload,
                                 uintptr_t payload_len);
 
 /**
+ * The plan for a save that appends the events `event_ids`, in order, and enqueues `commands` commands,
+ * under the command fence named `fence`. A fence no variant names, or a save the fence does not fence,
+ * is
+ * a `bad_handle:` error. See `edax_event.plan_save`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+EDAXAlefHandle edax_plan_save(const char *fence,
+                              const char *event_ids,
+                              uint64_t commands);
+
+/**
  * The parameters of `append`. See `edax_postgres.rows.append_params`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -6434,7 +6520,8 @@ EDAXAlefHandle edax_postgres_decode_snapshot(const char *row);
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_enqueue_params(const char *commands);
+char *edax_postgres_enqueue_params(const char *commands,
+                                   const char *after_event);
 
 /**
  * Return the byte length of the C string most recently returned by `edax_postgres_enqueue_params` on
@@ -6443,7 +6530,8 @@ char *edax_postgres_enqueue_params(const char *commands);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_enqueue_params`.
  */
-uintptr_t edax_postgres_enqueue_params_len(const char *_commands);
+uintptr_t edax_postgres_enqueue_params_len(const char *_commands,
+                                           const char *_after_event);
 
 /**
  * Validate the erasure catalog query result for the tables `config_json` names, without provisioning
@@ -7039,6 +7127,22 @@ char *edax_postgres_statements(const char *tables_json);
  * with `edax_postgres_statements`.
  */
 uintptr_t edax_postgres_statements_len(const char *_tables_json);
+
+/**
+ * The parameters of `stream_lock`. See `edax_postgres.rows.stream_lock_params`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_postgres_stream_lock_params(const char *stream);
+
+/**
+ * Return the byte length of the C string most recently returned by `edax_postgres_stream_lock_params`
+ * on this thread. Returns 0 when the primary call returned null or failed before producing a string.
+ * Enables safe slice construction in Zig and Java FFM Panama without a NUL-scan.
+ * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
+ * with `edax_postgres_stream_lock_params`.
+ */
+uintptr_t edax_postgres_stream_lock_params_len(const char *_stream);
 
 /**
  * The table roles a host names. See `edax_postgres.Logical`.
