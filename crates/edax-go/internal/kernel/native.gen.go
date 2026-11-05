@@ -2132,12 +2132,12 @@ func PostgresErasureDecodeOperation(row string) (string, error) {
 }
 
 // PostgresErasureGuardParams calls the shared kernel.
-func PostgresErasureGuardParams(scope KeyScope) (string, error) {
+func PostgresErasureGuardParams(scopes []KeyScope) (string, error) {
 	var zero string
-	if err := checkNativeValue("scope", scope); err != nil {
+	if err := checkNativeValue("scopes", scopes); err != nil {
 		return zero, err
 	}
-	nativeValue, nativeError := native.PostgresErasureGuardParams(normalizeNative(scope))
+	nativeValue, nativeError := native.PostgresErasureGuardParams(normalizeNative(scopes))
 	return nativeValue, mapNativeError(nativeError)
 }
 

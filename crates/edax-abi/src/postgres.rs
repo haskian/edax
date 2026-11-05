@@ -591,9 +591,14 @@ pub fn postgres_erasure_writer_locks(scopes: Vec<crate::KeyScope>) -> Result<Str
 pub fn postgres_erasure_revocation_locks(scope: crate::KeyScope) -> Result<String, String> {
     erasure_calls(edax_postgres::erasure::revocation_locks(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
 }
-/// Parameters for the fresh-snapshot revocation check after locks are held.
-pub fn postgres_erasure_guard_params(scope: crate::KeyScope) -> Result<String, String> {
-    params_json(edax_postgres::erasure::guard_params(&scope.try_into().map_err(to_wire)?).map_err(to_wire)?)
+/// Parameters for the one fresh-snapshot revocation check of every guarded scope after locks are held.
+pub fn postgres_erasure_guard_params(scopes: Vec<crate::KeyScope>) -> Result<String, String> {
+    let scopes = scopes
+        .into_iter()
+        .map(edax_seal::KeyScope::try_from)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(to_wire)?;
+    params_json(edax_postgres::erasure::guard_params(&scopes).map_err(to_wire)?)
 }
 /// Refuse revoked scopes and isolation modes that can read stale tombstones.
 pub fn postgres_erasure_check_guard(row: &str) -> Result<(), String> {

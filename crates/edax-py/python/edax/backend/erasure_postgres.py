@@ -8,10 +8,11 @@ This store holds no keys and cannot coordinate a separate application's unfenced
 from __future__ import annotations
 
 import asyncio
+import itertools
 import math
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from .. import _json, _native
 from .._wiring import wiring_u64
@@ -30,6 +31,7 @@ class PgErasureConnection(Protocol):
     """The asyncpg connection operations needed by the store and destination guard."""
 
     async def execute(self, query: str, *args: str | None) -> str: ...
+    async def executemany(self, query: str, args: Sequence[Sequence[str | None]]) -> None: ...
     async def fetchval(self, query: str, *args: str | None) -> str | int | None: ...
     async def fetch(self, query: str, *args: str | None) -> Sequence[Sequence[str]]: ...
     def transaction(self, *, isolation: str) -> AbstractAsyncContextManager[None]: ...
@@ -197,12 +199,11 @@ class PostgresErasureStore:
             await self._await(connection.execute(self._sql["mark_published"], operation_id))
 
     async def _locks(self, connection: PgErasureConnection, calls_json: str) -> None:
-        calls = cast(list[dict[str, object]], _json.decode(calls_json))
-        for call in calls:
+        """Take the kernel's lock calls in its order, each run of one statement in one round trip."""
+        calls = cast(list[dict[str, Any]], _json.decode(calls_json))
+        for statement, run in itertools.groupby(calls, key=lambda call: cast(str, call["statement"])):
             await self._await(
-                connection.execute(
-                    self._sql[cast(str, call["statement"])], *cast(list[str | None], call["params"])
-                ),
+                connection.executemany(self._sql[statement], [call["params"] for call in run]),
                 op="erasure_fence",
             )
 
@@ -219,13 +220,14 @@ class PostgresErasureStore:
         if not connection.is_in_transaction():
             raise BadHandle("an erasure write guard requires an open transaction")
         await self._locks(connection, _native.postgres_erasure_writer_locks(list(scopes)))
-        for scope in scopes:
-            row = await self._await(
-                connection.fetchval(
-                    self._sql["check_revoked"], *postgres_params(_native.postgres_erasure_guard_params(scope))
-                )
+        # One fresh read for every scope, after the locks: READ COMMITTED snapshots each statement.
+        row = await self._await(
+            connection.fetchval(
+                self._sql["check_revoked"],
+                *postgres_params(_native.postgres_erasure_guard_params(list(scopes))),
             )
-            _native.postgres_erasure_check_guard(cast(str, row))
+        )
+        _native.postgres_erasure_check_guard(cast(str, row))
 
     @asynccontextmanager
     async def writer_guard(self, scope: KeyScope) -> AsyncIterator[PgErasureConnection]:

@@ -2,7 +2,8 @@
 //! never provisions tables, and never starts a transaction.
 //!
 //! SDK protocol: use one READ COMMITTED transaction; execute each lock call in returned order,
-//! then execute `check_revoked` as a separate statement and apply [`check_guard`] before effects.
+//! then execute `check_revoked` for every scope at once as a separate statement and apply
+//! [`check_guard`] before effects.
 //! Keep the transaction open through the protected write's commit. Cleanup instead acquires
 //! [`revocation_locks`], writes the permanent tombstone, and deletes plaintext in that transaction.
 //! A tenant exclusive lock drains every child subject, including subjects with no existing rows.
@@ -378,7 +379,7 @@ pub fn statements(config_json: &str) -> Result<Statements, Error> {
         lock_exclusive: "SELECT pg_advisory_xact_lock(hashtextextended('edax.erasure:' || $1::text, 0))".into(),
         check_revoked: format!(
             "SELECT json_build_object('isolation', current_setting('transaction_isolation'), \
-             'revoked', EXISTS (SELECT 1 FROM {revocations} WHERE scope IN ($1::text, $2::text)))::text"
+             'revoked', EXISTS (SELECT 1 FROM {revocations} WHERE scope IN (SELECT jsonb_array_elements_text(($1::text)::jsonb))))::text"
         ),
         revoke: format!("INSERT INTO {revocations} (scope) VALUES ($1::text) ON CONFLICT DO NOTHING"),
         pending_notifications: format!(
@@ -446,9 +447,18 @@ pub fn revocation_locks(scope: &KeyScope) -> Result<Vec<Call>, Error> {
     Ok(locks)
 }
 
-/// Bind the parent and exact scope for the fresh revocation read after lock acquisition.
-pub fn guard_params(scope: &KeyScope) -> Result<Vec<Param>, Error> {
-    Ok(vec![Some(scope_id(&parent_scope(scope))?), Some(scope_id(scope)?)])
+/// Bind every scope's parent and exact ID, once each, for the one fresh revocation read after lock
+/// acquisition. A guard without a scope is refused.
+pub fn guard_params(scopes: &[KeyScope]) -> Result<Vec<Param>, Error> {
+    if scopes.is_empty() {
+        return Err(Error::bad_handle("an erasure write guard requires a scope"));
+    }
+    let mut ids = BTreeSet::new();
+    for scope in scopes {
+        ids.insert(scope_id(&parent_scope(scope))?);
+        ids.insert(scope_id(scope)?);
+    }
+    Ok(vec![Some(serde_json::to_string(&ids).map_err(Error::codec)?)])
 }
 
 /// Refuse revoked writes and isolation levels whose snapshot can predate a waited-for revocation.

@@ -348,8 +348,10 @@ Durable erasure uses the separate [reference control schema](postgres-erasure-sc
 no subject payload key. `guard_in_transaction(connection, *scopes)` must run on the same connection
 as participant writes and hold through commit; cleanup uses `revoke_in_transaction` before deletion.
 Acquire scope fences before application row locks. Pass every scope a transaction writes in one call,
-so every writer takes their locks in one order. These helpers require READ COMMITTED because
-revocation must be read in a fresh statement snapshot after a lock wait.
+so every writer takes their locks in one order. The guard sends its shared locks in one pipelined
+round trip, then reads revocation for every scope in one statement. The connection needs asyncpg's
+`executemany`. These helpers require READ COMMITTED because revocation must be read in a fresh
+statement snapshot after a lock wait.
 
 The three erasure tables default to `edax_erasure_operations`, `edax_erasure_notifications` and
 `edax_erasure_revocations`. Pass a `tables` mapping with roles `erasure_operations`,

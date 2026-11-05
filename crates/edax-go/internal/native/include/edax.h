@@ -6595,11 +6595,11 @@ char *edax_postgres_erasure_decode_operation(const char *row);
 uintptr_t edax_postgres_erasure_decode_operation_len(const char *_row);
 
 /**
- * Parameters for the fresh-snapshot revocation check after locks are held.
+ * Parameters for the one fresh-snapshot revocation check of every guarded scope after locks are held.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_erasure_guard_params(EDAXAlefHandle scope);
+char *edax_postgres_erasure_guard_params(const char *scopes);
 
 /**
  * Return the byte length of the C string most recently returned by
@@ -6609,7 +6609,7 @@ char *edax_postgres_erasure_guard_params(EDAXAlefHandle scope);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_erasure_guard_params`.
  */
-uintptr_t edax_postgres_erasure_guard_params_len(EDAXAlefHandle _scope);
+uintptr_t edax_postgres_erasure_guard_params_len(const char *_scopes);
 
 /**
  * Parameters for a request lookup.

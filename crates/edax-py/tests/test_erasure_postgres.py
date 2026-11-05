@@ -10,7 +10,7 @@ import base64
 import json
 import os
 from collections.abc import AsyncIterator, Sequence
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 from uuid import uuid4
 
 import edax
@@ -560,3 +560,50 @@ async def test_erasure_fence_wait_is_uncounted_contention(database: tuple[Any, s
     # Failed lock acquisition cannot install a partial revocation.
     async with store.writer_guard(scope()):
         pass
+
+
+class _CountingConnection:
+    """A real connection that records each round trip a guard makes."""
+
+    def __init__(self, connection: Any) -> None:
+        self.connection = connection
+        self.trips: list[str] = []
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.connection, name)
+
+    async def executemany(self, query: str, args: Any) -> None:
+        self.trips.append(f"executemany:{len(args)}")
+        await self.connection.executemany(query, args)
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        self.trips.append("fetchval")
+        return await self.connection.fetchval(query, *args)
+
+
+@pytest.mark.parametrize(
+    "revoked, want_error",
+    [
+        pytest.param(None, None, id="many_subjects_fence_in_one_lock_trip_and_one_read"),
+        pytest.param("subject-3", Rejected, id="the_one_read_still_finds_any_revoked_subject"),
+    ],
+)
+async def test_a_guard_costs_one_lock_trip_and_one_read(
+    database: tuple[Any, str], revoked: str | None, want_error: type[Exception] | None
+) -> None:
+    pool, schema = database
+    store = PostgresErasureStore(pool, schema=schema)
+    if revoked is not None:
+        async with pool.acquire() as revoker, revoker.transaction():
+            await store.revoke_in_transaction(revoker, scope(revoked))
+    subjects = [scope(f"subject-{n}") for n in range(6)]
+    async with pool.acquire() as raw, raw.transaction():
+        counting = _CountingConnection(raw)
+        if want_error is None:
+            await store.guard_in_transaction(cast(Any, counting), *subjects)
+        else:
+            with pytest.raises(want_error):
+                await store.guard_in_transaction(cast(Any, counting), *subjects)
+    # Every writer lock is shared, so the kernel's whole list goes out in one trip; one read follows.
+    want_locks = len(json.loads(_native.postgres_erasure_writer_locks(subjects)))
+    assert counting.trips == [f"executemany:{want_locks}", "fetchval"]
