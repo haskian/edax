@@ -85,10 +85,15 @@ class PostgresErasureStore:
             _native.postgres_erasure_check_catalog(self._config, cast(str, catalog))
 
     async def _await(
-        self, call: Awaitable[T], *, op: Literal["transaction", "erasure_fence"] = "transaction"
+        self,
+        call: Awaitable[T],
+        *,
+        op: Literal["transaction", "erasure_fence"] = "transaction",
+        effects: int = 1,
     ) -> T:
+        """``call`` under the store's timeout, once per database effect it carries."""
         try:
-            return await asyncio.wait_for(call, self._timeout)
+            return await asyncio.wait_for(call, self._timeout * effects)
         except EdaxError:
             raise
         except Exception as error:
@@ -202,9 +207,10 @@ class PostgresErasureStore:
         """Take the kernel's lock calls in its order, each run of one statement in one round trip."""
         calls = cast(list[dict[str, Any]], _json.decode(calls_json))
         for statement, run in itertools.groupby(calls, key=lambda call: cast(str, call["statement"])):
+            params = [call["params"] for call in run]
+            # Each lock may wait out the timeout, as it did as its own statement.
             await self._await(
-                connection.executemany(self._sql[statement], [call["params"] for call in run]),
-                op="erasure_fence",
+                connection.executemany(self._sql[statement], params), op="erasure_fence", effects=len(params)
             )
 
     async def guard_in_transaction(self, connection: PgErasureConnection, *scopes: KeyScope) -> None:

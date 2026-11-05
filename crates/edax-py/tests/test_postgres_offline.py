@@ -6,12 +6,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from conftest import golden, wire_of
 from edax import _native
 from edax.backend import postgres as pg
+from edax.backend.erasure_postgres import PostgresErasureStore
 from edax.errors import BadHandle, CodecError, ConcurrencyError, EdaxError, InProgress, StoreError
 from edax.message import CommandMessage, EventDraft
 from edax.query import Query
@@ -598,3 +599,32 @@ async def test_a_transaction_that_fails_to_open_is_rolled_back() -> None:
         async with transaction(db):
             pass
     assert conn.transactions == [["begin", "rollback"]]
+
+
+class _SlowLocks:
+    """A connection whose pipelined lock run takes a fixed time, however many locks it holds."""
+
+    def __init__(self, seconds: float) -> None:
+        self.seconds = seconds
+
+    async def executemany(self, query: str, args: Any) -> None:
+        await asyncio.sleep(self.seconds)
+
+
+@pytest.mark.parametrize(
+    "locks, want_timeout",
+    [
+        pytest.param(2, False, id="a_run_of_two_locks_may_wait_two_timeouts"),
+        pytest.param(1, True, id="one_lock_waits_one_timeout"),
+    ],
+)
+async def test_a_lock_run_waits_one_timeout_per_lock(locks: int, want_timeout: bool) -> None:
+    """Pipelining the fence locks keeps each lock's own wait: the run's deadline grows with its locks."""
+    store = PostgresErasureStore(cast(Any, None), timeout=0.05)
+    calls = json.dumps([{"statement": "lock_shared", "params": [f"bucket-{n}"]} for n in range(locks)])
+    run = store._locks(cast(Any, _SlowLocks(0.075)), calls)
+    if want_timeout:
+        with pytest.raises(EdaxError):
+            await run
+    else:
+        await run
