@@ -1771,6 +1771,25 @@ fn relay_drain_cases() -> Vec<Value> {
             ],
         ),
         (
+            // The sink took both failed rows, so the outage raises the row that stopped it, with its step.
+            // A row still in flight that fails after the stop leaves that report as it is.
+            "a_row_failing_after_an_outage_keeps_the_outage_report",
+            1,
+            true,
+            3,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", TRANSIENT),
+                Taken("a-1", 1),
+                Failed("b-1", TRANSIENT),
+                Taken("b-1", 1),
+                Failed("c-1", TRANSIENT),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
             "a_fatal_failure_stops_handing_out_and_waits_nothing",
             0,
             false,

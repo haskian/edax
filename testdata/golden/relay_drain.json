@@ -1970,6 +1970,110 @@
     "sink": true
   },
   {
+    "in_flight": 3,
+    "max_attempts": 1,
+    "name": "a_row_failing_after_an_outage_keeps_the_outage_report",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1",
+          "c-1"
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "code": "store",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "b-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "code": "store",
+        "id": "c-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 2,
+          "published": 0,
+          "raise": "b-1",
+          "settled": [
+            "a-1",
+            "b-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
     "in_flight": 2,
     "max_attempts": 0,
     "name": "a_fatal_failure_stops_handing_out_and_waits_nothing",

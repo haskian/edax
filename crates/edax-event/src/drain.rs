@@ -235,8 +235,10 @@ impl Drain {
         if self.batch.stopped {
             // Sent before the drain stopped: the serial drain would never have sent it, so it spends no
             // attempt and never reaches the sink.
+            // It leaves the stop's own report, the row to raise and the step to wait, as it was.
             self.landed(id);
-            self.hand_back(id, 0);
+            let key = self.key(id);
+            self.batch.blocked.insert(key);
             return RowFailed::HandBack;
         }
         let verdict = self.retries.failed(id, None, 0, failure);
