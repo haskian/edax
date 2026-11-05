@@ -8,12 +8,13 @@ its relay uses the authorized control path independently of subject and tenant p
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal, Protocol, TypedDict, cast, get_args
 
-from . import _names, _native
+import msgspec
+
+from . import _json, _names, _native
 from ._wiring import wiring_u64
 from .errors import BadHandle, ConcurrencyError
 from .outbox import check_page
@@ -64,7 +65,7 @@ class ErasureOperation:
 
     @property
     def _wire(self) -> _OperationWire:
-        return cast(_OperationWire, json.loads(self.record))
+        return cast(_OperationWire, _json.decode(self.record))
 
     @property
     def operation_id(self) -> str:
@@ -99,7 +100,7 @@ class StoredErasure:
     operation: ErasureOperation
 
     def to_json(self) -> str:
-        return json.dumps({"version": self.version, "operation": json.loads(self.operation.record)})
+        return _json.encode({"version": self.version, "operation": msgspec.Raw(self.operation.record)})
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +111,7 @@ class ErasureNotification:
 
     @property
     def operation_id(self) -> str:
-        return cast(str, json.loads(self.record)["operation_id"])
+        return cast(str, _json.decode(self.record)["operation_id"])
 
 
 class ErasureStore(Protocol):

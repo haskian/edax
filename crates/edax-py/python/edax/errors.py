@@ -274,17 +274,25 @@ def is_fatal(e: BaseException) -> bool:
 #: What a native call raises when an argument does not convert: a negative or too-wide integer, a value of the
 #: wrong type, a ``str`` holding a lone surrogate. Each fails the same way on every retry.
 _ARGUMENT_ERRORS = (OverflowError, TypeError, UnicodeError)
+#: Every failure a native call raises that :func:`native_failure` retypes.
+NATIVE_FAILURES = (RuntimeError, *_ARGUMENT_ERRORS)
+
+
+def native_failure(e: BaseException) -> EdaxError:
+    """The typed :class:`EdaxError` for a failed native call: a ``RuntimeError`` by its kernel code, and an
+    argument the binding could not convert as :class:`CodecError`. Without it a ``codec:``-tagged failure,
+    or a value no retry can convert, reads as transient and is redelivered forever instead of
+    dead-lettered."""
+    if isinstance(e, RuntimeError):
+        return from_wire(str(e))
+    return CodecError(f"argument could not cross into the kernel: {e}")
 
 
 @contextmanager
 def mapped() -> Iterator[None]:
-    """Re-raise a failed native call as its typed :class:`EdaxError`: a ``RuntimeError`` by its kernel code,
-    and an argument the binding could not convert as :class:`CodecError`. Without it a ``codec:``-tagged
-    failure, or a value no retry can convert, reads as transient and is redelivered forever instead of
-    dead-lettered. Wrap the native call only: a ``TypeError`` from host code inside would be retyped too."""
+    """Re-raise a failed native call as :func:`native_failure` types it. Wrap the native call only: a
+    ``TypeError`` from host code inside would be retyped too."""
     try:
         yield
-    except RuntimeError as e:
-        raise from_wire(str(e)) from e
-    except _ARGUMENT_ERRORS as e:
-        raise CodecError(f"argument could not cross into the kernel: {e}") from e
+    except NATIVE_FAILURES as e:
+        raise native_failure(e) from e

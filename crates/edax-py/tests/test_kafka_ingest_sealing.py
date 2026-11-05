@@ -107,9 +107,7 @@ async def test_joined_commit_borrows_guard_with_eager_task_startup() -> None:
     previous = loop.get_task_factory()
     loop.set_task_factory(eager_factory)
     try:
-        _, result = await asyncio.wait_for(
-            run._fenced_commit((item,), [item], {("clinic-a", "patient-42")}), 1
-        )
+        _, result = await asyncio.wait_for(run._fenced_commit((item,), {("clinic-a", "patient-42")}), 1)
     finally:
         loop.set_task_factory(previous)
     assert result.outcomes == ("accepted",)
@@ -134,7 +132,7 @@ async def test_cancelled_joined_commit_keeps_guard_until_child_finishes() -> Non
     sink = DelayedSink(target(), sealing=sealing)
     run, _ = runner(sealing, messages, sink, private_row, await dead_letters([]))
     item = reading(sink.target)
-    committing = asyncio.create_task(run._fenced_commit((item,), [item], {("clinic-a", "patient-42")}))
+    committing = asyncio.create_task(run._fenced_commit((item,), {("clinic-a", "patient-42")}))
     await asyncio.wait_for(entered.wait(), 1)
     committing.cancel()
     await asyncio.wait_for(cancelled.wait(), 1)

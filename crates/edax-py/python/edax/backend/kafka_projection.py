@@ -301,6 +301,13 @@ class KafkaProjection:
             self._retained_bytes -= self._reserve
 
         try:
+            if keys is None:
+                # Unsealed, opening awaits nothing, so it needs no task of its own to bound.
+                try:
+                    return await self._input(None, record)
+                except BaseException:
+                    assigned.seek_needed = True
+                    raise
             with provider_deadline(self.timeout):
                 return await self._operation(assigned, self._input(keys, record))
         finally:
@@ -349,15 +356,17 @@ class KafkaProjection:
         self.store.target.check_source(proof, cursor)
         return proof
 
-    async def _partition(self, tp: TopicPartition, assigned: _Assigned) -> None:
+    async def _partition(self, tp: TopicPartition, assigned: _Assigned) -> bool:
+        """Whether this pass committed a batch: more may be waiting."""
+
         def current() -> bool:
             return self._live(tp, assigned) and assigned.unresolved is None
 
         if self._activity is not None and not self._activity.done():
-            return
+            return False
         previous_fetch = self._fetches.get(tp)
         if previous_fetch is not None and not previous_fetch.done():
-            return
+            return False
         if tp.topic != self.store.target.topic:
             raise BadHandle("projection assignment contains another topic")
         loop = asyncio.get_running_loop()
@@ -367,7 +376,7 @@ class KafkaProjection:
         if lease is None or assigned.seek_needed or loop.time() >= assigned.renew_at:
             proof = await self._proof(tp, assigned)
             if not current():
-                return
+                return False
             if lease is None:
                 call = self.store.acquire(
                     tp.partition, assigned.owner, proof, lease_ms=self.lease_ms, is_current=current
@@ -380,7 +389,7 @@ class KafkaProjection:
             assigned.renew_at = started + self.lease_ms / 2000
             if not current():
                 self._retire(tp, assigned, lease)
-                return
+                return False
             # Seeking happens only at a quiescent boundary with no retained previous batch.
             if assigned.seek_needed:
                 self.client.seek(tp, lease.next_offset)
@@ -422,7 +431,7 @@ class KafkaProjection:
                 )
                 if not current():
                     assigned.seek_needed = True
-                    return
+                    return False
                 records = fetched.get(tp, ())
                 if any(key != tp and values for key, values in fetched.items()):
                     raise BadHandle("projection client violated the requested partition or fetch limit")
@@ -466,11 +475,11 @@ class KafkaProjection:
                 del record, records, fetched, item, decoded
             if not current():
                 assigned.seek_needed = True
-                return
+                return False
             if inputs and current():
                 proof = await self._proof(tp, assigned, lease)
                 if not current():
-                    return
+                    return False
                 # One transaction extends the lease and commits the batch; staging cannot spend it.
                 started = loop.time()
                 assigned.lease = await self._fenced(
@@ -484,8 +493,9 @@ class KafkaProjection:
                 if not current():
                     # Revoked during the commit: hand the lease the commit extended to the next owner.
                     self._retire(tp, assigned, assigned.lease)
-                    return
+                    return False
                 assigned.attempts = assigned.contended = 0
+                return True
         except BaseException:
             assigned.seek_needed = True
             if assigned.lease is not None and assigned.unresolved is None:
@@ -503,6 +513,7 @@ class KafkaProjection:
                 assigned.unresolved.add_done_callback(released)
             else:
                 released()
+        return False
 
     async def _fetch(
         self, tp: TopicPartition, **options: Any
@@ -569,7 +580,7 @@ class KafkaProjection:
         try:
             while not self._stopped.is_set():
                 ready = list(self._parts.items())
-                progressed = False
+                progressed = committed = False
                 for tp, assigned in ready:
                     if (
                         assigned.unresolved is not None
@@ -580,7 +591,7 @@ class KafkaProjection:
                         continue
                     progressed = True
                     try:
-                        await self._partition(tp, assigned)
+                        committed = await self._partition(tp, assigned) or committed
                     except Exception as error:  # noqa: BLE001 - classify host/driver failures and stop only their partition
                         _kafka.clear_failure_frames(error)
                         if not self._live(tp, assigned):
@@ -611,8 +622,12 @@ class KafkaProjection:
                         assigned.ready_at = now + self.pacing.delay(decision["step"])
                 if not progressed:
                     await self._keepalive()
-                # Avoid busy polling empty partitions and wake immediately on stop.
-                await _kafka.wait_event(self._stopped, 0.01 if progressed else 0.05)
+                if committed:
+                    # A backlog drains without a pause; yield so other tasks run between batches.
+                    await asyncio.sleep(0)
+                else:
+                    # Avoid busy polling empty partitions and wake immediately on stop.
+                    await _kafka.wait_event(self._stopped, 0.01 if progressed else 0.05)
         except asyncio.CancelledError:
             if not self._stopped.is_set():
                 raise

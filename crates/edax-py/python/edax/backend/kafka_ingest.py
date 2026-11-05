@@ -745,21 +745,24 @@ class KafkaIngestion:
                     "a subject's rows need sealing= on the runner or the sink for the erasure fence"
                 )
             return inputs, await self._operation(self.sink.commit(inputs))
-        written = [item for item in inputs if not item.erased and item.failure is None]
-        scopes: set[Scope] = {(item.tenant, item.subject) for item in written}
+        scopes: set[Scope] = {(item.tenant, item.subject) for item in inputs if _writes(item)}
         with provider_deadline(self._timeout):
-            return await self._fenced_commit(inputs, written, scopes)
+            return await self._fenced_commit(inputs, scopes)
 
     async def _fenced_commit(
-        self, inputs: tuple[BatchInput, ...], written: list[BatchInput], scopes: set[Scope]
+        self, inputs: tuple[BatchInput, ...], scopes: set[Scope]
     ) -> tuple[tuple[BatchInput, ...], BatchResult]:
         assert self.sealing is not None
         async with self.sealing.fenced(scopes, timeout_s=self._timeout) as destroyed:
-            final = tuple(
-                replace(item, erased=True, private=None, public=None, fingerprint=None)
-                if item in written and (item.tenant, item.subject) in destroyed
-                else item
-                for item in inputs
+            final = (
+                tuple(
+                    replace(item, erased=True, private=None, public=None, fingerprint=None)
+                    if _writes(item) and (item.tenant, item.subject) in destroyed
+                    else item
+                    for item in inputs
+                )
+                if destroyed
+                else inputs
             )
             # The sink call is shielded until it really ends, so the fence is never released early.
             return final, await self._operation(self.sink.commit(final))
@@ -881,3 +884,8 @@ class KafkaIngestion:
                 return
             # Cancelling this waiter must not detach a client's shielded broker request.
             await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
+
+
+def _writes(item: BatchInput) -> bool:
+    """Whether committing ``item`` writes its subject's row."""
+    return not item.erased and item.failure is None

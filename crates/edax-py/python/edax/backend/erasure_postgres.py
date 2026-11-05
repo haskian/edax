@@ -8,13 +8,12 @@ This store holds no keys and cannot coordinate a separate application's unfenced
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Literal, Protocol, TypeVar, cast
 
-from .. import _native
+from .. import _json, _native
 from .._wiring import wiring_u64
 from ..erasure import ErasureAction, ErasureNotification, ErasureOperation, StoredErasure
 from ..errors import BadHandle, EdaxError
@@ -50,7 +49,7 @@ def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = Non
     ``tables`` names a table per role (``erasure_operations``, ``erasure_notifications``,
     ``erasure_revocations``); an unnamed role takes ``edax_<role>``. Pass the store the same mapping.
     """
-    return _native.postgres_erasure_reference_ddl(json.dumps(table_config(schema, tables)))
+    return _native.postgres_erasure_reference_ddl(_json.encode(table_config(schema, tables)))
 
 
 class PostgresErasureStore:
@@ -72,10 +71,10 @@ class PostgresErasureStore:
         if not math.isfinite(timeout) or timeout <= 0:
             raise BadHandle("Postgres erasure timeout must be finite and positive")
         # The kernel refuses an unknown role, a name outside its rule or two roles under one name.
-        self._config = json.dumps(table_config(schema, tables))
+        self._config = _json.encode(table_config(schema, tables))
         self._pool = pool
         self._timeout = timeout
-        self._sql = cast(dict[str, str], json.loads(_native.postgres_erasure_statements(self._config)))
+        self._sql = cast(dict[str, str], _json.decode(_native.postgres_erasure_statements(self._config)))
 
     async def check(self) -> None:
         """Read the catalog and refuse incompatible control tables without provisioning them."""
@@ -125,8 +124,8 @@ class PostgresErasureStore:
 
     @staticmethod
     def _decode(row: str) -> StoredErasure:
-        wire = json.loads(_native.postgres_erasure_decode_operation(row))
-        return StoredErasure(wire["version"], ErasureOperation(json.dumps(wire["operation"])))
+        wire = _json.decode(_native.postgres_erasure_decode_operation(row))
+        return StoredErasure(wire["version"], ErasureOperation(_json.encode(wire["operation"])))
 
     async def create(self, candidate: ErasureOperation) -> StoredErasure:
         params = postgres_params(_native.postgres_erasure_create_params(candidate.record))
@@ -198,7 +197,7 @@ class PostgresErasureStore:
             await self._await(connection.execute(self._sql["mark_published"], operation_id))
 
     async def _locks(self, connection: PgErasureConnection, calls_json: str) -> None:
-        calls = cast(list[dict[str, object]], json.loads(calls_json))
+        calls = cast(list[dict[str, object]], _json.decode(calls_json))
         for call in calls:
             await self._await(
                 connection.execute(

@@ -12,7 +12,6 @@ for that transaction only."""
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping, Sequence
@@ -120,7 +119,7 @@ def _tables_json(schema: str, tables: Mapping[str, str] | None) -> str:
     """The tables in ``schema``, named by ``tables`` where it names a role, as the kernel resolves and
     validates them: a name outside the identifier rule or an unknown role raises
     :class:`~edax.errors.BadHandle`."""
-    return _native.postgres_tables(json.dumps(table_config(schema, tables)))
+    return _native.postgres_tables(_json.encode(table_config(schema, tables)))
 
 
 def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = None) -> str:
@@ -136,7 +135,7 @@ def default_settings(**overrides: int) -> PostgresSettings:
     five-second statement inside a ten-second call, a minute idle in a transaction, a five-second wait for a
     pooled connection and a five-minute claim TTL. An unknown field raises :class:`~edax.errors.BadHandle`."""
     checked = {name: wiring_int(value, name) for name, value in overrides.items()}
-    return _native.postgres_settings(json.dumps(checked))
+    return _native.postgres_settings(_json.encode(checked))
 
 
 class PgConnection(Protocol):
@@ -224,7 +223,7 @@ class PostgresTransactor:
         self._begin = _native.postgres_begin(settings)
         # The kernel refuses a name outside its rule, an unknown role or two roles under one name.
         self._tables = _tables_json(schema, tables)
-        self._sql: dict[str, str] = json.loads(_native.postgres_statements(self._tables))
+        self._sql: dict[str, str] = _json.decode(_native.postgres_statements(self._tables))
         existing = _TRANSACTORS.get(id(pool))
         if existing is not None and existing() is not None:
             raise BadHandle(
@@ -289,7 +288,7 @@ class PostgresTransactor:
             return _native.postgres_check_catalog(self._tables, roles, catalog)
 
         async with self._transact() as tx:
-            compatibility = json.loads(await self._call("check", tx, lambda: checked(tx.connection)))
+            compatibility = _json.decode(await self._call("check", tx, lambda: checked(tx.connection)))
         self._unique.update(compatibility["unique"])
         self._checked.update(roles)
 
@@ -512,7 +511,7 @@ def _client_failure(e: Exception) -> _ClientFailure:
 
 
 def postgres_params(params_json: str) -> list[str | None]:
-    params: list[str | None] = json.loads(params_json)
+    params: list[str | None] = _json.decode(params_json)
     return params
 
 
