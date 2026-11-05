@@ -257,6 +257,10 @@ database can wait on each other's lock, which costs only contention. The keys st
 purpose. A release that changed them would let old and new replicas take different locks during a
 rolling upgrade, and the locks would stop excluding each other. The stream lock and the partition gate name their table.
 
+A projection transaction takes its locks in one round trip. `lock_partition` takes the shared
+generation lock and then the partition's. Every lock statement answers the database clock once its
+locks are held, so the transaction reads its time without a statement of its own.
+
 `ingest::statements` supplies target-manifest checks, row-locking plan reads, inserts and updates,
 and pending rejection reads and marks. Ordinary ingestion takes no advisory lock: a plan read locks the
 rows it finds, and an absent key is inserted without `ON CONFLICT`, so a concurrent insert fails

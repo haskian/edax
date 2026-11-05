@@ -340,7 +340,8 @@ AssignmentGuard = Callable[[], bool]
 class ProjectionSession:
     """One transaction's view of a generation, the seam a store adapter implements. Each record is read
     once, the kernel decides every operation against those reads, and every change is written once when
-    the transaction ends. An adapter supplies :meth:`_lock`, :meth:`_read` and :meth:`_clock`."""
+    the transaction ends. An adapter supplies :meth:`_lock`, :meth:`_read` and :meth:`_clock`; one whose
+    lock reads the clock sets ``_now`` there instead."""
 
     def __init__(self, target: ProjectionTarget) -> None:
         self.target = target
