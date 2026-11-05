@@ -382,8 +382,9 @@ async def test_revoke_deadline_counts_a_client_commit_still_running() -> None:
                 await listener.on_partitions_assigned({TP})
         finally:
             release.set()
-        # The run ends on its own flush, which saw the same commit still running.
-        with pytest.raises(StoreError, match="commit still running"):
+        # The run ends on the unresolved commit. Its own wait and the revoke's give up after the same
+        # drain_timeout_s, so it reports whichever deadline passed first: both name that commit.
+        with pytest.raises((StoreError, BadHandle), match=r"commit still running|revoke deadline expired"):
             await asyncio.wait_for(asyncio.shield(task), 1)
     # The late commit lands once; the retired commit never starts behind it.
     assert client.commits == [{TP: 1}]
