@@ -756,9 +756,9 @@ func GetDraftBatch(aggregateID string, initial uint64, snapshotEvery uint64, pay
 }
 
 // GetDrain calls the shared kernel.
-func GetDrain(maxAttempts uint32, sink bool) *Drain {
-	nativeValue := native.GetDrain(maxAttempts, sink)
-	return wrapDrain(nativeValue)
+func GetDrain(maxAttempts uint32, sink bool, inFlight uint32) (*Drain, error) {
+	nativeValue, nativeError := native.GetDrain(maxAttempts, sink, inFlight)
+	return wrapDrain(nativeValue), mapNativeError(nativeError)
 }
 
 // DrainActions calls the shared kernel.
@@ -3535,6 +3535,22 @@ func (h *Drain) Admits(id string) (bool, error) {
 		return zero, err
 	}
 	nativeValue := h.inner.Admits(id)
+	return nativeValue, nil
+}
+
+// Ready calls the shared kernel.
+func (h *Drain) Ready() ([]string, error) {
+	var zero []string
+	if h == nil || h.nativeState == nil {
+		return zero, ClosedHandle("Drain")
+	}
+	defer runtime.KeepAlive(h)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.inner == nil {
+		return zero, ClosedHandle("Drain")
+	}
+	nativeValue := h.inner.Ready()
 	return nativeValue, nil
 }
 

@@ -50,6 +50,8 @@ func NewMemoryBroker(partitions uint32, tenancy string) (*MemoryBroker, error) {
 	return GetMemoryBroker(partitions, tenancy)
 }
 func NewRetries(maxAttempts uint32, sink bool) *Retries { return GetRetries(maxAttempts, sink) }
-func NewDrain(maxAttempts uint32, sink bool) *Drain     { return GetDrain(maxAttempts, sink) }
-func NewOffsetTracker() *OffsetTracker                  { return GetOffsetTracker() }
-func NewStreak() *Streak                                { return GetStreak() }
+func NewDrain(maxAttempts uint32, sink bool, inFlight uint32) (*Drain, error) {
+	return GetDrain(maxAttempts, sink, inFlight)
+}
+func NewOffsetTracker() *OffsetTracker { return GetOffsetTracker() }
+func NewStreak() *Streak               { return GetStreak() }

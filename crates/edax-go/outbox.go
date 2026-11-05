@@ -5,6 +5,7 @@ import (
 	"errors"
 	"iter"
 	"log/slog"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -27,11 +28,14 @@ type CountedOutbox[M Message] interface {
 type Publish[M Message] func(context.Context, M) error
 
 // RelayOptions fixes retry limits, pacing, sinks and diagnostics for a relay.
-// Configure these dependencies before use; callbacks run synchronously during a drain.
+// Configure these dependencies before use; callbacks other than Publish run on the draining goroutine.
+// InFlight rows publish at once, never two of one key; zero means one, so Publish is called serially.
+// Python's Relay refuses an in_flight of 0 instead. Above one, Publish must take concurrent calls.
 type RelayOptions[M Message] struct {
 	Observer    Observer
 	Logger      *slog.Logger
 	MaxAttempts uint32
+	InFlight    uint32
 	OnDead      DeadLetterSink[M]
 	Pacing      Pacing
 	OnError     func(error)
@@ -65,7 +69,25 @@ func NewRelay[M Message](store Outbox[M], publish Publish[M], options RelayOptio
 	if store == nil || publish == nil {
 		return nil, &Error{Code: CodeBadHandle, Message: "relay requires an outbox and publisher"}
 	}
-	return &Relay[M]{drainSlot: make(chan struct{}, 1), closedSignal: make(chan struct{}), store: store, publish: publish, options: options, policy: kernel.GetDrain(options.MaxAttempts, options.OnDead != nil)}, nil
+	inFlight := options.InFlight
+	if inFlight == 0 {
+		inFlight = 1
+	}
+	policy, err := kernel.GetDrain(options.MaxAttempts, options.OnDead != nil, inFlight)
+	if err != nil {
+		return nil, err
+	}
+	options.InFlight = inFlight
+	return &Relay[M]{drainSlot: make(chan struct{}, 1), closedSignal: make(chan struct{}), store: store, publish: publish, options: options, policy: policy}, nil
+}
+
+// sent is the outcome of one publish: its error, or the panic it raised and where, for the draining goroutine.
+type sent[M Message] struct {
+	id      string
+	row     M
+	err     error
+	panicky any
+	stack   []byte
 }
 
 // Last returns a copy of the last completed drain statistics, or nil before the first drain.
@@ -172,20 +194,58 @@ func (r *Relay[M]) Drain(ctx context.Context, batch uint64) (count uint64, resul
 	if err := r.policy.Begin(keys); err != nil {
 		return 0, err
 	}
-	failures := make(map[string]error)
+	byID := make(map[string]M, len(rows))
 	for _, row := range rows {
 		id, _, _, _, _ := messageFields(row)
-		admitted, err := r.policy.Admits(id)
+		byID[id] = row
+	}
+	// Publishes still in flight when the drain returns are cancelled and awaited, so none outlives it.
+	publishCtx, cancelPublishes := context.WithCancel(ctx)
+	var publishing sync.WaitGroup
+	defer publishing.Wait()
+	defer cancelPublishes()
+	results := make(chan sent[M], r.options.InFlight)
+	pending := 0
+	failures := make(map[string]error)
+	for {
+		ids, err := r.policy.Ready()
 		if err != nil {
 			return 0, err
-		}
-		if !admitted {
-			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		if err := r.publish(ctx, row); err != nil {
+		for _, id := range ids {
+			row, ok := byID[id]
+			if !ok {
+				return 0, invalidDecision("drain row id")
+			}
+			pending++
+			publishing.Add(1)
+			go func() {
+				defer publishing.Done()
+				outcome := sent[M]{id: id, row: row}
+				defer func() {
+					if outcome.panicky = recover(); outcome.panicky != nil {
+						outcome.stack = debug.Stack()
+					}
+					results <- outcome
+				}()
+				outcome.err = r.publish(publishCtx, row)
+			}()
+		}
+		if pending == 0 {
+			break
+		}
+		outcome := <-results
+		pending--
+		if outcome.panicky != nil {
+			// The re-raised panic carries this goroutine's stack, so log the publisher's own first.
+			CurrentLogger(ctx).ErrorContext(ctx, "edax relay publish panicked", "panic", outcome.panicky, "stack", string(outcome.stack))
+			panic(outcome.panicky)
+		}
+		id, row := outcome.id, outcome.row
+		if err := outcome.err; err != nil {
 			// Parent cancellation is a host lifecycle event, not a failed
 			// attempt. A publisher's own timeout still counts as a failure.
 			if cancelled := ctx.Err(); cancelled != nil {

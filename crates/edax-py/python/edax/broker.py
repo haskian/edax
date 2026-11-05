@@ -52,7 +52,9 @@ class Producer(Protocol):
     * Delivery is at-least-once: a crash between publish and ``mark_published`` publishes the message
       again, so consumers dedup by ``msg.id`` (:func:`~edax.router.idempotent_by_id`), or drop a stale
       ``sequence`` with :func:`~edax.is_stale`.
-    * ``publish`` is called serially by one relay; it need not be thread-safe or reentrant.
+    * ``publish`` is called serially by one relay; it need not be thread-safe or reentrant. A relay built
+      with ``in_flight`` above ``1`` calls it concurrently on one event loop, never for two rows of one key at
+      once.
     """
 
     async def publish(self, msg: EventMessage | CommandMessage) -> None: ...

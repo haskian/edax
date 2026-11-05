@@ -406,8 +406,9 @@ must not hold a waiting caller forever. It keeps no state. `retry_attempts(0)` i
 ## `drain` — the outbox relay's drain
 
 `Drain` is a relay's rule over one batch, built with `Drain::new(max_attempts, sink)` and kept across
-drains. The host reads the batch and calls `begin(rows)`. It publishes each row the drain `admits`,
-and reports `published(id)` or `failed(id, failure)`. When the answer is `DeadLetter`, it runs the sink
+drains. `in_flight(n)` lets up to `n` rows publish at once; `1` is the default, and `0` is the terminal
+`bad_handle`. The host reads the batch and calls `begin(rows)`. It publishes each row `ready()` hands
+it, and reports `published(id)` or `failed(id, failure)`, calling `ready()` again as rows end. When the answer is `DeadLetter`, it runs the sink
 and reports the sink's answer with `sunk(id, attempt, refusal)`. A taken row is settled, and the answer
 is `None`. A refused row answers `HandBack`, and a fatal refusal answers `Stop`:
 the drain publishes nothing more and raises the sink's failure for that row. Then `finish()` says what to mark, what to wait and which row's
@@ -417,6 +418,8 @@ succeeded calls `store_answered()`.
 | Rule | Detail |
 |---|---|
 | the key | a row's tenant and `ordering_key`, exact under every tenancy mode |
+| in flight | `ready()` hands out each key's first unsent row, in batch order, at most one row per key and `in_flight` rows in all; a dead row holds its key until `sunk` |
+| a stopped drain | `ready()` hands out nothing more; a row already in flight is still reported: settled if published, else handed back uncounted |
 | a failed row | handed back, dead-lettered or stopped as `Retries` answers; a hand-back holds back the rest of its key |
 | other keys | go on: order is promised per key only |
 | a sink takes it | the row is settled, and its key goes on |

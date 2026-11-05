@@ -178,7 +178,7 @@ sequenceDiagram
     R->>S: unpublished limit equals batch
     S-->>R: committed rows not yet marked, oldest first
     R->>K: begin, with the batch's rows
-    loop each row, in order, that the kernel admits
+    loop each row the kernel hands out as ready, up to in_flight at once, one per key
         R->>P: publish row
         alt the broker durably accepted it
             P-->>R: ok
@@ -248,8 +248,18 @@ Python's also drains projection effect intents and ingestion rejections.
 | `publish` raises on failure, never swallows | the relay hands the row back and retries it |
 | the message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key) | a broker that orders per key delivers one aggregate's messages in order |
 
-Read the `Producer` seam in `edax.broker`. The relay calls `publish` serially, so an adapter need
-not be thread-safe or reentrant.
+Read the `Producer` seam in `edax.broker`. By default the relay calls `publish` serially, so an
+adapter need not be thread-safe or reentrant.
+
+### Publishing a window of rows
+
+A relay waits for each row's durable ack before the next, so it moves one row per broker round trip.
+Set `in_flight` (Go: `RelayOptions.InFlight`) to publish up to that many rows at once. The kernel's
+drain decides which: each key's next row in batch order, never two rows of one key, so per-key order
+holds. A failure still holds back its own key, and an outage or a fatal failure still stops the drain.
+Rows already in flight finish. Those that landed are marked; those that failed are handed back
+without spending an attempt. `publish` must then take concurrent calls.
+`KafkaProducer` does. The Rust SDK's relay publishes synchronously, one row at a time.
 
 ### A row that fails
 

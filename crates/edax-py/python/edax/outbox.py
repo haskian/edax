@@ -148,8 +148,12 @@ class Relay(Generic[R]):
     A drain publishes the batch in order and marks every row it settled, also when a row fails part way:
     publishing is at-least-once, so downstream deduplicates by row id. Order is promised per key, the row's
     tenant and :func:`~edax.message.ordering_key`: a failing row holds back the rows behind it of its own key,
-    which may be its aggregate's later events, and the other keys go on. Which rows a drain publishes, and
-    what a failure does, is the kernel's drain rule, pinned by ``testdata/golden/relay_drain.json``. Whether a
+    which may be its aggregate's later events, and the other keys go on. ``in_flight`` rows publish at once,
+    never two of one key, so a transport that acknowledges each row pays one round trip per window, not per
+    row. ``publish`` must then take concurrent calls; at the default of ``1`` it is called serially. ``0`` is
+    refused, where Go's ``RelayOptions.InFlight`` reads its zero value as ``1``. Which
+    rows a drain publishes, and what a failure does, is the kernel's drain rule, pinned by
+    ``testdata/golden/relay_drain.json``. Whether a
     failed row is handed back or dead-lettered is its retry policy, keyed by row id: a terminal failure, or a
     transient one at the ``max_attempts``-th attempt (``0``: never), goes to ``on_dead`` and is marked, so one
     poison row cannot stall its key. ``on_dead`` takes the row as a :class:`~edax.delivery.DeadLetter`, with
@@ -177,7 +181,8 @@ class Relay(Generic[R]):
     Every completed drain is reported to ``observer`` (:meth:`~edax.observe.Observer.drain`) and kept in
     :attr:`last`; a drain that raises is reported through :meth:`~edax.observe.Observer.drain_failed`, with
     the rows it published and dead-lettered before the failure, and leaves :attr:`last` as it was.
-    A ``max_attempts`` the kernel cannot carry raises :class:`~edax.errors.BadHandle` at construction."""
+    A ``max_attempts`` or ``in_flight`` the kernel cannot carry raises :class:`~edax.errors.BadHandle` at
+    construction."""
 
     def __init__(
         self,
@@ -188,13 +193,14 @@ class Relay(Generic[R]):
         on_dead: DeadLetterSink[R] | None = None,
         max_attempts: int = 0,
         pacing: Pacing | None = None,
+        in_flight: int = 1,
     ) -> None:
         self._store = store
         self._publish = publish
         self._observer = wrap(observer)
         self._on_dead = on_dead
         self._pacing = pacing or Pacing()
-        self._drain = drain_policy(max_attempts, on_dead is not None)
+        self._drain = drain_policy(max_attempts, on_dead is not None, in_flight)
         # Overlapping drains of one relay would read the same unleased rows twice. Serializing them costs
         # nothing, and it bounds this relay only: two relays still need leased rows.
         self._draining = asyncio.Lock()
@@ -264,21 +270,50 @@ class Relay(Generic[R]):
     async def _publish_admitted(
         self, drain: _native.Drain, rows: Sequence[R]
     ) -> tuple[_native.Drained, dict[str, BaseException]]:
-        """Publish, in order, every row of ``rows`` the kernel's ``drain`` admits, and report each outcome to
-        it. Returns what the drain did, and each failed row's error by id, for the one the drain raises."""
+        """Publish every row of ``rows`` the kernel's ``drain`` hands out, as many at once as it allows, and
+        report each outcome to it, in batch order among those that end together. Returns what the drain did,
+        and each failed row's error by id, for the one the drain raises."""
         _begin(drain, rows)
+        by_id = {row.id: row for row in rows}
+        position = {row_id: index for index, row_id in enumerate(by_id)}
         failures: dict[str, BaseException] = {}
-        for row in rows:
-            row_id = row.id
-            if not drain.admits(row_id):
-                continue
-            try:
-                await maybe_await(self._publish(row))
-            except Exception as e:  # noqa: BLE001 - the drain rule classifies any publish failure
-                failures[row_id] = await self._settle_failure(drain, row, row_id, e)
-                continue
-            drain.published(row_id)
+        sending: dict[asyncio.Task[None], str] = {}
+        try:
+            while True:
+                ready = drain.ready()
+                if len(ready) == 1 and not sending:
+                    # One row and none in flight, the serial drain's case: awaited in place, with no task.
+                    row_id = ready[0]
+                    try:
+                        await self._send(by_id[row_id])
+                    except Exception as e:  # noqa: BLE001 - the drain rule classifies any publish failure
+                        failures[row_id] = await self._settle_failure(drain, by_id[row_id], row_id, e)
+                    else:
+                        drain.published(row_id)
+                    continue
+                for row_id in ready:
+                    sending[asyncio.ensure_future(self._send(by_id[row_id]))] = row_id
+                if not sending:
+                    break
+                done, _ = await asyncio.wait(sending, return_when=asyncio.FIRST_COMPLETED)
+                for task in sorted(done, key=lambda ended: position[sending[ended]]):
+                    row_id = sending.pop(task)
+                    error = task.exception()
+                    if error is None:
+                        drain.published(row_id)
+                    elif isinstance(error, Exception):
+                        failures[row_id] = await self._settle_failure(drain, by_id[row_id], row_id, error)
+                    else:
+                        raise error
+        finally:
+            # A drain cancelled or failed part way leaves its rows unmarked: they publish again next drain.
+            for task in sending:
+                task.cancel()
+            await asyncio.gather(*sending, return_exceptions=True)
         return drain.finish(), failures
+
+    async def _send(self, row: R) -> None:
+        await maybe_await(self._publish(row))
 
     async def _settle_failure(
         self, drain: _native.Drain, row: R, row_id: str, error: Exception

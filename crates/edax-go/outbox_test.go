@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 )
 
@@ -279,4 +280,87 @@ func TestRelayRepublishesARowWhoseDeadLetterMarkWasLost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRelayWindowPublishesKeysAtOnceAndEachKeyInOrder(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		inFlight uint32
+		failure  error
+		peak     int
+		marked   []string
+		wantErr  error
+	}{
+		{name: "zero means one at a time", inFlight: 0, peak: 1, marked: []string{"first", "other", "later"}},
+		{name: "a window publishes one row per key at once", inFlight: 3, peak: 2, marked: []string{"first", "other", "later"}},
+		{name: "a failing key holds back its rows while the other publishes", inFlight: 3, failure: ErrCodec, peak: 2, marked: []string{"other"}, wantErr: ErrCodec},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			store := &relayTestStore{rows: []EventMessage{consumeEvent("first", "account-1", 1), consumeEvent("later", "account-1", 2), consumeEvent("other", "account-2", 1)}}
+			var mu sync.Mutex
+			sending := map[string]bool{}
+			peak := 0
+			both := make(chan struct{})
+			var once sync.Once
+			relay, err := NewRelay(store, func(_ context.Context, event EventMessage) error {
+				mu.Lock()
+				if sending[event.AggregateID] {
+					mu.Unlock()
+					return fmt.Errorf("two rows of %s at once", event.AggregateID)
+				}
+				sending[event.AggregateID] = true
+				peak = max(peak, len(sending))
+				if len(sending) == 2 {
+					once.Do(func() { close(both) })
+				}
+				mu.Unlock()
+				if test.inFlight > 1 && event.ID != "later" {
+					<-both // the first row of each key waits until both keys publish at once
+				}
+				mu.Lock()
+				delete(sending, event.AggregateID)
+				mu.Unlock()
+				if event.ID == "first" {
+					return test.failure
+				}
+				return nil
+			}, RelayOptions[EventMessage]{Pacing: instantPacing(), InFlight: test.inFlight})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer relay.Close()
+			if _, err := relay.Drain(context.Background(), 10); !errors.Is(err, test.wantErr) {
+				t.Fatalf("drain error %v want %v", err, test.wantErr)
+			}
+			slices.Sort(store.marked)
+			want := slices.Sorted(slices.Values(test.marked))
+			if peak != test.peak || !reflect.DeepEqual(store.marked, want) {
+				t.Fatalf("peak=%d marked=%v", peak, store.marked)
+			}
+		})
+	}
+}
+
+func TestRelayWindowRaisesAPublishPanicOnTheDrainingGoroutine(t *testing.T) {
+	store := &relayTestStore{rows: []EventMessage{consumeEvent("first", "account-1", 1), consumeEvent("other", "account-2", 1)}}
+	relay, err := NewRelay(store, func(_ context.Context, event EventMessage) error {
+		if event.ID == "first" {
+			panic("publisher bug")
+		}
+		return nil
+	}, RelayOptions[EventMessage]{Pacing: instantPacing(), InFlight: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer relay.Close()
+	defer func() {
+		if recovered := recover(); recovered != "publisher bug" {
+			t.Fatalf("recovered %v", recovered)
+		}
+		if len(store.marked) != 0 {
+			t.Fatalf("marked %v", store.marked)
+		}
+	}()
+	_, _ = relay.Drain(context.Background(), 10)
+	t.Fatal("drain returned instead of panicking")
 }

@@ -1,5 +1,6 @@
 [
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "an_empty_batch_settles_nothing",
     "ops": [
@@ -22,6 +23,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "every_row_is_published_and_marked",
     "ops": [
@@ -96,6 +98,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_failed_row_blocks_its_key_and_the_other_key_goes_on",
     "ops": [
@@ -178,6 +181,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "the_same_row_failing_again_waits_a_longer_step",
     "ops": [
@@ -280,6 +284,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_sink_takes_a_dead_row_and_its_key_goes_on",
     "ops": [
@@ -358,6 +363,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_sink_that_refuses_hands_the_row_back_and_blocks_its_key",
     "ops": [
@@ -481,6 +487,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_fatal_sink_failure_stops_the_drain",
     "ops": [
@@ -570,6 +577,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 2,
     "name": "max_attempts_dead_letters_a_row_that_keeps_failing",
     "ops": [
@@ -675,6 +683,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "two_transient_failures_in_a_row_stop_the_drain",
     "ops": [
@@ -749,6 +758,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_publish_between_two_transient_failures_resets_the_count",
     "ops": [
@@ -819,6 +829,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "contention_blocks_its_key_and_neither_counts_nor_resets",
     "ops": [
@@ -903,6 +914,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 1,
     "name": "an_outage_whose_rows_the_sink_took_still_waits_and_raises",
     "ops": [
@@ -986,6 +998,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_terminal_failure_neither_counts_nor_resets_the_outage",
     "ops": [
@@ -1063,6 +1076,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_taken_dead_letter_neither_counts_nor_resets_the_outage",
     "ops": [
@@ -1150,6 +1164,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 1,
     "name": "a_fatal_failure_stops_at_once_uncounted_and_waits_nothing",
     "ops": [
@@ -1226,6 +1241,7 @@
     "sink": true
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "the_key_is_the_tenant_and_the_aggregate",
     "ops": [
@@ -1272,6 +1288,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "a_command_without_an_aggregate_is_its_own_key",
     "ops": [
@@ -1341,6 +1358,7 @@
     "sink": false
   },
   {
+    "in_flight": 1,
     "max_attempts": 0,
     "name": "store_failures_grow_a_step_and_an_answer_starts_it_over",
     "ops": [
@@ -1404,6 +1422,627 @@
       {
         "op": "store_failed",
         "want": 0
+      }
+    ],
+    "sink": false
+  },
+  {
+    "error": "bad_handle: a relay publishes at least one row at a time",
+    "in_flight": 0,
+    "max_attempts": 0,
+    "name": "a_window_of_zero_is_refused",
+    "sink": false
+  },
+  {
+    "in_flight": 1,
+    "max_attempts": 0,
+    "name": "one_at_a_time_hands_out_the_batch_in_order",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1"
+        ]
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "id": "a-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-2"
+        ]
+      },
+      {
+        "id": "a-2",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": [
+          "b-1"
+        ]
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 2,
+          "raise": null,
+          "settled": [
+            "a-1",
+            "a-2"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "in_flight": 3,
+    "max_attempts": 0,
+    "name": "the_window_holds_one_row_per_key",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1",
+          "c-1"
+        ]
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "id": "b-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": [
+          "d-1"
+        ]
+      },
+      {
+        "id": "a-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-2"
+        ]
+      },
+      {
+        "id": "c-1",
+        "op": "published"
+      },
+      {
+        "id": "d-1",
+        "op": "published"
+      },
+      {
+        "id": "a-2",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 5,
+          "raise": null,
+          "settled": [
+            "b-1",
+            "a-1",
+            "c-1",
+            "d-1",
+            "a-2"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "in_flight": 3,
+    "max_attempts": 0,
+    "name": "a_failed_row_blocks_its_key_while_the_others_publish",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1",
+          "c-1"
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "ready",
+        "want": [
+          "d-1"
+        ]
+      },
+      {
+        "id": "b-1",
+        "op": "published"
+      },
+      {
+        "id": "c-1",
+        "op": "published"
+      },
+      {
+        "id": "d-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 3,
+          "raise": "a-1",
+          "settled": [
+            "b-1",
+            "c-1",
+            "d-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "in_flight": 2,
+    "max_attempts": 0,
+    "name": "a_dead_row_holds_its_key_until_the_sink_answers",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1"
+        ]
+      },
+      {
+        "code": "codec",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "dead_letter": 1
+        }
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "attempt": 1,
+        "code": null,
+        "id": "a-1",
+        "op": "sunk",
+        "taken": true,
+        "want": null
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-2"
+        ]
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 1,
+          "published": 0,
+          "raise": null,
+          "settled": [
+            "a-1"
+          ],
+          "wait": null
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "in_flight": 4,
+    "max_attempts": 0,
+    "name": "rows_in_flight_when_an_outage_stops_the_drain_are_still_settled",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1",
+          "c-1",
+          "d-1"
+        ]
+      },
+      {
+        "code": "store",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "code": "store",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "id": "c-1",
+        "op": "published"
+      },
+      {
+        "id": "d-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 2,
+          "raise": "a-1",
+          "settled": [
+            "c-1",
+            "d-1"
+          ],
+          "wait": 0
+        }
+      }
+    ],
+    "sink": false
+  },
+  {
+    "in_flight": 2,
+    "max_attempts": 0,
+    "name": "a_row_failing_after_a_fatal_stop_is_handed_back_uncounted",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1"
+        ]
+      },
+      {
+        "code": "bad_handle",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "code": "codec",
+        "id": "b-1",
+        "op": "failed",
+        "want": {
+          "hand_back": null
+        }
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 0,
+          "raise": "a-1",
+          "settled": [],
+          "wait": null
+        }
+      },
+      {
+        "op": "tracked",
+        "want": {
+          "attempts": 0,
+          "contended": 0
+        }
+      }
+    ],
+    "sink": true
+  },
+  {
+    "in_flight": 2,
+    "max_attempts": 0,
+    "name": "a_fatal_failure_stops_handing_out_and_waits_nothing",
+    "ops": [
+      {
+        "kind": "event",
+        "op": "begin",
+        "rows": [
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-A",
+            "id": "a-2",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-B",
+            "id": "b-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-C",
+            "id": "c-1",
+            "tenant": null
+          },
+          {
+            "aggregate_id": "acct-D",
+            "id": "d-1",
+            "tenant": null
+          }
+        ]
+      },
+      {
+        "op": "ready",
+        "want": [
+          "a-1",
+          "b-1"
+        ]
+      },
+      {
+        "code": "bad_handle",
+        "id": "a-1",
+        "op": "failed",
+        "want": {
+          "stop": null
+        }
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "id": "b-1",
+        "op": "published"
+      },
+      {
+        "op": "ready",
+        "want": []
+      },
+      {
+        "op": "finish",
+        "want": {
+          "dead_lettered": 0,
+          "published": 1,
+          "raise": "a-1",
+          "settled": [
+            "b-1"
+          ],
+          "wait": null
+        }
       }
     ],
     "sink": false

@@ -191,7 +191,8 @@ Specification: `edax.broker.Producer`.
 - The message key is the kernel's [ordering key](../kernels/event.md#the-ordering-key), which keeps
   per-aggregate order.
 - Delivery is at-least-once.
-- One relay calls it serially, so it need not be thread-safe.
+- One relay calls it serially by default, so it need not be thread-safe. A relay with `in_flight`
+  above `1` calls it concurrently, never for two rows of one key at once.
 
 ### `Consumer`
 

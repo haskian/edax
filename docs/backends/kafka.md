@@ -117,7 +117,9 @@ Five promises, and each has a failure mode behind it.
 | The partition is Java's murmur2 of the key | a second producer, in another language or on another client library, must put one key on the same partition | `_edax.kafka_partition_for(key, len(await client.partitions_for(topic)))`, passed as `partition=` |
 | Delivery is at-least-once | a crash between publish and `mark_published` republishes the same message; consumers dedup by `msg.id` | inherent to the outbox; see [outbox](../sdk/outbox.md) |
 
-`publish` is called serially by one relay, so it need not be thread-safe or reentrant.
+`publish` takes concurrent calls, so a relay may set `in_flight` above `1`. Each row still waits for its
+own `acks="all"`, but a window of rows shares one round trip instead of one per row. The relay never
+sends two rows of one key at once, so one aggregate's order holds.
 
 The key is what preserves order. Kafka orders within a partition, and the key chooses the
 partition, so one aggregate's messages stay in one partition and arrive in the order they were

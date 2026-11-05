@@ -105,9 +105,14 @@ def retry_policy(max_attempts: int, sink: bool, what: str) -> ThreadBound[_nativ
     return _policy(_native.retries, max_attempts, sink, what)
 
 
-def drain_policy(max_attempts: int, sink: bool) -> ThreadBound[_native.Drain]:
-    """The kernel's drain rule of a :class:`~edax.outbox.Relay`."""
-    return _policy(_native.drain, max_attempts, sink, "Relay")
+def drain_policy(max_attempts: int, sink: bool, in_flight: int) -> ThreadBound[_native.Drain]:
+    """The kernel's drain rule of a :class:`~edax.outbox.Relay` that publishes up to ``in_flight`` rows at
+    once. A window the kernel refuses raises :class:`~edax.errors.BadHandle` here, at wiring time."""
+    wiring_u32(in_flight, "Relay in_flight")
+    _native.drain(0, False, in_flight)
+    return _policy(
+        lambda attempts, sunk: _native.drain(attempts, sunk, in_flight), max_attempts, sink, "Relay"
+    )
 
 
 def _policy(
