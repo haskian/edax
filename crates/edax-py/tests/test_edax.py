@@ -717,3 +717,19 @@ async def test_key_ordered_dispatch() -> None:
 
     used = {consumer._worker_index(build_message(a, "t", 0)) for a in aggregates}
     assert len(used) >= 2, "aggregates should span multiple workers"
+
+
+@pytest.mark.parametrize("host_between", [False, True], ids=["reused", "recomputed_after_a_host_lineage"])
+def test_caused_by_a_message_already_ambient(host_between: bool) -> None:
+    """A router inside a dispatcher handles the message the dispatcher already made ambient: it reuses that
+    lineage. A lineage the host set in between is never taken for it. Each block restores what it found."""
+    msg = build_message("acct-1", "Deposited", 1, id="inner")
+    with caused_by(msg) as outer:
+        if host_between:
+            with use_lineage(originate("host-flow", "host")), caused_by(msg) as inner:
+                assert inner is not outer and inner == outer and current_lineage() is inner
+        else:
+            with caused_by(msg) as inner:
+                assert inner is outer and current_lineage() is outer
+        assert current_lineage() is outer and outer.causation_id == "inner"
+    assert current_lineage() is None

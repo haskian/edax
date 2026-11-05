@@ -20,10 +20,12 @@ from contextlib import (
 )
 from contextvars import ContextVar
 from dataclasses import dataclass, field
+from functools import partial
 from types import MappingProxyType, TracebackType
 from typing import Any, Literal, Protocol, TypedDict, TypeVar, cast, get_args, runtime_checkable
 
 from . import _json, _names, _native
+from ._async import gather_bounded
 from ._owned import ThreadBound
 from ._values import give_value_semantics
 from .errors import BadHandle, CodecError, KeyRevoking, KeyUnavailable, Shredded
@@ -50,6 +52,9 @@ __all__ = [
 T = TypeVar("T")
 #: A write fence's scope: tenant and subject.
 Scope = tuple[str | None, str | None]
+#: How many key provider calls one batch runs at once: enough to hide a remote provider's round trip, few
+#: enough not to flood it.
+PROVIDER_CONCURRENCY = 32
 
 Cipher = Literal["aes-256-gcm", "xchacha20-poly1305"]
 #: A stored part a store seals: an ingestion row's ``private``, a projection state's ``private``, or a
@@ -504,17 +509,23 @@ class _ProviderCalls:
 
 
 class _BatchKeys:
-    """Cache successful reads within one batch; unresolved provider work belongs to its Sealing."""
+    """Cache successful reads within one batch. With ``calls``, unresolved provider work belongs to its
+    Sealing; without, each call goes straight to the provider, as the Sealing's own do."""
 
-    def __init__(self, keys: KeyProvider, timeout_s: float | None, calls: _ProviderCalls) -> None:
+    def __init__(self, keys: KeyProvider, timeout_s: float | None, calls: _ProviderCalls | None) -> None:
         self._keys = keys
         self._timeout_s = timeout_s
         self._calls = calls
         self._known: dict[tuple[Any, ...], Any] = {}
 
+    async def _call(self, key: tuple[Any, ...], call: Callable[[], Awaitable[T]]) -> T:
+        if self._calls is None:
+            return await call()
+        return await self._calls.call(key, call, self._timeout_s)
+
     async def _once(self, known: tuple[Any, ...], call: Callable[[], Awaitable[T]]) -> T:
         if known not in self._known:
-            self._known[known] = await self._calls.call(known, call, self._timeout_s)
+            self._known[known] = await self._call(known, call)
         return cast(T, self._known[known])
 
     async def resolve(self, scope: KeyScope, cipher: Cipher, key_id: str) -> bytes:
@@ -530,9 +541,7 @@ class _BatchKeys:
 
     async def reserve(self, scope: KeyScope, cipher: Cipher, count: int = 1) -> KeyReservation:
         # Reservations are writes and are never cached; an ambiguous late result stays charged.
-        return await self._calls.call(
-            ("reserve", scope, cipher), lambda: self._keys.reserve(scope, cipher, count), self._timeout_s
-        )
+        return await self._call(("reserve", scope, cipher), lambda: self._keys.reserve(scope, cipher, count))
 
 
 class Sealing:
@@ -588,8 +597,17 @@ class Sealing:
         is read from the provider once, under ``timeout_s``, and kept only as long as the view. A batch
         runner drops the view with its batch, so no key outlives it; the commit's write fence still reads
         status afresh and decides against revocation."""
+        return self._view(_BatchKeys(self.keys, timeout_s, self._calls))
+
+    def for_read(self) -> Sealing:
+        """A view for one read, such as a repository load: each scope's key and status is read from the
+        provider once and kept only as long as the view. Calls go straight to the provider, as this
+        Sealing's own do, so a cancelled read leaves no call behind that holds up the next."""
+        return self._view(_BatchKeys(self.keys, None, None))
+
+    def _view(self, keys: _BatchKeys) -> Sealing:
         return Sealing(
-            cast(KeyProvider, _BatchKeys(self.keys, timeout_s, self._calls)),
+            cast(KeyProvider, keys),
             self.key_namespace,
             cipher=self.cipher,
             allow_plaintext=self.allow_plaintext,
@@ -676,12 +694,43 @@ class Sealing:
         _native.check_key_status(await self.keys.status(self.scope(tenant, subject)))
 
     async def reserve(self, tenant: str | None, subject: str | None) -> tuple[EncryptionInfo, bytes]:
-        scope = _native.protected_scope(self.key_namespace, tenant, subject)
-        reserved = await self.keys.reserve(scope, self.cipher)
-        info = _native.fresh_encryption_info(self.key_namespace, reserved.key_id, self.cipher)
-        # The kernel checks subject requirements and the configured namespace before encryption.
-        _native.encryption_scope(self.key_namespace, info, tenant, subject)
-        return info, bytes(reserved.key)
+        [reserved] = await self._reserve_each([(tenant, subject)])
+        return reserved
+
+    async def _reserve_each(self, owners: Sequence[Scope]) -> list[tuple[EncryptionInfo, bytes]]:
+        """A fresh encryption info and its key for each ``(tenant, subject)`` in ``owners``, each checked
+        against the configured namespace and the scope's subject requirements before encryption."""
+        reserved = await self._reservations(owners)
+        for (info, _), (tenant, subject) in zip(reserved, owners, strict=True):
+            _native.encryption_scope(self.key_namespace, info, tenant, subject)
+        return reserved
+
+    async def _reservations(self, owners: Sequence[Scope]) -> list[tuple[EncryptionInfo, bytes]]:
+        """A fresh encryption info and its key for each ``(tenant, subject)`` in ``owners``. One reservation
+        per scope covers all its items, each sealed under its own nonce, so a batch costs one provider call
+        per scope rather than one per item."""
+        counts = Counter(owners)
+        scopes = list(counts)
+        reservations = await gather_bounded(
+            (
+                partial(
+                    self.keys.reserve,
+                    _native.protected_scope(self.key_namespace, *scope),
+                    self.cipher,
+                    counts[scope],
+                )
+                for scope in scopes
+            ),
+            PROVIDER_CONCURRENCY,
+        )
+        reserved = dict(zip(scopes, reservations, strict=True))
+        return [
+            (
+                _native.fresh_encryption_info(self.key_namespace, reserved[owner].key_id, self.cipher),
+                bytes(reserved[owner].key),
+            )
+            for owner in owners
+        ]
 
     async def resolve(self, info: EncryptionInfo, tenant: str | None, subject: str | None) -> bytes:
         scope = _native.encryption_scope(self.key_namespace, info, tenant, subject)
@@ -698,8 +747,15 @@ class Sealing:
         _native.check_plaintext_policy(self.allow_plaintext)
 
     async def seal_event(self, draft: EventDraft) -> EventDraft:
-        info, key = await self.reserve(draft.tenant, draft.subject)
-        return _native.seal_event(draft, info, key)
+        [sealed] = await self.seal_events([draft])
+        return sealed
+
+    async def seal_events(self, drafts: Sequence[EventDraft]) -> list[EventDraft]:
+        """Seal each of ``drafts`` under its own nonce, with one key reservation per scope."""
+        reserved = await self._reserve_each([(draft.tenant, draft.subject) for draft in drafts])
+        return [
+            _native.seal_event(draft, info, key) for draft, (info, key) in zip(drafts, reserved, strict=True)
+        ]
 
     async def open_event(self, message: EventMessage) -> bytes:
         if message.encryption is None:
@@ -722,8 +778,16 @@ class Sealing:
         return Opened(bytes(_native.open_event(message, key)))
 
     async def seal_command(self, message: CommandMessage) -> CommandMessage:
-        info, key = await self.reserve(message.tenant, message.subject)
-        return _native.seal_command(message, info, key)
+        [sealed] = await self.seal_commands([message])
+        return sealed
+
+    async def seal_commands(self, messages: Sequence[CommandMessage]) -> list[CommandMessage]:
+        """Seal each of ``messages`` under its own nonce, with one key reservation per scope."""
+        reserved = await self._reserve_each([(message.tenant, message.subject) for message in messages])
+        return [
+            _native.seal_command(message, info, key)
+            for message, (info, key) in zip(messages, reserved, strict=True)
+        ]
 
     async def open_command(self, message: CommandMessage) -> bytes:
         if message.encryption is None:
@@ -805,25 +869,13 @@ class Sealing:
         context binds and the scope: a store takes it from the kernel's seal plan, never builds it. One
         reservation per scope covers all its parts, each sealed under its own nonce, so a batch costs one
         provider call per subject rather than one per row."""
-        counts = Counter((part["tenant"], part["subject"]) for part, _ in parts)
-        scopes = list(counts)
-        reservations = await asyncio.gather(
-            *(
-                self.keys.reserve(
-                    _native.protected_scope(self.key_namespace, *scope), self.cipher, counts[scope]
-                )
-                for scope in scopes
-            )
-        )
-        reserved = dict(zip(scopes, reservations, strict=True))
+        reserved = await self._reservations([(part["tenant"], part["subject"]) for part, _ in parts])
         sealed: list[Any] = []
-        for part, value in parts:
+        for (part, value), (info, key) in zip(parts, reserved, strict=True):
             tenant, subject = part["tenant"], part["subject"]
-            reservation = reserved[(tenant, subject)]
-            info = _native.fresh_encryption_info(self.key_namespace, reservation.key_id, self.cipher)
             data = _json.encode(value).encode()
             context = _native.stored_encryption_context(_json.encode(part), info)
-            ciphertext = _native.seal_bytes(info, reservation.key, context, data)
+            ciphertext = _native.seal_bytes(info, key, context, data)
             state = _native.ProtectedState(False, info, bytes(ciphertext), tenant, subject)
             sealed.append(_json.decode(_native.encode_protected_state(state)))
         return sealed

@@ -8,8 +8,9 @@ handle, so a :meth:`~edax.repository.Repository.save` inside a handler continues
 
 from __future__ import annotations
 
+import contextvars
 from collections.abc import Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 
 from . import _native
 from ._lineage import AMBIENT
@@ -54,6 +55,34 @@ def use_lineage(lineage: Lineage) -> Iterator[Lineage]:
         AMBIENT.reset(token)
 
 
+# The message whose lineage `caused_by` made ambient, and that lineage: a router inside a dispatcher handles
+# the message the dispatcher already set, so it reuses the lineage instead of asking the kernel again.
+_CAUSE: contextvars.ContextVar[tuple[EventMessage | CommandMessage, Lineage] | None] = contextvars.ContextVar(
+    "edax_cause", default=None
+)
+
+
 def caused_by(msg: EventMessage | CommandMessage) -> AbstractContextManager[Lineage]:
     """Run the block as a handler of ``msg``: the ambient lineage is :func:`propagate` of it."""
-    return use_lineage(propagate(msg))
+    cause = _CAUSE.get()
+    if cause is not None and cause[0] is msg and AMBIENT.get() is cause[1]:
+        return nullcontext(cause[1])
+    return _Caused(msg, propagate(msg))
+
+
+class _Caused(AbstractContextManager[Lineage]):
+    """Make ``lineage`` ambient as ``msg``'s, as :func:`use_lineage` does, and remember whose it is."""
+
+    __slots__ = ("_cause", "_tokens")
+
+    def __init__(self, msg: EventMessage | CommandMessage, lineage: Lineage) -> None:
+        self._cause = (msg, lineage)
+
+    def __enter__(self) -> Lineage:
+        self._tokens = (_CAUSE.set(self._cause), AMBIENT.set(self._cause[1]))
+        return self._cause[1]
+
+    def __exit__(self, *_: object) -> None:
+        cause, ambient = self._tokens
+        AMBIENT.reset(ambient)
+        _CAUSE.reset(cause)

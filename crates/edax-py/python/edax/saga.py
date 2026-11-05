@@ -427,12 +427,12 @@ class SagaRunner(Generic[TxT]):
                         data=sealed.data,
                         completed=False,
                     )
-                    rows = [await sealing.seal_command(row) for row in rows]
+                    rows = await sealing.seal_commands(rows)
                 await self._store.save(saga, instance_id, new_state, expected, folded_marks, rows, tx)
             case "complete":
                 expected, rows = self._written(write, instance_id, commands, msg)
                 if sealing is not None:
-                    rows = [await sealing.seal_command(row) for row in rows]
+                    rows = await sealing.seal_commands(rows)
                     folded_marks = _names.given(admit.folded, "folded marks")
                     sealed = await sealing.seal_state(
                         "saga",
