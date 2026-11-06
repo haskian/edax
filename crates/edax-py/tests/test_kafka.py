@@ -1361,7 +1361,8 @@ async def test_a_revoke_skips_the_queue_and_waits_only_for_running_handlers() ->
     dispatcher = edax.KeyOrderedDispatcher(workers=1, handler=handling(lambda env: None), on_dead=sink_ok)
     dispatcher.start()
     run = asyncio.create_task(quick.run(dispatcher))
-    while quick.stats().get(TP0) is None or quick.stats()[TP0].unsettled:
+    # All five delivered and settled: an empty unsettled set alone may come before the last fetch.
+    while (stats := quick.stats().get(TP0)) is None or stats.max_delivered < 4 or stats.unsettled:
         await asyncio.sleep(0.001)
     started = loop.time()
     await first.listener.on_partitions_revoked({TP0})

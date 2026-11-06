@@ -7,6 +7,9 @@ use edax_core::Error;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 
+/// The database clock in Unix milliseconds, as the projection kernel reads time.
+const CLOCK: &str = "floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint";
+
 /// The statements, by name, for one configured pair of tables, and the reference DDL as `ddl`.
 pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> {
     #[derive(Deserialize)]
@@ -50,10 +53,16 @@ pub fn statements(config_json: &str) -> Result<BTreeMap<String, String>, Error> 
             crate::ingest::key_value_check_named(&schema, &table_name),
             intents_check(&schema, &intents_name),
         )),
-        ("lock_exclusive".into(), format!("SELECT pg_catalog.pg_advisory_xact_lock({generation_lock})")),
-        ("lock_shared".into(), format!("SELECT pg_catalog.pg_advisory_xact_lock_shared({generation_lock})")),
-        ("lock_partition".into(), "SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('edax_projection/v1:' || $1::text || ':' || $2::integer::text, 0))".into()),
-        ("clock".into(), "SELECT floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint".into()),
+        // Each lock statement answers the database clock in milliseconds once its locks are held, so a
+        // transaction reads its time with no round trip of its own. `lock_partition` takes the shared
+        // generation lock, then the partition's: the materialized CTE runs before the outer select.
+        ("lock_exclusive".into(), format!("WITH held AS MATERIALIZED (SELECT pg_catalog.pg_advisory_xact_lock({generation_lock})) SELECT {CLOCK} FROM held")),
+        ("lock_shared".into(), format!("WITH held AS MATERIALIZED (SELECT pg_catalog.pg_advisory_xact_lock_shared({generation_lock})) SELECT {CLOCK} FROM held")),
+        ("lock_partition".into(), format!(
+            "WITH generation AS MATERIALIZED (SELECT pg_catalog.pg_advisory_xact_lock_shared({generation_lock})), \
+             held AS MATERIALIZED (SELECT pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('edax_projection/v1:' || $1::text || ':' || $2::integer::text, 0)) FROM generation) \
+             SELECT {CLOCK} FROM held"
+        )),
         ("read".into(), format!("SELECT key, value::text AS value FROM {table} WHERE key IN (SELECT jsonb_array_elements_text($1::jsonb)) ORDER BY key")),
         // No ON CONFLICT: a concurrent insert of the same key fails the transaction, which retries.
         ("insert".into(), format!("INSERT INTO {table} (key, value) SELECT key, value FROM jsonb_each($1::jsonb) ORDER BY key COLLATE \"C\"")),

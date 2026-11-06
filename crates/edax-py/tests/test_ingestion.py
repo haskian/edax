@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 from conftest import NO_WAIT
+from edax._json import encode
 from edax.batch import BatchSettings
 from edax.errors import BadHandle
 from edax.ingestion import (
@@ -15,6 +16,7 @@ from edax.ingestion import (
     MemoryIngestionSink,
     Rejection,
     RejectionOutbox,
+    _Batch,
 )
 from edax.outbox import Relay
 
@@ -352,3 +354,20 @@ def test_raw_source_nul_is_refused_without_rewriting_identity(target: IngestionT
             None,
             "order\x00source",
         )
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_a_batch_writes_the_bytes_encode_writes_after_each_replacement(
+    target: IngestionTarget, count: int
+) -> None:
+    """The commit hands the kernel the joined per-original texts: the same bytes as encoding the batch, also
+    after an original is replaced."""
+    items = [
+        original(target, offset, offset + 1, status)
+        for offset, status in enumerate(("open", "päid", "€")[:count])
+    ]
+    batch = _Batch(items)
+    assert batch.json == encode(items)
+    if count:
+        batch.set(count - 1, replace(items[-1], failure="codec: refused", fingerprint="fp"))
+        assert batch.json == encode(batch.items)

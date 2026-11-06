@@ -18,7 +18,7 @@ from ..ingestion import (
     IngestionTarget,
     StagedBatchResult,
     open_private,
-    prepare_ingestion,
+    prepared_ingestion,
 )
 from ..outbox import check_page
 from ..sealing import KeyScope, Sealing
@@ -139,8 +139,8 @@ class PostgresIngestionSink:
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
         """Commit accepted state and rejections in an owned transaction; refuse an ambient unit."""
-        async with prepare_ingestion(self.target, self.sealing, inputs) as originals:
-            return await self._own(lambda conn: self._apply(conn, originals))
+        async with prepared_ingestion(self.target, self.sealing, inputs) as (originals, encoded):
+            return await self._own(lambda conn: self._apply(conn, originals, encoded))
 
     async def stage(self, inputs: Sequence[BatchInput], *, tx: Tx | None = None) -> StagedBatchResult:
         """Join an existing transaction. Outcomes stay provisional until the outer commit.
@@ -151,13 +151,13 @@ class PostgresIngestionSink:
         """
         handle = self._transactor.require_transaction(tx)
         try:
-            async with prepare_ingestion(
+            async with prepared_ingestion(
                 self.target, self.sealing, inputs, transactor=self._transactor, tx=handle
-            ) as originals:
+            ) as (originals, encoded):
 
                 async def apply(conn: PgConnection) -> BatchResult:
                     await self._bind(conn)
-                    return await self._apply(conn, originals)
+                    return await self._apply(conn, originals, encoded)
 
                 result = await self._transactor.run("ingest", handle, apply)
                 return StagedBatchResult(result.outcomes, result.rejections)
@@ -193,9 +193,9 @@ class PostgresIngestionSink:
 
         return await self._transactor.run_owned(advance, op="ingest")
 
-    async def _apply(self, conn: PgConnection, originals: Sequence[BatchInput]) -> BatchResult:
+    async def _apply(self, conn: PgConnection, originals: Sequence[BatchInput], encoded: str) -> BatchResult:
+        """Plan and write ``originals``, whose JSON ``encoded`` is, as one batch."""
         floor = await self._floor(conn) if self.target.partition else 0
-        encoded = _json.encode(originals)
         sources = _json.encode([item.source for item in originals])
         keys = [item.key for item in originals]
         # Lock target rows first. A fresh rejection read must follow any wait for a target

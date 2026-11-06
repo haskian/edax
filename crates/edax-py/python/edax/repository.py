@@ -163,13 +163,15 @@ class Repository(Generic[A, TxT]):
         returns a gap or a repeat raises :class:`~edax.errors.CodecError` instead of folding the wrong
         state."""
         key = tenant_key(self._tenancy, tenant, aggregate_id)
+        # One view per load: each scope's key and status is read from the provider once, not per event.
+        sealing = None if self._sealing is None else self._sealing.for_read()
         async with self._enlist(tx) as tx:
             snap = await self._store.load_snapshot(tx, key)
             if snap is not None and snap.type_name != self._aggregates.type:
                 snap = None
             if snap is not None and snap.encryption is not None and self._sealing is None:
                 raise BadHandle("encrypted snapshots require repository sealing")
-            if self._sealing is not None and snap is not None:
+            if sealing is not None and snap is not None:
                 if snap.encryption is not None or snap.tenant is not None:
                     _native.check_sealed_owner(True, tenant, snap.tenant)
                 # Before the key provider and the plaintext policy, so another subject's snapshot is an
@@ -177,9 +179,9 @@ class Repository(Generic[A, TxT]):
                 if subject is not None:
                     _native.check_sealed_owner(True, subject, snap.subject)
                 if snap.encryption is None:
-                    await self._sealing.check_legacy(tenant, snap.subject)
+                    await sealing.check_legacy(tenant, snap.subject)
                 else:
-                    plaintext = await self._sealing.open_state(
+                    plaintext = await sealing.open_state(
                         "snapshot",
                         key,
                         snap.type_name,
@@ -215,8 +217,8 @@ class Repository(Generic[A, TxT]):
             for msg in stored:
                 if msg.encryption is not None and self._sealing is None:
                     raise BadHandle("encrypted events require repository sealing")
-                if self._sealing is not None:
-                    data = await self._sealing.open_event(msg)
+                if sealing is not None:
+                    data = await sealing.open_event(msg)
                     payload = Payload(name=msg.name, version=msg.version, data=data)
                 else:
                     payload = msg
@@ -346,13 +348,13 @@ class Repository(Generic[A, TxT]):
                 if not drafts:
                     raise BadHandle("uncertain command-only save requires reconciliation before retry")
             elif self._sealing is not None:
-                drafts = [await self._sealing.seal_event(draft) for draft in drafts]
+                drafts = await self._sealing.seal_events(drafts)
                 for command in owned:
                     if command.subject is not None:
                         _native.check_sealed_owner(True, subject, command.subject)
-                owned = [
-                    await self._sealing.seal_command(replace(command, subject=subject)) for command in owned
-                ]
+                owned = await self._sealing.seal_commands(
+                    [replace(command, subject=subject) for command in owned]
+                )
                 if snapshot is not None:
                     sealed = await self._sealing.seal_state(
                         "snapshot",

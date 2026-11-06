@@ -3,14 +3,18 @@
 //!
 //! Two SDKs relaying one outbox must publish, skip and dead-letter the same rows, so the rule is here,
 //! sans-IO, beside [`Retries`], which it keeps per row id. The host reads the batch, publishes each row
-//! [`Drain::admits`], reports each publish and each dead-letter, marks the settled rows and waits; the
-//! drain only says which. Pinned by `testdata/golden/relay_drain.json`.
+//! [`Drain::ready`] hands it, reports each publish and each dead-letter, marks the settled rows and waits;
+//! the drain only says which. Pinned by `testdata/golden/relay_drain.json`.
 //!
 //! The rule:
 //!
 //! - order is promised per key only: a row's key is its tenant and its
 //!   [`ordering_key`](crate::Message::ordering_key), so a failed row blocks the rows behind it of its
 //!   own key for the rest of the drain, and every other key goes on;
+//! - up to [`in_flight`](Drain::in_flight) rows publish at once, never two of one key: a key's next row
+//!   waits until its row in flight is published, handed back or dead-lettered. A row in flight when the
+//!   drain stops is still reported: settled if it was published, else handed back uncounted, as a row the
+//!   serial drain would never have sent;
 //! - a failed row is handed back, dead-lettered or stops the drain as [`Retries`] answers; a dead row
 //!   the sink took is settled, and its key goes on; a sink that refuses it hands it back, or stops the
 //!   drain when the refusal is fatal;
@@ -27,6 +31,8 @@
 //!   calls succeed starts that count over.
 
 use std::collections::{HashMap, HashSet};
+
+use edax_core::Error;
 
 use crate::retry::{Failure, Retries, Streak, Tracked, Verdict};
 use crate::Message;
@@ -96,6 +102,14 @@ pub struct Drained {
 #[derive(Debug, Clone, Default)]
 struct Batch {
     keys: HashMap<String, RowKey>,
+    /// The batch's row ids, in the order the store returned them.
+    order: Vec<String>,
+    /// Every row before this index is sent or blocked for good, so [`Drain::ready`] starts here.
+    cursor: usize,
+    /// The rows [`Drain::ready`] handed out or the host reported.
+    sent: HashSet<String>,
+    /// The keys with a row in flight: handed out and not yet published, handed back or dead-lettered.
+    in_flight: HashSet<RowKey>,
     blocked: HashSet<RowKey>,
     /// The transient failures since the last publish.
     transient: Streak,
@@ -114,6 +128,8 @@ pub struct Drain {
     /// Keyed by row id with no tenant: a row id is unique within the one outbox a relay drains.
     retries: Retries,
     store: Streak,
+    /// How many rows publish at once.
+    in_flight: usize,
     batch: Batch,
 }
 
@@ -123,8 +139,19 @@ impl Drain {
     pub fn new(max_attempts: u32, sink: bool) -> Self {
         Self {
             retries: Retries::new(max_attempts, sink),
+            in_flight: 1,
             ..Self::default()
         }
+    }
+
+    /// The drain with up to `rows` rows publishing at once, never two of one key. `1`, the default,
+    /// publishes the batch one row at a time; `0` is refused, since it would publish nothing.
+    pub fn in_flight(mut self, rows: u32) -> Result<Self, Error> {
+        if rows == 0 {
+            return Err(Error::bad_handle("a relay publishes at least one row at a time"));
+        }
+        self.in_flight = usize::try_from(rows).unwrap_or(usize::MAX);
+        Ok(self)
     }
 
     /// Start a drain of `rows`, the batch the store returned: every row is keyed by its tenant and its
@@ -137,14 +164,50 @@ impl Drain {
     /// for a host that holds the rows itself, so only their keys cross. Whatever the last drain left
     /// unfinished is dropped.
     pub fn begin_keys<'a>(&mut self, rows: impl IntoIterator<Item = (&'a str, Option<&'a str>, &'a str)>) {
-        let keys = rows
-            .into_iter()
-            .map(|(id, tenant, ordering_key)| (id.to_owned(), (tenant.map(ToOwned::to_owned), ordering_key.to_owned())))
-            .collect();
+        let mut keys = HashMap::new();
+        let mut order = Vec::new();
+        for (id, tenant, ordering_key) in rows {
+            keys.insert(id.to_owned(), (tenant.map(ToOwned::to_owned), ordering_key.to_owned()));
+            order.push(id.to_owned());
+        }
         self.batch = Batch {
             keys,
+            order,
             ..Batch::default()
         };
+    }
+
+    /// The rows to publish now, in batch order: the first unsent row of each key with no row in flight
+    /// and not blocked, as many as fit beside the rows already in flight. Empty once the drain stopped,
+    /// or while every admitted key waits on its row in flight. Each row it names is in flight until the
+    /// host reports it.
+    pub fn ready(&mut self) -> Vec<String> {
+        let batch = &mut self.batch;
+        let mut ids = Vec::new();
+        if batch.stopped {
+            return ids;
+        }
+        let room = self.in_flight.saturating_sub(batch.in_flight.len());
+        while batch.order.get(batch.cursor).is_some_and(|id| {
+            batch.sent.contains(id) || batch.keys.get(id).is_some_and(|key| batch.blocked.contains(key))
+        }) {
+            batch.cursor = batch.cursor.saturating_add(1);
+        }
+        for id in batch.order.iter().skip(batch.cursor) {
+            if ids.len() >= room {
+                break;
+            }
+            let Some(key) = batch.keys.get(id) else {
+                continue;
+            };
+            if batch.sent.contains(id) || batch.blocked.contains(key) || batch.in_flight.contains(key) {
+                continue;
+            }
+            batch.sent.insert(id.clone());
+            batch.in_flight.insert(key.clone());
+            ids.push(id.clone());
+        }
+        ids
     }
 
     /// Whether the drain publishes the row `id`: `false` once its key is blocked or the drain stopped.
@@ -160,6 +223,7 @@ impl Drain {
 
     /// The row `id` was published.
     pub fn published(&mut self, id: &str) {
+        self.landed(id);
         self.retries.succeeded(id, None);
         self.batch.transient.answered();
         self.batch.drained.published = self.batch.drained.published.saturating_add(1);
@@ -168,7 +232,20 @@ impl Drain {
 
     /// The row `id` failed to publish with `failure`.
     pub fn failed(&mut self, id: &str, failure: Failure) -> RowFailed {
+        if self.batch.stopped {
+            // Sent before the drain stopped: the serial drain would never have sent it, so it spends no
+            // attempt and never reaches the sink.
+            // It leaves the stop's own report, the row to raise and the step to wait, as it was.
+            self.landed(id);
+            let key = self.key(id);
+            self.batch.blocked.insert(key);
+            return RowFailed::HandBack;
+        }
         let verdict = self.retries.failed(id, None, 0, failure);
+        if !matches!(verdict, Verdict::Dead { .. }) {
+            // A dead row keeps its key in flight until the sink answers for it.
+            self.landed(id);
+        }
         if failure == Failure::Transient {
             // `failed` answers the failures before this one, so this one makes it one more.
             let streak = self.batch.transient.failed().saturating_add(1);
@@ -200,6 +277,7 @@ impl Drain {
     /// A refused row is `HandBack`, or `Stop` for a fatal refusal, whose failure the host then raises
     /// for `id`; never `DeadLetter`, since the sink just answered for the row.
     pub fn sunk(&mut self, id: &str, attempt: u32, refusal: Option<Failure>) -> Option<RowFailed> {
+        self.landed(id);
         let step = self.retries.sunk(id, None, attempt, refusal);
         match (refusal, step) {
             (None, _) => {
@@ -257,6 +335,13 @@ impl Drain {
             .get(id)
             .cloned()
             .unwrap_or_else(|| (None, id.to_owned()))
+    }
+
+    /// The row `id` is no longer in flight, and never handed out again.
+    fn landed(&mut self, id: &str) {
+        let key = self.key(id);
+        self.batch.in_flight.remove(&key);
+        self.batch.sent.insert(id.to_owned());
     }
 
     /// A fatal failure of row `id`: publish nothing more, and raise its failure.
@@ -352,6 +437,87 @@ mod tests {
             (Some(0), Some("b-1")),
             "the outage is reported and paced"
         );
+    }
+
+    #[test]
+    fn ready_hands_out_one_row_per_key_up_to_the_window() {
+        let mut drain = Drain::new(0, false).in_flight(3).expect("a positive window");
+        drain.begin(&[
+            row("a-1", "acct-A", None),
+            row("a-2", "acct-A", None),
+            row("b-1", "acct-B", None),
+            row("c-1", "acct-C", None),
+            row("d-1", "acct-D", None),
+        ]);
+        assert_eq!(
+            drain.ready(),
+            ["a-1", "b-1", "c-1"],
+            "a-2 waits behind a-1, d-1 for room"
+        );
+        assert!(drain.ready().is_empty(), "the window is full");
+        drain.published("b-1");
+        assert_eq!(drain.ready(), ["d-1"], "a-2 still waits behind a-1");
+        drain.published("a-1");
+        assert_eq!(drain.ready(), ["a-2"]);
+        drain.published("a-2");
+        drain.published("c-1");
+        drain.published("d-1");
+        assert!(drain.ready().is_empty());
+        assert_eq!(drain.finish().settled, ["b-1", "a-1", "a-2", "c-1", "d-1"]);
+    }
+
+    #[test]
+    fn a_dead_row_holds_its_key_until_the_sink_answers() {
+        let mut drain = Drain::new(0, true).in_flight(2).expect("a positive window");
+        drain.begin(&[row("a-1", "acct-A", None), row("a-2", "acct-A", None)]);
+        assert_eq!(drain.ready(), ["a-1"]);
+        assert_eq!(
+            drain.failed("a-1", Failure::Terminal),
+            RowFailed::DeadLetter { attempt: 1 }
+        );
+        assert!(drain.ready().is_empty(), "a-2 waits for the sink");
+        assert_eq!(drain.sunk("a-1", 1, None), None);
+        assert_eq!(drain.ready(), ["a-2"]);
+    }
+
+    #[test]
+    fn a_row_in_flight_when_the_drain_stops_is_still_settled() {
+        let mut drain = Drain::new(0, false).in_flight(2).expect("a positive window");
+        drain.begin(&[
+            row("a-1", "acct-A", None),
+            row("b-1", "acct-B", None),
+            row("c-1", "acct-C", None),
+        ]);
+        assert_eq!(drain.ready(), ["a-1", "b-1"]);
+        assert_eq!(drain.failed("a-1", Failure::Fatal), RowFailed::Stop);
+        assert!(drain.ready().is_empty(), "the drain stopped");
+        drain.published("b-1");
+        let drained = drain.finish();
+        assert_eq!(
+            (drained.settled, drained.raise.as_deref()),
+            (vec!["b-1".to_owned()], Some("a-1"))
+        );
+    }
+
+    #[test]
+    fn a_row_failing_after_a_fatal_stop_is_handed_back_uncounted() {
+        let mut drain = Drain::new(0, true).in_flight(2).expect("a positive window");
+        drain.begin(&[row("a-1", "acct-A", None), row("b-1", "acct-B", None)]);
+        assert_eq!(drain.ready(), ["a-1", "b-1"]);
+        assert_eq!(drain.failed("a-1", Failure::Fatal), RowFailed::Stop);
+        assert_eq!(
+            drain.failed("b-1", Failure::Terminal),
+            RowFailed::HandBack,
+            "never to the sink"
+        );
+        assert_eq!(drain.tracked().attempts, 0);
+        let drained = drain.finish();
+        assert_eq!((drained.wait, drained.raise.as_deref()), (None, Some("a-1")));
+    }
+
+    #[test]
+    fn a_window_of_zero_is_refused() {
+        assert!(Drain::new(0, false).in_flight(0).is_err());
     }
 
     #[test]

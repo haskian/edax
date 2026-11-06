@@ -75,7 +75,7 @@ _ENCODE_ERRORS = (TypeError, ValueError, OverflowError, RecursionError)
 def encode_bytes(value: Any) -> bytes:
     """``value`` as UTF-8 JSON bytes, for a kernel call that takes bytes."""
     try:
-        return _JSON_ENCODER.encode(value if _plan(type(value)).direct else _builtins(value, _OWN_FORM))
+        return _JSON_ENCODER.encode(_ready(value, _OWN_FORM))
     except _ENCODE_ERRORS as e:
         raise CodecError(f"value is not JSON-encodable: {e}") from e
 
@@ -85,9 +85,7 @@ def encode_msgpack(value: Any) -> bytes:
     what the MessagePack event codec writes. A value msgspec cannot encode is a
     :class:`~edax.errors.CodecError`."""
     try:
-        return _MSGPACK_ENCODER.encode(
-            value if _plan(type(value)).direct else _builtins(value, _OWN_FORM_BINARY)
-        )
+        return _MSGPACK_ENCODER.encode(_ready(value, _OWN_FORM_BINARY))
     except _ENCODE_ERRORS as e:
         raise CodecError(f"value is not encodable: {e}") from e
 
@@ -133,6 +131,31 @@ def decode_hook(type_: type, value: Any) -> Any:
         except CodecError as e:
             raise ValueError(str(e)) from e  # msgspec adds the path to a ValueError, not to a CodecError
     raise TypeError(f"Expected `{type_.__name__}`, got `{type(value).__name__}`")
+
+
+def _ready(value: Any, own_form: tuple[type, ...]) -> Any:
+    """``value`` as an encoder writes it in the shared form, walked only as far as its type needs."""
+    if _plan(type(value)).direct or _plain(value):
+        return value
+    return _builtins(value, own_form)
+
+
+#: The types an encoder writes as they are and ``to_builtins`` passes through unchanged. A ``Raw`` holds text
+#: an encoder already wrote.
+_PLAIN_SCALARS = frozenset({str, int, float, bool, type(None), msgspec.Raw})
+
+
+def _plain(value: Any) -> bool:
+    """Whether ``value`` holds only JSON's own types, exactly, so the walks below would leave it unchanged.
+    A subclass, a host value or a non-``str`` key takes the walk."""
+    kind = type(value)
+    if kind in _PLAIN_SCALARS:
+        return True
+    if kind is dict:
+        return all(type(key) is str and _plain(item) for key, item in value.items())
+    if kind is list or kind is tuple:
+        return all(_plain(item) for item in value)
+    return False
 
 
 def _builtins(value: Any, own_form: tuple[type, ...]) -> Any:

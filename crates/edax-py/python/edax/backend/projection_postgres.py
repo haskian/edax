@@ -44,14 +44,12 @@ class _Session(ProjectionSession):
         self._store, self._connection = store, connection
 
     async def _lock(self, exclusive: bool, partition: int | None) -> None:
-        await self._store._lock(self._connection, exclusive, partition)
+        # The lock statement answers the database clock, so the transaction needs no clock read of its own.
+        self._now = await self._store._lock(self._connection, exclusive, partition)
 
     async def _read(self, keys: Sequence[str]) -> Mapping[str, Any]:
         rows = await self._store._call(self._connection.fetch(self._store._sql["read"], _json.encode(keys)))
         return {row["key"]: _json.decode(row["value"]) for row in rows}
-
-    async def _clock(self) -> int:
-        return cast(int, await self._store._call(self._connection.fetchval(self._store._sql["clock"])))
 
     async def flush(self) -> None:
         """Write every change of the transaction: one statement per kind."""
@@ -93,11 +91,17 @@ class PostgresProjectionStateStore(ProjectionStateStore):
     async def _call(self, call: Awaitable[T]) -> T:
         return await self._transactor.call(call)
 
-    async def _lock(self, conn: PgConnection, exclusive: bool, partition: int | None) -> None:
+    async def _lock(self, conn: PgConnection, exclusive: bool, partition: int | None) -> int:
+        """Take the locks the kernel named in one statement; return the database clock once they are held."""
         manifest = self.target.manifest_key
-        await self._call(conn.execute(self._sql["lock_exclusive" if exclusive else "lock_shared"], manifest))
+        if exclusive and partition is not None:
+            raise BadHandle("an exclusive projection lock takes no partition")
         if partition is not None:
-            await self._call(conn.execute(self._sql["lock_partition"], manifest, partition))
+            return cast(
+                int, await self._call(conn.fetchval(self._sql["lock_partition"], manifest, partition))
+            )
+        statement = self._sql["lock_exclusive" if exclusive else "lock_shared"]
+        return cast(int, await self._call(conn.fetchval(statement, manifest)))
 
     async def _owned(self, call: Callable[[PgConnection], Awaitable[T]]) -> T:
         async def checked(conn: PgConnection) -> T:

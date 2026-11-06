@@ -11,6 +11,7 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import cached_property
 from time import perf_counter_ns
 from typing import Any, Generic, Literal, Protocol, get_args
 
@@ -81,7 +82,8 @@ class Record:
     with, and its ``state``. A union, as the kernel's ``State`` is, so a record cannot be pending and
     failed at once. Build one with :meth:`pending`, :meth:`done` or :meth:`failed`; read the state with
     ``match`` or ``isinstance``. Wire shape, reading order and replay verdict are the kernel's
-    (``testdata/golden``)."""
+    (``testdata/golden``). A record is encoded once, on first use: never change its result after building
+    it."""
 
     payload_hash: int
     state: RecordState
@@ -102,6 +104,16 @@ class Record:
     ) -> Record:
         """A completed terminal failure: its message, its code, and why a rejection refused."""
         return cls(payload_hash, Failed(error, error_code, error_reason))
+
+    @cached_property
+    def _wire(self) -> str:
+        # Encoded once: a won claim checks its record before the commit and the store writes it after.
+        state = self.state
+        result_json = _json.encode(state.result if isinstance(state, Done) else None)
+        # The kernel's `codec:` refusal, or a hash outside u64, is a terminal CodecError.
+        return _native.encode_idempotency_record(
+            self.payload_hash, isinstance(state, Pending), result_json, *_failure(state)
+        )
 
 
 @dataclass(frozen=True)
@@ -477,13 +489,9 @@ async def _complete_or_release(
 def encode_record(record: Record) -> str:
     """Serialize a :class:`Record` to the kernel's idempotency-record JSON. Public because it is a wire
     contract: every JSON-persisting :class:`IdempotencyStore` backend and every SDK read and write this exact
-    shape, so one key stays readable across SDKs."""
-    state = record.state
-    result_json = _json.encode(state.result if isinstance(state, Done) else None)
-    # The kernel's `codec:` refusal, or a hash outside u64, is a terminal CodecError.
-    return _native.encode_idempotency_record(
-        record.payload_hash, isinstance(state, Pending), result_json, *_failure(state)
-    )
+    shape, so one key stays readable across SDKs. A record is encoded once: its result must not change
+    after."""
+    return record._wire
 
 
 def _failure(state: RecordState) -> tuple[str | None, str | None, str | None]:

@@ -25,6 +25,8 @@ from edax import query as Q
 from edax.backend.memory import MemoryIdempotencyStore, MemoryProjectionStore
 from edax.codec import RegistryCodec, json_codec, msgpack_codec
 from edax.projection import Entity
+from hypothesis import given
+from hypothesis import strategies as st
 
 UTC = dt.timezone.utc
 PLUS_ONE = dt.timezone(dt.timedelta(hours=1))
@@ -611,14 +613,42 @@ class _Line:
         pytest.param(_Loose("sku-42", Decimal("9.50")), False, b'{"sku":"sku-42","price":"9.5"}', id="an_any_field_may_hold_a_decimal_so_it_is_walked"),
         pytest.param(_Line("sku-42"), False, b'{"sku":"sku-42","currency":"EUR"}', id="a_dataclass_is_walked_for_its_defaulted_fields"),
         pytest.param({"price": Decimal("9.50")}, False, b'{"price":"9.5"}', id="a_dict_holds_anything_so_it_is_walked"),
+        pytest.param({"sku": "č\u2028", "n": [2**70, float("nan"), (True, None)]}, False, b'{"sku":"\xc4\x8d\xe2\x80\xa8","n":[1180591620717411303424,null,[true,null]]}', id="a_dict_of_json_types_only_is_written_as_it_is"),
+        pytest.param({1: Decimal("9.50")}, False, b'{"1":"9.5"}', id="a_non_str_key_is_walked"),
+        pytest.param({"contract": msgspec.Raw(b'{"generation":"g1"}'), "n": 1}, False, b'{"contract":{"generation":"g1"},"n":1}', id="already_written_text_is_spliced_in_as_it_is"),
+        pytest.param([_Line("sku-42")], False, b'[{"sku":"sku-42","currency":"EUR"}]', id="a_list_holding_a_dataclass_is_walked"),
     ],
 )  # fmt: skip
 def test_the_encode_plan_is_decided_per_type(value: Any, direct: bool, want: bytes) -> None:
     """Whether a value needs the shared-form walk is read once off its type's declared fields. A type that
     holds no ``datetime``, ``Decimal`` or dataclass is written by msgspec as it is, and its bytes are exactly
-    the walk's; a type that may hold one, an ``Any`` field included, is walked."""
+    the walk's; a type that may hold one, an ``Any`` field included, is walked. A dict or list of JSON's own
+    types only skips the walk, and its bytes are the walk's too."""
     assert _json._plan(type(value)).direct is direct
     assert _json.encode_bytes(value) == want == msgspec.json.encode(_json._builtins(value, _json._OWN_FORM))
+
+
+_JSON_TREES = st.recursive(
+    st.none() | st.booleans() | st.integers() | st.floats() | st.text(),
+    lambda inner: st.lists(inner) | st.tuples(inner, inner) | st.dictionaries(st.text(), inner),
+)
+
+
+def _outcome(encode: Callable[[], bytes]) -> bytes | str:
+    try:
+        return encode()
+    except (OverflowError, edax.CodecError) as e:
+        return str(e).removeprefix("value is not encodable: ")
+
+
+@given(_JSON_TREES)
+def test_a_tree_of_json_types_encodes_exactly_as_the_walk_writes_it(value: Any) -> None:
+    """The plain fast path never changes a byte the full walk writes, in either format, nor what it refuses:
+    MessagePack has no integer wider than 64 bits."""
+    assert _json.encode_bytes(value) == msgspec.json.encode(_json._builtins(value, _json._OWN_FORM))
+    assert _outcome(lambda: _json.encode_msgpack(value)) == _outcome(
+        lambda: msgspec.msgpack.encode(_json._builtins(value, _json._OWN_FORM_BINARY))
+    )
 
 
 @pytest.mark.parametrize(

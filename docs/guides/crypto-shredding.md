@@ -267,7 +267,10 @@ transfers can leave other copies. Python immutable bytes cannot be deterministic
 Already returned keys or plaintext cannot be recalled. Keep keys out of diagnostics and avoid
 retaining them beyond the operation. A Kafka batch runner treats one batch as one operation: its
 `Sealing.for_batch` view reads each subject's keys once, under the operation deadline, and drops
-them with the batch. Its commit's write fence still reads the status afresh.
+them with the batch. Its commit's write fence still reads the status afresh. A repository load is one
+operation too: its `Sealing.for_read` view resolves each key and reads the status once for the whole
+replay. A save reserves one key per scope for all the events, commands or state it seals, each
+sealed under its own nonce.
 
 ## Fence writes through commit
 

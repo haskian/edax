@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any, cast
 
 from . import _native, errors
@@ -35,7 +36,7 @@ class BatchSettings:
     def __post_init__(self) -> None:
         _native.batch_config(self.json)
 
-    @property
+    @cached_property
     def json(self) -> str:
         """The native policy configuration shared by admission, batching, and recovery."""
         return encode(self)

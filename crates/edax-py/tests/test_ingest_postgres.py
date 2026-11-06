@@ -1009,8 +1009,10 @@ async def test_cancelled_stage_rolls_back_all_writes(
     applied = asyncio.Event()
     apply = sink._apply
 
-    async def suspend_after_apply(conn: PgConnection, originals: Sequence[BatchInput]) -> BatchResult:
-        result = await apply(conn, originals)
+    async def suspend_after_apply(
+        conn: PgConnection, originals: Sequence[BatchInput], encoded: str
+    ) -> BatchResult:
+        result = await apply(conn, originals, encoded)
         applied.set()
         await asyncio.Event().wait()
         return result

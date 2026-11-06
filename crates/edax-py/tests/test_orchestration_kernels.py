@@ -347,13 +347,21 @@ def test_golden_relay_drain() -> None:
     """The drain rule's scripts through the native handle the relay holds: every answer as the kernel
     gave it."""
     for scenario in golden("relay_drain.json"):
-        drain = _edax.drain(scenario["max_attempts"], scenario["sink"])
+        build = (scenario["max_attempts"], scenario["sink"], scenario["in_flight"])
+        if "error" in scenario:
+            with pytest.raises(RuntimeError) as refused:
+                _edax.drain(*build)
+            assert str(refused.value) == scenario["error"], scenario["name"]
+            continue
+        drain = _edax.drain(*build)
         for op in scenario["ops"]:
             name, where = op["op"], f"{scenario['name']}: {op}"
             if name == "begin":
                 _begin(drain, _drain_rows(op))
             elif name == "admits":
                 assert drain.admits(op["id"]) is op["want"], where
+            elif name == "ready":
+                assert drain.ready() == op["want"], where
             elif name == "published":
                 drain.published(op["id"])
             elif name == "failed":
@@ -431,6 +439,91 @@ async def test_a_failing_key_holds_back_only_its_own_rows(
     assert type(raised.value).__name__ == want_raised
     assert sent == want_sent
     assert [e.id for e in await store.unpublished(100)] == want_left
+
+
+@pytest.mark.parametrize(
+    "in_flight, fails, want_raised, want_peak, want_left",
+    [
+        pytest.param(0, {}, "BadHandle", 0, [], id="a_window_of_zero_is_refused_at_construction"),
+        pytest.param(1, {}, None, 1, [], id="one_at_a_time_publishes_serially"),
+        pytest.param(3, {}, None, 2, [], id="a_window_publishes_one_row_per_key_at_once"),
+        pytest.param(
+            3,
+            {"acct-A": TERMINAL},
+            "CodecError",
+            2,
+            ["acct-A-1", "acct-A-2"],
+            id="a_failing_key_holds_back_its_rows_while_the_other_publishes",
+        ),
+    ],
+)
+async def test_a_window_publishes_keys_at_once_and_each_key_in_order(
+    in_flight: int, fails: dict[str, Exception], want_raised: str | None, want_peak: int, want_left: list[str]
+) -> None:
+    """``in_flight`` rows publish at once, never two of one key, and each key's rows publish in order."""
+    store = MemoryEventStore()
+    for seq in (1, 2):
+        for agg in ("acct-A", "acct-B"):
+            await store.append(
+                None, agg, seq - 1, [drafted(build_message(agg, "Deposited", seq, id=f"{agg}-{seq}"))]
+            )
+    sending: set[str] = set()
+    peak = 0
+    landed: list[str] = []
+
+    async def publish(row: edax.EventMessage) -> None:
+        nonlocal peak
+        assert row.aggregate_id not in sending, "two rows of one key at once"
+        sending.add(row.aggregate_id)
+        peak = max(peak, len(sending))
+        await asyncio.sleep(0)
+        sending.discard(row.aggregate_id)
+        if (failure := fails.get(row.aggregate_id)) is not None:
+            raise failure
+        landed.append(row.id)
+
+    if want_raised == "BadHandle":
+        with pytest.raises(edax.BadHandle):
+            edax.Relay(store, publish, in_flight=in_flight)
+        return
+    relay = edax.Relay(store, publish, pacing=recording_pacing()[0], in_flight=in_flight)
+    if want_raised is None:
+        assert await relay.drain() == 4
+    else:
+        with pytest.raises(edax.EdaxError) as raised:
+            await relay.drain()
+        assert type(raised.value).__name__ == want_raised
+    assert peak == want_peak
+    for agg in ("acct-A", "acct-B"):
+        mine = [row_id for row_id in landed if row_id.startswith(agg)]
+        assert mine == sorted(mine), f"{agg} published out of order"
+    assert [e.id for e in await store.unpublished(100)] == want_left
+
+
+async def test_a_cancelled_window_cancels_its_publishes_and_marks_nothing() -> None:
+    """A drain cancelled part way ends every publish still in flight and leaves their rows to the next drain."""
+    store = MemoryEventStore()
+    for agg in ("acct-A", "acct-B"):
+        await store.append(None, agg, 0, [drafted(build_message(agg, "Deposited", 1, id=f"{agg}-1"))])
+    started: list[str] = []
+    cancelled: list[str] = []
+
+    async def publish(row: edax.EventMessage) -> None:
+        started.append(row.id)
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.append(row.id)
+            raise
+
+    draining = asyncio.create_task(edax.Relay(store, publish, in_flight=2).drain())
+    while len(started) < 2:
+        await asyncio.sleep(0)
+    draining.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await draining
+    assert sorted(cancelled) == ["acct-A-1", "acct-B-1"]
+    assert [e.id for e in await store.unpublished(100)] == ["acct-A-1", "acct-B-1"]
 
 
 # pyo3 raises a Rust panic as `pyo3_runtime.PanicException`, a BaseException; one class per extension.

@@ -895,3 +895,91 @@ func TestHostValuesGoldenUnixNanos(t *testing.T) {
 		t.Fatalf("now %v %v outside [%v, %v]", now, err, before, after)
 	}
 }
+
+func TestRelayDrainGolden(t *testing.T) {
+	type wantFinish struct {
+		Settled      []string `json:"settled"`
+		Published    uint64   `json:"published"`
+		DeadLettered uint64   `json:"dead_lettered"`
+		Wait         *uint64  `json:"wait"`
+		Raise        *string  `json:"raise"`
+	}
+	for _, row := range goldenRows[struct {
+		Name        string  `json:"name"`
+		MaxAttempts uint32  `json:"max_attempts"`
+		Sink        bool    `json:"sink"`
+		InFlight    uint32  `json:"in_flight"`
+		Error       *string `json:"error"`
+		Ops         []struct {
+			Op      string            `json:"op"`
+			Rows    []kernel.DrainRow `json:"rows"`
+			ID      string            `json:"id"`
+			Code    *string           `json:"code"`
+			Attempt uint32            `json:"attempt"`
+			Taken   bool              `json:"taken"`
+			Want    json.RawMessage   `json:"want"`
+		} `json:"ops"`
+	}](t, "relay_drain") {
+		t.Run(row.Name, func(t *testing.T) {
+			drain, err := kernel.GetDrain(row.MaxAttempts, row.Sink, row.InFlight)
+			if goldenError(t, err, row.Error) {
+				return
+			}
+			defer drain.Close()
+			for _, op := range row.Ops {
+				var got any
+				switch op.Op {
+				case "begin":
+					err = drain.Begin(op.Rows)
+				case "admits":
+					got, err = drain.Admits(op.ID)
+				case "ready":
+					var ids []string
+					ids, err = drain.Ready()
+					got = append([]string{}, ids...)
+				case "published":
+					err = drain.Published(op.ID)
+				case "failed":
+					var answer *kernel.DrainRowFailed
+					answer, err = drain.Failed(op.ID, op.Code)
+					if answer != nil {
+						got = map[string]*uint32{answer.Action: answer.Attempt}
+					}
+				case "sunk":
+					var answer *kernel.DrainRowFailed
+					answer, err = drain.Sunk(op.ID, op.Attempt, op.Taken, op.Code)
+					if answer != nil {
+						got = answer.Action
+					}
+				case "finish":
+					var drained *kernel.Drained
+					drained, err = drain.Finish()
+					if drained != nil {
+						got = wantFinish{append([]string{}, drained.Settled...), drained.Published, drained.DeadLettered, drained.WaitStep, drained.RaiseID}
+					}
+				case "store_failed":
+					got, err = drain.StoreFailed()
+				case "store_answered":
+					err = drain.StoreAnswered()
+				case "tracked":
+					got, err = drain.Tracked()
+				default:
+					t.Fatalf("unknown op %q", op.Op)
+				}
+				if err != nil {
+					t.Fatalf("%s: %v", op.Op, err)
+				}
+				if op.Want == nil {
+					continue
+				}
+				encoded, err := json.Marshal(got)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(jsonValue(t, encoded), jsonValue(t, op.Want)) {
+					t.Fatalf("%s %s: got %s, want %s", op.Op, op.ID, encoded, op.Want)
+				}
+			}
+		})
+	}
+}

@@ -21,9 +21,12 @@ T = TypeVar("T")
 
 
 def _mapping(native: Callable[..., Any]) -> Callable[..., Any]:
+    # A plain try, not errors.mapped(): a generator context manager per call doubles a kernel call's cost.
     def call(*args: Any, **kwargs: Any) -> Any:
-        with errors.mapped():
+        try:
             return native(*args, **kwargs)
+        except errors.NATIVE_FAILURES as e:
+            raise errors.native_failure(e) from e
 
     return call
 
@@ -31,14 +34,21 @@ def _mapping(native: Callable[..., Any]) -> Callable[..., Any]:
 class _Mapped:
     """A native object whose every method call runs under :func:`~edax.errors.mapped`."""
 
-    __slots__ = ("_native",)
+    __slots__ = ("_methods", "_native")
 
     def __init__(self, native: object) -> None:
         self._native = native
+        self._methods: dict[str, Callable[..., Any]] = {}
 
     def __getattr__(self, name: str) -> Any:
+        method = self._methods.get(name)
+        if method is not None:
+            return method
         attribute = getattr(self._native, name)
-        return _mapping(attribute) if callable(attribute) else attribute
+        if not callable(attribute):
+            return attribute
+        method = self._methods[name] = _mapping(attribute)
+        return method
 
 
 def handle(native: T) -> T:

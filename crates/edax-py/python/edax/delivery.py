@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Final, Generic, TypeVar
@@ -61,7 +62,13 @@ async def _run_to_end(outcome: MaybeAwaitable[None]) -> None:
     would leave the item marked settled with nothing done, and nothing would hand it back."""
     if not inspect.isawaitable(outcome):
         return
-    running = asyncio.ensure_future(outcome)
+    if sys.version_info >= (3, 12) and inspect.iscoroutine(outcome):
+        # Started at once: a callback that finishes without suspending had no cancel window to protect.
+        running = asyncio.Task(outcome, loop=asyncio.get_running_loop(), eager_start=True)
+        if running.done():
+            return running.result()
+    else:
+        running = asyncio.ensure_future(outcome)
     _SETTLING.add(running)
     running.add_done_callback(_SETTLING.discard)
     try:

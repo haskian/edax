@@ -1344,6 +1344,8 @@ enum DrainOp {
     /// Start a drain of command rows `(id, aggregate, tenant)`.
     Commands(Vec<(&'static str, Option<&'static str>, Option<&'static str>)>),
     Admits(&'static str),
+    /// The rows the drain hands out to publish now.
+    Ready,
     Published(&'static str),
     Failed(&'static str, Option<ErrorCode>),
     /// The sink took the row `id`, dead at the attempt.
@@ -1357,9 +1359,9 @@ enum DrainOp {
 }
 
 /// The outbox relay's drain as operation scripts, like `retries.json`: each scenario builds
-/// `Drain::new(max_attempts, sink)` and replays `ops`, each with the answer the kernel gave. A `begin`
-/// op lists the batch's rows by id, aggregate and tenant; a failed op carries the failure's code. One
-/// scenario per branch of the rule.
+/// `Drain::new(max_attempts, sink).in_flight(in_flight)` and replays `ops`, each with the answer the kernel
+/// gave. A `begin` op lists the batch's rows by id, aggregate and tenant; a failed op carries the failure's
+/// code. One scenario per branch of the rule; a window the kernel refuses carries its `error` and no ops.
 fn relay_drain_cases() -> Vec<Value> {
     use DrainOp::*;
     const TRANSIENT: Option<ErrorCode> = Some(ErrorCode::Store);
@@ -1654,6 +1656,155 @@ fn relay_drain_cases() -> Vec<Value> {
             ],
         ),
     ];
+    let one_at_a_time = scenarios
+        .into_iter()
+        .map(|(name, max_attempts, sink, ops)| (name, max_attempts, sink, 1, ops));
+    let five_keys = || {
+        Events(vec![
+            ("a-1", "acct-A", None),
+            ("a-2", "acct-A", None),
+            ("b-1", "acct-B", None),
+            ("c-1", "acct-C", None),
+            ("d-1", "acct-D", None),
+        ])
+    };
+    let windowed: Vec<(&str, u32, bool, u32, Vec<DrainOp>)> = vec![
+        ("a_window_of_zero_is_refused", 0, false, 0, vec![]),
+        (
+            "one_at_a_time_hands_out_the_batch_in_order",
+            0,
+            false,
+            1,
+            vec![
+                five_keys(),
+                Ready,
+                Ready,
+                Published("a-1"),
+                Ready,
+                Published("a-2"),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "the_window_holds_one_row_per_key",
+            0,
+            false,
+            3,
+            vec![
+                five_keys(),
+                Ready,
+                Ready,
+                Published("b-1"),
+                Ready,
+                Published("a-1"),
+                Ready,
+                Published("c-1"),
+                Published("d-1"),
+                Published("a-2"),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "a_failed_row_blocks_its_key_while_the_others_publish",
+            0,
+            false,
+            3,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", TERMINAL),
+                Ready,
+                Published("b-1"),
+                Published("c-1"),
+                Published("d-1"),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "a_dead_row_holds_its_key_until_the_sink_answers",
+            0,
+            true,
+            2,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", TERMINAL),
+                Ready,
+                Taken("a-1", 1),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "rows_in_flight_when_an_outage_stops_the_drain_are_still_settled",
+            0,
+            false,
+            4,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", TRANSIENT),
+                Failed("b-1", TRANSIENT),
+                Ready,
+                Published("c-1"),
+                Published("d-1"),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "a_row_failing_after_a_fatal_stop_is_handed_back_uncounted",
+            0,
+            true,
+            2,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", FATAL),
+                Failed("b-1", TERMINAL),
+                Ready,
+                Finish,
+                Tracked,
+            ],
+        ),
+        (
+            // The sink took both failed rows, so the outage raises the row that stopped it, with its step.
+            // A row still in flight that fails after the stop leaves that report as it is.
+            "a_row_failing_after_an_outage_keeps_the_outage_report",
+            1,
+            true,
+            3,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", TRANSIENT),
+                Taken("a-1", 1),
+                Failed("b-1", TRANSIENT),
+                Taken("b-1", 1),
+                Failed("c-1", TRANSIENT),
+                Ready,
+                Finish,
+            ],
+        ),
+        (
+            "a_fatal_failure_stops_handing_out_and_waits_nothing",
+            0,
+            false,
+            2,
+            vec![
+                five_keys(),
+                Ready,
+                Failed("a-1", FATAL),
+                Ready,
+                Published("b-1"),
+                Ready,
+                Finish,
+            ],
+        ),
+    ];
     let event = |(id, aggregate, tenant): (&str, &str, Option<&str>)| EventMessage {
         id: id.to_owned(),
         aggregate_id: aggregate.to_owned(),
@@ -1666,10 +1817,15 @@ fn relay_drain_cases() -> Vec<Value> {
         tenant: tenant.map(ToOwned::to_owned),
         ..base_command()
     };
-    scenarios
-        .into_iter()
-        .map(|(name, max_attempts, sink, ops)| {
-            let mut drain = edax_event::Drain::new(max_attempts, sink);
+    one_at_a_time
+        .chain(windowed)
+        .map(|(name, max_attempts, sink, in_flight, ops)| {
+            let mut drain = match edax_event::Drain::new(max_attempts, sink).in_flight(in_flight) {
+                Ok(drain) => drain,
+                Err(e) => {
+                    return json!({ "name": name, "max_attempts": max_attempts, "sink": sink, "in_flight": in_flight, "error": e.to_string() })
+                }
+            };
             let ops: Vec<Value> = ops
                 .into_iter()
                 .map(|op| match op {
@@ -1684,6 +1840,7 @@ fn relay_drain_cases() -> Vec<Value> {
                         json!({ "op": "begin", "kind": "command", "rows": rows })
                     }
                     Admits(id) => json!({ "op": "admits", "id": id, "want": drain.admits(id) }),
+                    Ready => json!({ "op": "ready", "want": drain.ready() }),
                     Published(id) => {
                         drain.published(id);
                         json!({ "op": "published", "id": id })
@@ -1725,7 +1882,7 @@ fn relay_drain_cases() -> Vec<Value> {
                     }
                 })
                 .collect();
-            json!({ "name": name, "max_attempts": max_attempts, "sink": sink, "ops": ops })
+            json!({ "name": name, "max_attempts": max_attempts, "sink": sink, "in_flight": in_flight, "ops": ops })
         })
         .collect()
 }

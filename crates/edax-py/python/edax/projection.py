@@ -20,6 +20,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from typing import Any, Protocol, TypeVar, cast, runtime_checkable
 
+import msgspec
+
 from . import _json, _native
 from ._owned import ThreadBound
 from ._units import own_write
@@ -180,7 +182,7 @@ class ProjectionTarget:
 
     def request(self, **operation: Any) -> str:
         """The kernel request for ``operation`` against this contract."""
-        return _json.encode({"contract": _json.decode(self._contract), "operation": operation})
+        return _json.encode({"contract": msgspec.Raw(self._contract), "operation": operation})
 
     def check_source(self, proof: SourceProof, cursor: int) -> None:
         """Refuse ``proof`` unless it proves this contract's source holds ``cursor``: the kernel's check."""
@@ -338,7 +340,8 @@ AssignmentGuard = Callable[[], bool]
 class ProjectionSession:
     """One transaction's view of a generation, the seam a store adapter implements. Each record is read
     once, the kernel decides every operation against those reads, and every change is written once when
-    the transaction ends. An adapter supplies :meth:`_lock`, :meth:`_read` and :meth:`_clock`."""
+    the transaction ends. An adapter supplies :meth:`_lock`, :meth:`_read` and :meth:`_clock`; one whose
+    lock reads the clock sets ``_now`` there instead."""
 
     def __init__(self, target: ProjectionTarget) -> None:
         self.target = target
@@ -612,8 +615,11 @@ class ProjectionStateStore:
         """Fold one batch in one transaction: extend the lease, run ``reducer`` once per novel event in
         source order, and commit state, receipts, intents and the next offset together. Hold every
         non-erased input's scope fence through completion, even when no value needs encryption."""
-        # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits.
-        originals = _json.decode(_json.encode(inputs))
+        # Snapshot before awaiting storage. A caller cannot mutate reducer input during lock waits. Each
+        # kernel request splices the snapshot's text in, so the batch is encoded once.
+        encoded = _json.encode(inputs)
+        originals = _json.decode(encoded)
+        batch = msgspec.Raw(encoded)
         supplied = _commit_sealing.get()
         sealing = (
             supplied[1] if supplied is not None and supplied[0] is self._sealing_identity else self.sealing
@@ -629,12 +635,12 @@ class ProjectionStateStore:
 
         async def apply(session: ProjectionSession) -> ProjectionLease:
             # One read for the whole batch: the batch's records with the extension's checkpoint.
-            await session.prefetch(op="prepare_batch", lease=lease, inputs=originals, proof=proof)
+            await session.prefetch(op="prepare_batch", lease=lease, inputs=batch, proof=proof)
             # Staging may outlive the lease; the extension shares this transaction's reads.
             current = await session.execute(
                 op="refresh", lease=lease, lease_ms=lease_ms, proof=proof, expected_offset=lease.next_offset
             )
-            prepared = await session.execute(op="prepare_batch", lease=current, inputs=originals, proof=proof)
+            prepared = await session.execute(op="prepare_batch", lease=current, inputs=batch, proof=proof)
             states: dict[tuple[str | None, str], ProjectionState | None] = {}
             reduced: list[Any] = []
             novel: list[tuple[Mapping[str, Any], dict[str, Any]]] = []
@@ -662,7 +668,7 @@ class ProjectionStateStore:
             await self._seal(novel, sealing)
             committed = ProjectionLease(
                 **await session.execute(
-                    op="apply_batch", lease=current, inputs=originals, proof=proof, reduced=reduced
+                    op="apply_batch", lease=current, inputs=batch, proof=proof, reduced=reduced
                 )
             )
             _guard(is_current)

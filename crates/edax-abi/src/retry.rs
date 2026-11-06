@@ -272,6 +272,12 @@ impl Drain {
         edax_core::lock(&self.inner).admits(id)
     }
 
+    /// The ids of the rows to publish now, in batch order, at most one per key beside the rows in flight.
+    /// See [`edax_event::Drain::ready`].
+    pub fn ready(&self) -> Vec<String> {
+        edax_core::lock(&self.inner).ready()
+    }
+
     /// The row `id` was published.
     pub fn published(&self, id: &str) {
         edax_core::lock(&self.inner).published(id);
@@ -331,11 +337,15 @@ impl Drain {
 }
 
 /// The drain rule of a relay whose rows die at their `max_attempts`-th transient failure (`0`: never) or
-/// at a terminal one, when it has a dead-letter `sink`.
-pub fn drain(max_attempts: u32, sink: bool) -> Drain {
-    Drain {
-        inner: Arc::new(Mutex::new(edax_event::Drain::new(max_attempts, sink))),
-    }
+/// at a terminal one, when it has a dead-letter `sink`, and that publishes up to `in_flight` rows at once.
+/// An `in_flight` of `0` is a `bad_handle:` error. See [`edax_event::Drain::in_flight`].
+pub fn drain(max_attempts: u32, sink: bool, in_flight: u32) -> Result<Drain, String> {
+    let drain = edax_event::Drain::new(max_attempts, sink)
+        .in_flight(in_flight)
+        .map_err(to_wire)?;
+    Ok(Drain {
+        inner: Arc::new(Mutex::new(drain)),
+    })
 }
 
 #[cfg(test)]
@@ -433,7 +443,7 @@ mod tests {
             tenant: None,
             aggregate_id: Some(aggregate.to_owned()),
         };
-        let drain = drain(0, true);
+        let drain = drain(0, true, 1).expect("a positive window");
         drain.begin(vec![row("a-1", "acct-A"), row("b-1", "acct-B"), row("a-2", "acct-A")]);
         let dead = drain.failed("a-1", Some("codec".to_owned())).unwrap();
         assert_eq!((dead.action.as_str(), dead.attempt), ("dead_letter", Some(1)));

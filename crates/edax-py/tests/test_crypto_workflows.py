@@ -126,6 +126,62 @@ async def test_repository_encrypts_events_snapshots_outboxes_and_both_wire_forma
         await sealing.open_command(sent[0])
 
 
+class CountingKeys(MemoryKeys):
+    """Counts the provider reads a load makes."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.reads: list[str] = []
+
+    async def resolve(self, scope: Any, cipher: Any, key_id: str) -> bytes:
+        self.reads.append(f"resolve:{key_id}")
+        return await super().resolve(scope, cipher, key_id)
+
+    async def status(self, scope: Any) -> Any:
+        self.reads.append("status")
+        return await super().status(scope)
+
+    async def reserve(self, scope: Any, cipher: Any, count: int = 1) -> Any:
+        self.reads.append(f"reserve:{count}")
+        return await super().reserve(scope, cipher, count)
+
+
+async def test_a_save_reserves_once_per_kind_for_all_its_items() -> None:
+    """A sealed save reserves one key per kind of item it seals, sized to the items, not one per item."""
+    keys = CountingKeys()
+    store = MemoryEventStore()
+    outbox = MemoryCommandOutbox(store.transactor)
+    repo = repository(store, Sealing(keys, "profiles"), commands=outbox, snapshot_every=1)
+    profile = await repo.load("profile-1", subject=SUBJECT)
+    for n in range(4):
+        profile.apply(CreateUser(f"{n}-{EMAIL}"))
+    commands = [edax.command_message(CreateUser(EMAIL), codec=COMMANDS) for _ in range(2)]
+    keys.reads.clear()
+    await repo.save(profile, commands=commands)
+    assert sorted(read for read in keys.reads if read.startswith("reserve")) == [
+        "reserve:1",
+        "reserve:2",
+        "reserve:4",
+    ]
+
+
+async def test_a_load_reads_each_key_and_the_status_once() -> None:
+    """A sealed load replays every event through one view: the provider sees one resolve per key and one
+    status per scope, not two calls per event."""
+    keys = CountingKeys()
+    store = MemoryEventStore()
+    repo = repository(store, Sealing(keys, "profiles"), snapshot_every=0)
+    profile = await repo.load("profile-1", subject=SUBJECT)
+    for n in range(4):
+        profile.apply(CreateUser(f"{n}-{EMAIL}"))
+    stored = await repo.save(profile)
+    key_ids = {msg.encryption.key_id for msg in stored if msg.encryption is not None}
+    keys.reads.clear()
+    loaded = await repo.load(profile.id, subject=SUBJECT)
+    assert loaded.email == f"3-{EMAIL}"
+    assert sorted(keys.reads) == sorted(["status", *(f"resolve:{key_id}" for key_id in key_ids)])
+
+
 @pytest.mark.parametrize("snapshot_every", [0, 1])
 async def test_committed_repository_owner_cannot_change_or_be_cleared(snapshot_every: int) -> None:
     store = MemoryEventStore()

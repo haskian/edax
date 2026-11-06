@@ -1383,3 +1383,37 @@ async def test_submit_refuses_a_bare_message() -> None:
         await dispatcher.submit(message)
     await dispatcher.stop()
     assert handled == [] and dispatcher.idle()
+
+
+@pytest.mark.skipif(sys.version_info < (3, 12), reason="eager task start is Python 3.12+")
+@pytest.mark.parametrize(
+    "suspends, want_tracked, want_raised",
+    [
+        pytest.param(False, False, None, id="a_callback_that_never_suspends_runs_inline_untracked"),
+        pytest.param(False, False, "ack refused", id="its_failure_is_raised_at_once"),
+        pytest.param(True, True, None, id="a_callback_that_suspends_is_tracked_until_it_ends"),
+    ],
+)
+async def test_an_async_settle_callback_starts_at_once(
+    suspends: bool, want_tracked: bool, want_raised: str | None
+) -> None:
+    """On Python 3.12+ an async ack starts in place: one that ends without suspending needs no task to
+    outlive a cancel, and a failure surfaces as it would through the shield."""
+    tracked: list[bool] = []
+
+    async def ack() -> None:
+        if suspends:
+            await asyncio.sleep(0)
+        tracked.append(bool(edax.delivery._SETTLING))
+        if want_raised:
+            raise edax.StoreError(want_raised)
+
+    delivery = unsettled(build_message("acct-1", "Deposited", 1))
+    delivery.on_ack = ack
+    if want_raised:
+        with pytest.raises(edax.StoreError, match=want_raised):
+            await delivery.ack()
+    else:
+        await delivery.ack()
+    assert tracked == [want_tracked]
+    assert not edax.delivery._SETTLING

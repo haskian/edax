@@ -58,13 +58,17 @@ fn scope_locks_are_parent_first_and_erasure_conflicts_with_every_writer() {
         subject: None,
         ..subject.clone()
     };
+    let mut ids = [
+        erasure::scope_id(&parent).unwrap(),
+        erasure::scope_id(&subject).unwrap(),
+    ];
+    ids.sort();
     assert_eq!(
-        erasure::guard_params(&subject).unwrap(),
-        vec![
-            Some(erasure::scope_id(&parent).unwrap()),
-            Some(erasure::scope_id(&subject).unwrap())
-        ]
+        erasure::guard_params(&[subject.clone(), subject.clone()]).unwrap(),
+        vec![Some(serde_json::to_string(&ids).unwrap())],
+        "every scope's parent and exact ID, once each"
     );
+    assert!(erasure::guard_params(&[]).is_err(), "a guard needs a scope");
 }
 
 #[test]
@@ -353,7 +357,10 @@ mod live {
         let mut writer = Session::new(&db);
         writer.run("BEGIN ISOLATION LEVEL READ COMMITTED");
         writer.run(&db.calls(&erasure::writer_locks(std::slice::from_ref(&patient)).unwrap()));
-        let guard = writer.run(&bind(&db.sql.check_revoked, &erasure::guard_params(&patient).unwrap()));
+        let guard = writer.run(&bind(
+            &db.sql.check_revoked,
+            &erasure::guard_params(std::slice::from_ref(&patient)).unwrap(),
+        ));
         erasure::check_guard(&guard).unwrap();
 
         for erased in [patient.clone(), scope(None)] {
@@ -372,7 +379,10 @@ mod live {
             let scope = scope(Some(subject));
             writer.run("BEGIN ISOLATION LEVEL READ COMMITTED");
             writer.run(&db.calls(&erasure::writer_locks(std::slice::from_ref(&scope)).unwrap()));
-            let row = writer.run(&bind(&db.sql.check_revoked, &erasure::guard_params(&scope).unwrap()));
+            let row = writer.run(&bind(
+                &db.sql.check_revoked,
+                &erasure::guard_params(std::slice::from_ref(&scope)).unwrap(),
+            ));
             assert!(erasure::check_guard(&row).is_err());
             writer.run("ROLLBACK");
         }

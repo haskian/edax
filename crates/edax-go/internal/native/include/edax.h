@@ -739,6 +739,14 @@ int32_t edax_drain_admits(EDAXAlefHandle this_,
                           const char *id);
 
 /**
+ * The ids of the rows to publish now, in batch order, at most one per key beside the rows in flight.
+ * See `edax_event.Drain.ready`.
+ * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
+ * freed with the appropriate free function.
+ */
+char *edax_drain_ready(EDAXAlefHandle this_);
+
+/**
  * The row `id` was published.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
@@ -4839,12 +4847,15 @@ EDAXAlefHandle edax_draft_batch(const char *aggregate_id,
 /**
  * The drain rule of a relay whose rows die at their `max_attempts`-th transient failure (`0`: never)
  * or
- * at a terminal one, when it has a dead-letter `sink`.
+ * at a terminal one, when it has a dead-letter `sink`, and that publishes up to `in_flight` rows at
+ * once.
+ * An `in_flight` of `0` is a `bad_handle:` error. See `edax_event.Drain.in_flight`.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
 EDAXAlefHandle edax_drain(uint32_t max_attempts,
-                          int32_t sink);
+                          int32_t sink,
+                          uint32_t in_flight);
 
 /**
  * Every name `DrainRowFailed.action` takes, in the kernel's order. See `edax_event.RowFailedKind`.
@@ -6584,11 +6595,11 @@ char *edax_postgres_erasure_decode_operation(const char *row);
 uintptr_t edax_postgres_erasure_decode_operation_len(const char *_row);
 
 /**
- * Parameters for the fresh-snapshot revocation check after locks are held.
+ * Parameters for the one fresh-snapshot revocation check of every guarded scope after locks are held.
  * \note SAFETY: Caller must ensure all pointer arguments are valid or null. Returned pointers must be
  * freed with the appropriate free function.
  */
-char *edax_postgres_erasure_guard_params(EDAXAlefHandle scope);
+char *edax_postgres_erasure_guard_params(const char *scopes);
 
 /**
  * Return the byte length of the C string most recently returned by
@@ -6598,7 +6609,7 @@ char *edax_postgres_erasure_guard_params(EDAXAlefHandle scope);
  * \note SAFETY: Pointer arguments are ignored and are present only to keep the companion ABI aligned
  * with `edax_postgres_erasure_guard_params`.
  */
-uintptr_t edax_postgres_erasure_guard_params_len(EDAXAlefHandle _scope);
+uintptr_t edax_postgres_erasure_guard_params_len(const char *_scopes);
 
 /**
  * Parameters for a request lookup.

@@ -8,13 +8,13 @@ This store holds no keys and cannot coordinate a separate application's unfenced
 from __future__ import annotations
 
 import asyncio
-import json
+import itertools
 import math
 from collections.abc import AsyncIterator, Awaitable, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from typing import Literal, Protocol, TypeVar, cast
+from typing import Any, Literal, Protocol, TypeVar, cast
 
-from .. import _native
+from .. import _json, _native
 from .._wiring import wiring_u64
 from ..erasure import ErasureAction, ErasureNotification, ErasureOperation, StoredErasure
 from ..errors import BadHandle, EdaxError
@@ -31,6 +31,7 @@ class PgErasureConnection(Protocol):
     """The asyncpg connection operations needed by the store and destination guard."""
 
     async def execute(self, query: str, *args: str | None) -> str: ...
+    async def executemany(self, query: str, args: Sequence[Sequence[str | None]]) -> None: ...
     async def fetchval(self, query: str, *args: str | None) -> str | int | None: ...
     async def fetch(self, query: str, *args: str | None) -> Sequence[Sequence[str]]: ...
     def transaction(self, *, isolation: str) -> AbstractAsyncContextManager[None]: ...
@@ -50,7 +51,7 @@ def reference_ddl(schema: str = "public", tables: Mapping[str, str] | None = Non
     ``tables`` names a table per role (``erasure_operations``, ``erasure_notifications``,
     ``erasure_revocations``); an unnamed role takes ``edax_<role>``. Pass the store the same mapping.
     """
-    return _native.postgres_erasure_reference_ddl(json.dumps(table_config(schema, tables)))
+    return _native.postgres_erasure_reference_ddl(_json.encode(table_config(schema, tables)))
 
 
 class PostgresErasureStore:
@@ -72,10 +73,10 @@ class PostgresErasureStore:
         if not math.isfinite(timeout) or timeout <= 0:
             raise BadHandle("Postgres erasure timeout must be finite and positive")
         # The kernel refuses an unknown role, a name outside its rule or two roles under one name.
-        self._config = json.dumps(table_config(schema, tables))
+        self._config = _json.encode(table_config(schema, tables))
         self._pool = pool
         self._timeout = timeout
-        self._sql = cast(dict[str, str], json.loads(_native.postgres_erasure_statements(self._config)))
+        self._sql = cast(dict[str, str], _json.decode(_native.postgres_erasure_statements(self._config)))
 
     async def check(self) -> None:
         """Read the catalog and refuse incompatible control tables without provisioning them."""
@@ -84,10 +85,15 @@ class PostgresErasureStore:
             _native.postgres_erasure_check_catalog(self._config, cast(str, catalog))
 
     async def _await(
-        self, call: Awaitable[T], *, op: Literal["transaction", "erasure_fence"] = "transaction"
+        self,
+        call: Awaitable[T],
+        *,
+        op: Literal["transaction", "erasure_fence"] = "transaction",
+        effects: int = 1,
     ) -> T:
+        """``call`` under the store's timeout, once per database effect it carries."""
         try:
-            return await asyncio.wait_for(call, self._timeout)
+            return await asyncio.wait_for(call, self._timeout * effects)
         except EdaxError:
             raise
         except Exception as error:
@@ -125,8 +131,8 @@ class PostgresErasureStore:
 
     @staticmethod
     def _decode(row: str) -> StoredErasure:
-        wire = json.loads(_native.postgres_erasure_decode_operation(row))
-        return StoredErasure(wire["version"], ErasureOperation(json.dumps(wire["operation"])))
+        wire = _json.decode(_native.postgres_erasure_decode_operation(row))
+        return StoredErasure(wire["version"], ErasureOperation(_json.encode(wire["operation"])))
 
     async def create(self, candidate: ErasureOperation) -> StoredErasure:
         params = postgres_params(_native.postgres_erasure_create_params(candidate.record))
@@ -198,13 +204,13 @@ class PostgresErasureStore:
             await self._await(connection.execute(self._sql["mark_published"], operation_id))
 
     async def _locks(self, connection: PgErasureConnection, calls_json: str) -> None:
-        calls = cast(list[dict[str, object]], json.loads(calls_json))
-        for call in calls:
+        """Take the kernel's lock calls in its order, each run of one statement in one round trip."""
+        calls = cast(list[dict[str, Any]], _json.decode(calls_json))
+        for statement, run in itertools.groupby(calls, key=lambda call: cast(str, call["statement"])):
+            params = [call["params"] for call in run]
+            # Each lock may wait out the timeout, as it did as its own statement.
             await self._await(
-                connection.execute(
-                    self._sql[cast(str, call["statement"])], *cast(list[str | None], call["params"])
-                ),
-                op="erasure_fence",
+                connection.executemany(self._sql[statement], params), op="erasure_fence", effects=len(params)
             )
 
     async def guard_in_transaction(self, connection: PgErasureConnection, *scopes: KeyScope) -> None:
@@ -220,13 +226,14 @@ class PostgresErasureStore:
         if not connection.is_in_transaction():
             raise BadHandle("an erasure write guard requires an open transaction")
         await self._locks(connection, _native.postgres_erasure_writer_locks(list(scopes)))
-        for scope in scopes:
-            row = await self._await(
-                connection.fetchval(
-                    self._sql["check_revoked"], *postgres_params(_native.postgres_erasure_guard_params(scope))
-                )
+        # One fresh read for every scope, after the locks: READ COMMITTED snapshots each statement.
+        row = await self._await(
+            connection.fetchval(
+                self._sql["check_revoked"],
+                *postgres_params(_native.postgres_erasure_guard_params(list(scopes))),
             )
-            _native.postgres_erasure_check_guard(cast(str, row))
+        )
+        _native.postgres_erasure_check_guard(cast(str, row))
 
     @asynccontextmanager
     async def writer_guard(self, scope: KeyScope) -> AsyncIterator[PgErasureConnection]:

@@ -12,16 +12,18 @@ import contextlib
 from collections.abc import AsyncIterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
+from functools import cached_property, partial
 from typing import Any, Literal, Protocol, TypedDict, cast
 
 from . import _native
+from ._async import gather_bounded
 from ._json import decode, encode
 from ._owned import ThreadBound
 from ._units import own_write, transaction_guard
 from .erasure import ScopeCleanup
 from .errors import BadHandle, CodecError
 from .outbox import check_page
-from .sealing import AtRest, KeyScope, ScopeGuard, Sealing, SealPart
+from .sealing import PROVIDER_CONCURRENCY, AtRest, KeyScope, ScopeGuard, Sealing, SealPart
 
 __all__ = [
     "BatchInput",
@@ -103,7 +105,7 @@ class IngestionTarget:
     def __post_init__(self) -> None:
         self.validate(())
 
-    @property
+    @cached_property
     def manifest(self) -> str:
         """The immutable target contract encoded for the kernel and durable sink manifest."""
         manifest = asdict(self)
@@ -361,6 +363,24 @@ def plan_ingestion(
     return IngestionPlan(_native.ingest_plan(target.mode, encoded, encode(stored), encode(rejected)))
 
 
+class _Batch:
+    """Originals with each one's JSON text, re-encoded only when an original is replaced: each kernel call
+    takes the batch's text without walking every original again."""
+
+    def __init__(self, items: Sequence[BatchInput]) -> None:
+        self.items = list(items)
+        self._texts = [encode(item) for item in self.items]
+
+    def set(self, index: int, item: BatchInput) -> None:
+        self.items[index] = item
+        self._texts[index] = encode(item)
+
+    @property
+    def json(self) -> str:
+        """The originals as one JSON array, the bytes ``encode(self.items)`` writes."""
+        return "[" + ",".join(self._texts) + "]"
+
+
 @contextlib.asynccontextmanager
 async def prepare_ingestion(
     target: IngestionTarget,
@@ -377,18 +397,32 @@ async def prepare_ingestion(
     transaction ends. Subject/tenant scopes come from validated kernel keys. Reuse an existing
     keyed fingerprint when a runner has already prepared the record.
     """
+    async with prepared_ingestion(target, sealing, inputs, transactor=transactor, tx=tx) as (originals, _):
+        yield originals
+
+
+@contextlib.asynccontextmanager
+async def prepared_ingestion(
+    target: IngestionTarget,
+    sealing: Sealing | None,
+    inputs: Sequence[BatchInput],
+    *,
+    transactor: object | None = None,
+    tx: object | None = None,
+) -> AsyncIterator[tuple[tuple[BatchInput, ...], str]]:
+    """:func:`prepare_ingestion`, yielding the originals' JSON as well, for an edax sink that hands the kernel
+    the batch without encoding it again."""
     if tx is not None and transactor is None:
         raise BadHandle("preparing ingestion with tx requires its transactor to retain scope fences")
-    originals = deepcopy(tuple(inputs))
+    batch = _Batch(deepcopy(tuple(inputs)))
     if target.partition is not None:
-        failures: list[str | None] = decode(
-            _native.ingest_partition_failures(target.manifest, encode(originals))
-        )
-        originals = tuple(
-            replace(item, failure=failure) for item, failure in zip(originals, failures, strict=True)
-        )
+        failures: list[str | None] = decode(_native.ingest_partition_failures(target.manifest, batch.json))
+        for index, failure in enumerate(failures):
+            if failure != batch.items[index].failure:
+                batch.set(index, replace(batch.items[index], failure=failure))
+    originals = tuple(batch.items)
     scopes: list[tuple[str | None, str | None]] = [
-        tuple(scope) for scope in decode(_native.ingest_write_scopes(target.manifest, encode(originals)))
+        tuple(scope) for scope in decode(_native.ingest_write_scopes(target.manifest, batch.json))
     ]
     async with contextlib.AsyncExitStack() as guards:
         if sealing is not None:
@@ -413,7 +447,18 @@ async def prepare_ingestion(
                     guard = guard.for_owned_write()
                 await guards.enter_async_context(guard)
             keys = sealing.for_batch(None)
-            prepared = list(originals)
+            # Each scope's fingerprint key is fetched once, the scopes at once; the batch view keeps them.
+            fingerprinted = dict.fromkeys(
+                scope
+                for item, scope in zip(originals, scopes, strict=True)
+                if scope[1] is not None
+                and not item.erased
+                and item.failure is None
+                and item.fingerprint is None
+            )
+            await gather_bounded(
+                (partial(keys.fingerprint_key, *scope) for scope in fingerprinted), PROVIDER_CONCURRENCY
+            )
             for index, (item, scope) in enumerate(zip(originals, scopes, strict=True)):
                 if (
                     scope[1] is not None
@@ -427,13 +472,12 @@ async def prepare_ingestion(
                         fingerprint = _native.ingest_keyed_fingerprint(key, state)
                     except CodecError as error:
                         # Canonical payload failures are durable rejections, as in the source runner.
-                        prepared[index] = replace(item, failure=f"{error.code}: invalid ingestion state")
+                        batch.set(index, replace(item, failure=f"{error.code}: invalid ingestion state"))
                     else:
-                        prepared[index] = replace(item, fingerprint=fingerprint)
-            originals = tuple(prepared)
-        originals = await seal_private(target, sealing, originals)
-        _native.ingest_check_sealed(target.manifest, encode(originals))
-        yield originals
+                        batch.set(index, replace(item, fingerprint=fingerprint))
+        await _seal_private(target, sealing, batch)
+        _native.ingest_check_sealed(target.manifest, batch.json)
+        yield tuple(batch.items), batch.json
 
 
 async def seal_private(
@@ -442,17 +486,20 @@ async def seal_private(
     """``inputs`` as the target stores them: each private part the kernel's seal plan names, sealed with
     one key reservation per subject. The kernel's ``check_sealed`` then refuses anything left plaintext,
     so a sink without ``sealing`` fails before it writes."""
-    originals = tuple(inputs)
-    plan: list[tuple[int, SealPart]] = decode(_native.ingest_seal_plan(target.manifest, encode(originals)))
+    batch = _Batch(inputs)
+    await _seal_private(target, sealing, batch)
+    return tuple(batch.items)
+
+
+async def _seal_private(target: IngestionTarget, sealing: Sealing | None, batch: _Batch) -> None:
+    plan: list[tuple[int, SealPart]] = decode(_native.ingest_seal_plan(target.manifest, batch.json))
     if not plan or sealing is None:
-        return originals
+        return
     sealed = await sealing.for_batch(None).seal_stored(
-        [(part, originals[index].private) for index, part in plan]
+        [(part, batch.items[index].private) for index, part in plan]
     )
-    result = list(originals)
     for (index, _), private in zip(plan, sealed, strict=True):
-        result[index] = replace(originals[index], private=private)
-    return tuple(result)
+        batch.set(index, replace(batch.items[index], private=private))
 
 
 async def open_private(
@@ -502,8 +549,8 @@ class MemoryIngestionSink:
         return ScopeCleanup(delete, sealing=self.sealing, key_namespace=key_namespace)
 
     async def commit(self, inputs: Sequence[BatchInput]) -> BatchResult:
-        async with prepare_ingestion(self.target, self.sealing, inputs) as originals, own_write():
-            return BatchResult.from_json(self._database.get().commit(self.target.manifest, encode(originals)))
+        async with prepared_ingestion(self.target, self.sealing, inputs) as (_, encoded), own_write():
+            return BatchResult.from_json(self._database.get().commit(self.target.manifest, encoded))
 
     async def pending(self, limit: int = 100) -> dict[str, dict[str, Any]]:
         check_page(limit)

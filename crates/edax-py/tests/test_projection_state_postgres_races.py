@@ -36,11 +36,20 @@ class _FaultConnection:
     def __getattr__(self, name: str) -> Any:
         return getattr(self.connection, name)
 
-    async def execute(self, query: str, *args: Any) -> str:
+    def _locking(self, query: str) -> None:
         faults = self.faults
         if query in faults.lock_sql and faults.staged.is_set():
             faults.waiter_pid = self.connection.get_server_pid()
             faults.waiter_started.set()
+
+    async def fetchval(self, query: str, *args: Any) -> Any:
+        # A lock statement answers the database clock, so it arrives here.
+        self._locking(query)
+        return await self.connection.fetchval(query, *args)
+
+    async def execute(self, query: str, *args: Any) -> str:
+        faults = self.faults
+        self._locking(query)
         result: str = await self.connection.execute(query, *args)
         if query == faults.write_sql:
             # A batch's last write: its effect intents, after its state, receipts and checkpoint.
